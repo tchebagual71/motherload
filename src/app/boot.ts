@@ -268,6 +268,15 @@ function startEngine(d: EngineDeps): { loop: GameLoop; renderer: Renderer } | nu
   return { loop, renderer };
 }
 
+/** Running inside another page's frame (e.g. a hosted preview): no install prompt and no service worker. */
+function embedded(): boolean {
+  try {
+    return window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
 /** 04 §9.2: prompt-type service worker; the controller applies a waiting update only on the title screen. */
 function wireServiceWorker(app: GameApp): void {
   let sw: ServiceWorkerHandle | null = null;
@@ -302,7 +311,7 @@ export async function boot(): Promise<void> {
     settingsStore: cfg.settingsStore,
     styleTest: SCOPE === 'm0',
     standalone: cfg.device.standalone,
-    canInstall: !cfg.device.standalone && !cfg.device.inAppBrowser && (cfg.device.ios || cfg.device.android),
+    canInstall: !embedded() && !cfg.device.standalone && !cfg.device.inAppBrowser && (cfg.device.ios || cfg.device.android),
     coldLoad: initial.coldLoad,
     resolveQuality: cfg.resolveQuality,
     now: () => performance.now(),
@@ -392,5 +401,5 @@ export async function boot(): Promise<void> {
   if (!safeMode) start();
 
   if (debugEnabled()) (window as Window & { __hfDebug?: unknown }).__hfDebug = { app, perfReport: () => reporter.report(engine?.renderer ?? null) };
-  if (import.meta.env.PROD && !cfg.testMode) wireServiceWorker(app);
+  if (import.meta.env.PROD && !cfg.testMode && !embedded()) wireServiceWorker(app);
 }
