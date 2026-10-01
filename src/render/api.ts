@@ -32,6 +32,10 @@ export interface RenderFrame {
   touching: boolean;
   /** Explosive arming preview: footprint radius in tiles around the pod (0 = none) and ring progress 0..1. */
   arming: { radius: number; progress: number } | null;
+  /** Accessibility: raise the underground ambient floor to 0.35 (canon §3.12). */
+  brightMines: boolean;
+  /** Accessibility: no camera shake, gentler animation. */
+  reducedMotion: boolean;
 }
 
 export interface RenderInfo {
