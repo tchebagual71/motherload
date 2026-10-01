@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>HoleFactory</title>
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f2b58e"/>
+      <stop offset="1" stop-color="#fadcc0"/>
+    </linearGradient>
+    <linearGradient id="shaft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4a2c3a"/>
+      <stop offset="0.45" stop-color="#2b1e2f"/>
+      <stop offset="1" stop-color="#15111f"/>
+    </linearGradient>
+    <linearGradient id="visor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8ff0e6"/>
+      <stop offset="1" stop-color="#46e0d2"/>
+    </linearGradient>
+    <clipPath id="body">
+      <rect x="158" y="144" width="196" height="150" rx="48"/>
+    </clipPath>
+    <linearGradient id="flame" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff1b0"/>
+      <stop offset="1" stop-color="#ffb238"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Sky with a soft sun halo -->
+  <rect width="512" height="512" fill="url(#sky)"/>
+  <circle cx="404" cy="104" r="62" fill="#ffe3c4" opacity="0.9"/>
+  <circle cx="404" cy="104" r="40" fill="#fff3e3"/>
+
+  <!-- Ground: turf top, strata faces -->
+  <rect y="338" width="512" height="174" fill="#b85a37"/>
+  <rect y="338" width="512" height="26" fill="#e2804f"/>
+  <rect y="430" width="512" height="82" fill="#a44b3b"/>
+  <path d="M0 364 H512" stroke="#7e3a33" stroke-width="6" opacity="0.5"/>
+
+  <!-- Ore glints in the wall -->
+  <path d="M82 400 l16 -16 l16 16 l-16 16 z" fill="#ffc53d" stroke="#2b1e2f" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M410 452 l14 -14 l14 14 l-14 14 z" fill="#3f6fe0" stroke="#2b1e2f" stroke-width="6" stroke-linejoin="round"/>
+  <path d="M60 470 l10 -10 l10 10 l-10 10 z" fill="#e0782e" stroke="#2b1e2f" stroke-width="5" stroke-linejoin="round"/>
+
+  <!-- The hole -->
+  <path d="M196 338 H316 V512 H196 Z" fill="url(#shaft)"/>
+  <path d="M196 338 V512 M316 338 V512" stroke="#2b1e2f" stroke-width="8"/>
+  <path d="M186 338 H326" stroke="#2b1e2f" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Pip: thruster glow, drill, body, visor -->
+  <path d="M168 238 q-26 26 -6 54 q8 -22 26 -30 z" fill="url(#flame)" opacity="0.9"/>
+  <path d="M344 238 q26 26 6 54 q-8 -22 -26 -30 z" fill="url(#flame)" opacity="0.9"/>
+  <path d="M220 284 L256 352 L292 284 Z" fill="#b8b4c8" stroke="#2b1e2f" stroke-width="10" stroke-linejoin="round"/>
+  <path d="M232 300 L280 300 M242 320 L270 320" stroke="#6a6370" stroke-width="7" stroke-linecap="round"/>
+  <rect x="158" y="144" width="196" height="150" rx="48" fill="#f4f1ea"/>
+  <rect x="158" y="236" width="196" height="22" fill="#ff7a3d" clip-path="url(#body)"/>
+  <rect x="158" y="144" width="196" height="150" rx="48" fill="none" stroke="#2b1e2f" stroke-width="12"/>
+  <rect x="190" y="168" width="132" height="58" rx="26" fill="url(#visor)" stroke="#2b1e2f" stroke-width="10"/>
+  <path d="M208 186 q14 -8 30 -6" stroke="#ffffff" stroke-width="8" stroke-linecap="round" fill="none" opacity="0.9"/>
+  <circle cx="336" cy="200" r="7" fill="#7cff6b" stroke="#2b1e2f" stroke-width="4"/>
+  <circle cx="256" cy="132" r="10" fill="#ff7a3d" stroke="#2b1e2f" stroke-width="7"/>
+  <path d="M256 142 V146" stroke="#2b1e2f" stroke-width="7"/>
+</svg>

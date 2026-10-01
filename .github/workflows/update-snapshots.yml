@@ -1,0 +1,39 @@
+# Visual baselines come only from CI (04 §11.4): this manual workflow regenerates them in the pinned
+# Playwright image and uploads the PNGs as an artifact to review and commit.
+# (Pushing directly needs a GitHub App token, since GITHUB_TOKEN pushes do not trigger CI.)
+name: update-snapshots
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22.22.0
+  HF_SCOPE: m0
+  HF_BASE: /motherload/
+
+jobs:
+  snapshots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: mcr.microsoft.com/playwright:v1.56.1-noble
+      options: --ipc=host
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright test -c tests/e2e/playwright.ci.config.ts --project=iphone-se --project=iphone-15 --update-snapshots
+        env:
+          HOME: /root
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snapshots
+          path: tests/e2e/**/*-snapshots/
+          if-no-files-found: warn
