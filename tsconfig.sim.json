@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": []
+  },
+  "include": [
+    "src/shared/**/*.ts",
+    "src/terrain/**/*.ts",
+    "src/pod/**/*.ts",
+    "src/economy/**/*.ts",
+    "src/story/**/*.ts",
+    "src/factory/**/*.ts",
+    "src/world/**/*.ts",
+    "src/save/codec/**/*.ts"
+  ]
+}

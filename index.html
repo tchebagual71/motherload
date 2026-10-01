@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#f3c9a6" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="HoleFactory" />
+    <meta name="description" content="Dig deep, haul it up, build the factory. A cozy mining game for your phone." />
+    <title>HoleFactory</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #2b1e2f; overscroll-behavior: none; }
+      body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; touch-action: none; }
+      #game { position: fixed; inset: 0; display: block; width: 100%; height: 100%; touch-action: none; }
+      #ui { position: fixed; inset: 0; pointer-events: none; }
+      #boot { position: fixed; inset: 0; display: grid; place-items: center; color: #f6e7d2; font: 600 18px system-ui, sans-serif; }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="ui"></div>
+    <div id="boot">Loading HoleFactory…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
