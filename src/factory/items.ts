@@ -108,6 +108,8 @@ const KITS: [string, string, number, 'mvp' | 'v1'][] = [
   ['autoDrill3', 'Auto-Drill Kit Mk III', 15_000, 'v1'],
   ['liftFoot2', 'Lift Foot Kit Mk II', 3_000, 'v1'],
   ['liftFoot3', 'Lift Foot Kit Mk III', 12_000, 'v1'],
+  ['belt2', 'Belt Kit Mk II', 320, 'v1'],
+  ['belt3', 'Belt Kit Mk III', 1_200, 'v1'],
 ];
 for (const [id, name, value, scope] of KITS) add({ id: `kit:${id}`, name, cls: 'kit', value, exportable: false, underground: true, tier: 0, scope });
 
