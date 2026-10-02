@@ -1,0 +1,459 @@
+/* Story UI (03 §6.2, §6.5): radio ticker and cards, goal chip, trip summary, Dot's office. The slot sits at the
+   top of the clear rect; only its buttons take pointers. Sender styles per 03 §6.5 (Space Mono and IM Fell
+   English are v1 fonts: system monospace and serif stand in). Reduced motion is handled by the root rules. */
+
+.hf-story {
+  position: absolute;
+  top: calc(var(--clear-top) + 4px);
+  left: calc(var(--il) + 8px);
+  right: calc(var(--ir) + 8px);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  pointer-events: none;
+  z-index: 56;
+}
+/* Toasts step down under a showing radio card or trip summary (StoryLayer sets --hf-story-h on the root). */
+.hf-ui .hf-toasts {
+  transform: translateY(var(--hf-story-h, 0px));
+  transition: transform 160ms ease-out;
+}
+
+/* ------------------------------------------------------------------ radio */
+.hf-radio {
+  --tx-bg: var(--hf-cream);
+  --tx-fg: var(--hf-ink);
+  --tx-edge: var(--hf-ink);
+  --tx-font: var(--hf-font);
+  position: relative;
+  display: flex;
+  align-items: center;
+  overflow: visible;
+  border: var(--bw) solid var(--tx-edge);
+  border-radius: 14px;
+  background: var(--tx-bg);
+  color: var(--tx-fg);
+  box-shadow: 0 3px 0 rgba(43, 30, 47, 0.35);
+  pointer-events: none;
+  animation: hf-radio-in 180ms ease-out both;
+}
+.hf-radio-ticker {
+  height: 28px;
+  /* Clear of the 24-pt depth ruler on the right edge (03 §2.1). */
+  margin-right: 24px;
+  padding-left: 10px;
+}
+.hf-radio-line {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.hf-radio-from {
+  flex: none;
+  font: 900 10.5px/1 var(--hf-font-display);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+.hf-radio-text {
+  font: 700 13px/1 var(--tx-font);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hf-radio-next {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  margin: -8px 0;
+  display: grid;
+  place-items: center;
+  padding: 0 0 3px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 900 26px/1 var(--hf-font-display);
+  pointer-events: auto;
+}
+.hf-radio-card {
+  min-height: 76px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0 6px 8px;
+}
+.hf-radio-card .hf-avatar {
+  flex: none;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+.hf-radio-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.hf-radio-card .hf-radio-text {
+  /* Three lines at 375 pt for most cards; a 90-character card may take a fourth rather than lose words. */
+  font: 700 15px/20px var(--tx-font);
+  white-space: normal;
+}
+.hf-radio-untyped {
+  visibility: hidden;
+}
+.hf-radio-count {
+  letter-spacing: 0.02em;
+}
+.hf-radio-card .hf-radio-next {
+  position: relative;
+  width: 34px;
+  margin: 0;
+  align-self: stretch;
+  height: auto;
+  min-height: 44px;
+}
+/* The narrow card chevron still has a 44-pt hit area (canon §3.12). */
+.hf-radio-card .hf-radio-next::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 0 -10px;
+}
+
+/* Senders (03 §6.5). */
+.hf-tx-dot {
+  --tx-bg: #fff6e9;
+}
+.hf-tx-marlow {
+  --tx-bg: #e8ddb5;
+}
+.hf-tx-log {
+  --tx-bg: #e9dfc7;
+  --tx-edge: #6b5a6e;
+  --tx-font: var(--hf-mono);
+}
+.hf-radio.hf-tx-log {
+  background-image: repeating-linear-gradient(90deg, transparent 0 18px, rgba(107, 90, 110, 0.08) 18px 19px);
+}
+.hf-tx-log .hf-radio-text {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.hf-tx-zero {
+  --tx-bg: #0b0f0c;
+  --tx-fg: #7cffb0;
+  --tx-edge: rgba(124, 255, 176, 0.55);
+  --tx-font: var(--hf-mono);
+}
+.hf-radio.hf-tx-zero {
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.5), 0 0 12px rgba(124, 255, 176, 0.18);
+}
+/* Scanlines and a faint, slow glitch: no luminance flashes (03 §7 photosensitivity). */
+.hf-radio.hf-tx-zero::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: repeating-linear-gradient(0deg, rgba(124, 255, 176, 0.07) 0 1px, transparent 1px 3px);
+  pointer-events: none;
+}
+.hf-tx-zero .hf-radio-text {
+  text-shadow: 0 0 6px rgba(124, 255, 176, 0.45);
+  animation: hf-glitch 3.2s steps(1, end) infinite;
+}
+.hf-tx-surveyor {
+  --tx-bg: #2a1830;
+  --tx-fg: #e8c27a;
+  --tx-edge: #e8c27a;
+  --tx-font: 'IM Fell English', Georgia, 'Times New Roman', serif;
+}
+.hf-radio-card.hf-tx-surveyor .hf-radio-text {
+  font-size: 17px;
+  line-height: 22px;
+}
+.hf-av-reel {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: hf-reel 2.4s linear infinite;
+}
+@keyframes hf-reel {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes hf-radio-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes hf-glitch {
+  0%,
+  86%,
+  100% {
+    transform: none;
+  }
+  88% {
+    transform: translateX(1.5px);
+  }
+  91% {
+    transform: translateX(-1px) skewX(-4deg);
+  }
+  94% {
+    transform: translateX(0.5px);
+  }
+}
+
+/* ------------------------------------------------------------------ goal chip */
+.hf-goal-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.hf-goal {
+  position: relative;
+  max-width: 100%;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 0 3px;
+  border-radius: var(--r-round);
+  border: var(--bw) solid var(--hf-ink);
+  background: var(--hf-cream);
+  box-shadow: 0 2px 0 rgba(43, 30, 47, 0.35);
+  font: 800 13px/1 var(--hf-font);
+  pointer-events: auto;
+  animation: hf-radio-in 180ms ease-out both;
+}
+/* ≥ 44-pt hit area around the 28-pt chip (canon §3.12). */
+.hf-goal::after {
+  content: '';
+  position: absolute;
+  inset: -8px -4px;
+}
+.hf-goal .hf-avatar {
+  flex: none;
+}
+.hf-goal-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.hf-goal-progress {
+  flex: none;
+  padding: 3px 6px;
+  border-radius: var(--r-round);
+  background: var(--hf-primary);
+  font: 800 11px/1 var(--hf-font-digits);
+}
+.hf-goal-next {
+  max-width: min(100%, 340px);
+  margin: 0;
+  padding: 8px 12px 8px 30px;
+  border-radius: 14px;
+  background: rgba(43, 30, 47, 0.9);
+  color: var(--hf-cream);
+  font: 700 13px/1.35 var(--hf-font);
+  pointer-events: none;
+  animation: hf-radio-in 160ms ease-out both;
+}
+.hf-goal-next li + li {
+  margin-top: 4px;
+}
+
+/* ------------------------------------------------------------------ trip summary */
+.hf-trip {
+  position: relative;
+  align-self: center;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 12px;
+  overflow: hidden;
+  border-radius: 16px;
+  border: var(--bw) solid var(--hf-ink);
+  background: var(--hf-cream);
+  box-shadow: 0 4px 0 var(--hf-lip-dark);
+  text-align: center;
+  pointer-events: auto;
+  animation: hf-radio-in 200ms ease-out both;
+}
+.hf-trip-head {
+  font: 900 11px/1 var(--hf-font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hf-ink-soft);
+}
+.hf-trip-line {
+  font: 800 16px/1.2 var(--hf-font-digits);
+  white-space: nowrap;
+}
+.hf-trip-goals {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+}
+.hf-trip-goal {
+  padding: 4px 8px;
+  border-radius: var(--r-round);
+  border: 1.5px solid var(--hf-border);
+  background: var(--hf-cream-2);
+  font: 700 12px/1.25 var(--hf-font);
+}
+.hf-trip-timer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--hf-primary);
+  transform-origin: left center;
+  animation: hf-trip-timer 4s linear both;
+}
+@keyframes hf-trip-timer {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* ------------------------------------------------------------------ Dot's office */
+.hf-office-tabs {
+  width: 100%;
+  margin: 2px 0 8px;
+}
+.hf-office-tabs .hf-seg-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 4px;
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+.hf-office-log > li {
+  padding: 10px 2px;
+  border-bottom: 1.5px solid var(--hf-lip);
+}
+.hf-office-beat-title {
+  display: block;
+  margin: 0 2px 6px;
+  font: 900 11px/1.2 var(--hf-font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--hf-ink-soft);
+}
+.hf-office-tx {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1.5px solid var(--tx-edge, var(--hf-lip-dark));
+  background: var(--tx-bg, var(--hf-paper));
+  color: var(--tx-fg, var(--hf-ink));
+}
+.hf-office-tx.hf-tx-dot {
+  --tx-edge: var(--hf-lip-dark);
+}
+.hf-office-tx + .hf-office-tx {
+  margin-top: 6px;
+}
+.hf-office-tx .hf-avatar {
+  flex: none;
+}
+.hf-office-tx-body {
+  flex: 1;
+  min-width: 0;
+}
+.hf-office-tx-body p {
+  margin: 4px 0 0;
+  font: 700 14px/1.35 var(--tx-font, var(--hf-font));
+}
+.hf-office-ms {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 700 14px/1.35 var(--hf-font);
+}
+.hf-office-star {
+  color: #d9932b;
+}
+.hf-office-badge,
+.hf-office-rung {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-round);
+  border: var(--bw) solid var(--hf-ink);
+  font: 900 12px/1 var(--hf-font-display);
+}
+.hf-office-got .hf-office-badge,
+.hf-office-got .hf-office-rung {
+  background: var(--hf-primary);
+}
+.hf-office-todo .hf-office-badge,
+.hf-office-todo .hf-office-rung {
+  background: var(--hf-lip);
+  color: var(--hf-ink-soft);
+}
+.hf-office-todo .hf-list-title {
+  color: var(--hf-ink-soft);
+}
+.hf-office-trigger {
+  font: 800 12px/1.2 var(--hf-font);
+  color: var(--hf-bad-text);
+}
+.hf-office-stats {
+  margin: 4px 0 0;
+}
+.hf-office-stats > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  min-height: 44px;
+  padding: 8px 4px;
+  border-bottom: 1.5px solid var(--hf-lip);
+}
+.hf-office-stats dt {
+  font: 700 15px/1.2 var(--hf-font);
+  color: var(--hf-ink-soft);
+}
+.hf-office-stats dd {
+  margin: 0;
+  font: 900 16px/1.2 var(--hf-font-digits);
+}
+
+/* ------------------------------------------------------------------ Pixel Lab skin (03 §9.3) */
+.hf-pixel .hf-radio,
+.hf-pixel .hf-goal,
+.hf-pixel .hf-trip {
+  border-radius: 4px;
+  box-shadow: 3px 3px 0 var(--hf-ink);
+}
+.hf-pixel .hf-goal-next,
+.hf-pixel .hf-trip-goal,
+.hf-pixel .hf-office-tx {
+  border-radius: 2px;
+}
+
+/* Relic captions on the Assay list (01 §7.8). */
+.hf-relic-caption {
+  font-style: italic;
+}

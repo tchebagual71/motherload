@@ -2,6 +2,8 @@
 import type { JSX } from 'preact';
 import type { AppController } from '../../app/types';
 import { ORES, RELIC_COLOURS } from '../../render/palette';
+import { scopeAtLeast } from '../../shared/scope';
+import { relicCaption } from '../../story';
 import type { CargoItem } from '../../shared/types';
 import { act } from '../actions';
 import { BottomSheet } from '../BottomSheet';
@@ -49,6 +51,7 @@ export function AssaySheet({ app, close, leaving }: { app: AppController; close:
                 <span class="hf-list-sub">
                   {formatCash(g.unitValue)} each · {formatMass(g.mass)}
                 </span>
+                {g.item.kind === 'relic' && scopeAtLeast(w.scope, 'mvp') && <span class="hf-list-sub hf-relic-caption">{relicCaption(g.item.id)}</span>}
               </span>
               <span class="hf-list-value hf-digits">{formatCash(g.totalValue)}</span>
             </li>
@@ -65,6 +68,15 @@ export function AssaySheet({ app, close, leaving }: { app: AppController; close:
             {total > 0 ? `Taken from this sale: you receive ${formatCash(net)}` : 'Taken from your next sale'}
           </span>
         </div>
+      )}
+      {scopeAtLeast(w.scope, 'mvp') && (
+        <button type="button" class="hf-row hf-menu-item" onClick={() => app.openSheet('office')}>
+          <span class="hf-row-label">Dot's office</span>
+          <span class="hf-row-hint">Log · Milestones · Plans</span>
+          <span class="hf-chev" aria-hidden="true">
+            ›
+          </span>
+        </button>
       )}
     </BottomSheet>
   );

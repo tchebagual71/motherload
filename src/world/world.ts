@@ -1,6 +1,6 @@
 // The one authoritative simulation (canon §4.10; 04 §3.1): terrain, pod, wallet, story and (MVP) the
 // factory, stepped at a fixed 60 Hz. UI, render and app reach it only through WorldApi. PURE MODULE.
-import { FACTORY_EVERY, FACTORY_PHASE, MINE_W, POD_H, RIM_BUILDINGS, START_CASH, START_X, type Line } from '../shared/canon';
+import { FACTORY_EVERY, FACTORY_PHASE, MINE_W, POD_H, RIM_BUILDINGS, START_CASH, START_X, TILE_FT, type Line } from '../shared/canon';
 import type { GameEvent } from '../shared/events';
 import { Rng, STREAM } from '../shared/rng';
 import { T, type CargoItem, type ConsumableId, type RimBuildingId, type Scope } from '../shared/types';
@@ -15,6 +15,7 @@ import { deserialize as decodeSave, serialize as encodeSave, type SaveState } fr
 import type { CargoGroup, PodStats, Quote, Result, ShopItem, StoryState, UpgradeCard, Wallet, WorldApi } from './api';
 import { PUMP_PAD, PadArming, isNeutral, isOnRim, padIndexAt, padIndexOf } from './pads';
 import { newStory, resetTrip, updateDepth, updateTrip } from './rules';
+import { RECORDER_RELIC, StoryDirector, type StoryContext, type StorySnapshot } from '../story';
 
 export interface WorldOptions {
   seed: number;
@@ -110,6 +111,12 @@ export class World implements WorldApi {
   private readonly emit = (e: GameEvent): void => {
     this.events.push(e);
   };
+  /** Radio beats, milestones, Co-op Plans rungs and map pings (01 §7–8); state lives in story.flags. */
+  private readonly director: StoryDirector;
+  /** Index of the first event the director has not seen yet. */
+  private storyMark = 0;
+  /** Reused every step (no per-step allocation). */
+  private readonly storySnap: StorySnapshot;
 
   /** `restored` is for World.deserialize only; it replaces generation with saved state. */
   constructor(opts: WorldOptions, restored?: SaveState) {
@@ -128,6 +135,11 @@ export class World implements WorldApi {
     this.deathUnreported = s.pod.destroyed;
     this.podCtx = { floorRow: scopeFloorRow(this.scope), deepHeat: this.deepHeat, rng: this.rng, stepNo: this.steps, scope: this.scope };
     this.shop = { pod: this.pod, wallet: this.wallet, scope: this.scope, parts: econ.EMPTY_PARTS, emit: this.emit };
+    this.director = new StoryDirector(this.storyContext());
+    this.storySnap = { stepNo: 0, row: 0, depthFt: 0, grounded: true, onRim: true, alive: true, magmaPending: 0, trips: 0, cash: 0, tiers: this.pod.tiers };
+    // The game-start card fires for a new claim only, never for a restored one (canon §2.12 #1 exception).
+    if (!restored) this.director.start(this.story.flags, this.emit);
+    this.storyMark = this.events.length;
   }
 
   static deserialize(bytes: Uint8Array): World {
@@ -179,6 +191,7 @@ export class World implements WorldApi {
       if (podRunning && this.deathUnreported) this.reportRestoredDeath();
     }
     if (this.steps % FACTORY_EVERY === FACTORY_PHASE) this.tickFactory();
+    this.runStory();
     this.steps++;
   }
 
@@ -188,6 +201,9 @@ export class World implements WorldApi {
   }
 
   drainEvents(): GameEvent[] {
+    // Events from services called between steps (a sale, a purchase) reach the director before they leave.
+    if (this.storyMark < this.events.length) this.runStory();
+    this.storyMark = 0;
     if (this.events.length === 0) return NO_EVENTS;
     const out = this.events;
     this.events = [];
@@ -278,7 +294,7 @@ export class World implements WorldApi {
     return econ.cargoValue(this.pod.cargo);
   }
   sellAll(): Result {
-    return this.tradeRefusal() ?? econ.sellAll(this.shop);
+    return this.tradeRefusal() ?? this.withRecorderLogs(() => econ.sellAll(this.shop));
   }
   repairQuote(): Quote {
     return econ.repairQuote(this.shop);
@@ -316,6 +332,61 @@ export class World implements WorldApi {
     resetTrip(this.story);
     this.emit({ t: 'respawned', fee: r.fee, debt: r.debt, lost: r.lost });
     return r;
+  }
+
+  // ------------------------------------------------------------------ story
+
+  /** Factory hook: a lift `rows` tall was completed (the first one over 100 rows wakes the count, 01 §7.4 S8). */
+  noteLiftBuilt(rows: number): void {
+    this.director.liftBuilt(rows, this.story.flags, this.emit);
+  }
+
+  private storyContext(): StoryContext {
+    const iridium = this.terrain.lodes.find((l) => l.metal === 'iridium');
+    return {
+      scope: this.scope,
+      scriptedLodeId: this.meta.scriptedLodeId,
+      iridiumLodeId: iridium ? iridium.id : -1,
+      loadFrac: () => {
+        const s = podStats(this.pod);
+        return s.hoverCap > 0 ? s.cargoMass / s.hoverCap : 0;
+      },
+      partCount: (part) => this.shop.parts.count(part as econ.PartId),
+      billHasPart: (line, tier, part) => econ.partsFor(this.scope, line, tier).some((r) => r.part === part),
+    };
+  }
+
+  /** Hand the director the events it has not seen, with the pod as it stands now. */
+  private runStory(): void {
+    const s = this.storySnap;
+    const pod = this.pod;
+    s.stepNo = this.steps;
+    s.row = pod.row;
+    s.depthFt = pod.y < 0 ? -pod.y * TILE_FT : 0;
+    s.grounded = pod.grounded;
+    s.onRim = isOnRim(pod);
+    s.alive = !pod.destroyed && pod.hull > 0;
+    s.magmaPending = pod.magmaPending;
+    s.trips = this.story.trips;
+    s.cash = this.wallet.cash;
+    s.tiers = pod.tiers;
+    this.director.onEvents(this.events, s, this.story.flags, this.emit, this.storyMark);
+    this.storyMark = this.events.length;
+  }
+
+  /** Each Lost Pod Recorder a sale takes plays the next Deepreach log (01 §7.5, in order of sale). */
+  private withRecorderLogs(sale: () => Result): Result {
+    const before = this.recordersAboard();
+    const r = sale();
+    const sold = before - this.recordersAboard();
+    if (r.ok && sold > 0) this.director.recordersSold(sold, this.story.flags, this.emit);
+    return r;
+  }
+
+  private recordersAboard(): number {
+    let n = 0;
+    for (const c of this.pod.cargo) if (c.kind === 'relic' && c.id === RECORDER_RELIC) n++;
+    return n;
   }
 
   // ------------------------------------------------------------------ debug

@@ -19,6 +19,7 @@ import { TitleScreen } from './overlays/TitleScreen';
 import { Toasts } from './overlays/Toasts';
 import { UprightCard } from './overlays/UprightCard';
 import { SheetHost } from './SheetHost';
+import { StoryLayer } from './story/StoryLayer';
 import './styles.css';
 import { createViewport, type Viewport } from './viewport';
 
@@ -49,6 +50,7 @@ function Root({ app, vp }: { app: AppController; vp: Signal<Viewport> }): JSX.El
           {app.state.styleTest.value && <StyleChip app={app} />}
           {settings.showPerf && <PerfHud app={app} />}
           <Toasts app={app} />
+          <StoryLayer app={app} />
         </>
       )}
       <SheetHost app={app} />

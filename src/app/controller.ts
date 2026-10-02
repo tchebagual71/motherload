@@ -15,6 +15,7 @@ import type { SettingsStore } from './settings';
 import { NOTICE } from './notices';
 import { TimeController, type PodMotion, type SheetReason } from './time';
 import { holdToast, pruneToasts, pushToast, toastsCovered } from './toasts';
+import { StoryFeed } from './storyFeed';
 import type {
   AppController,
   AppState,
@@ -157,6 +158,7 @@ export class GameApp implements AppController {
   private perfReporter: (() => Promise<string>) | null = null;
   private held: HeldToast[] = [];
   private readonly disposeSheetEffect: () => void;
+  private readonly storyFeed: StoryFeed;
 
   constructor(private readonly opts: ControllerOptions) {
     this.worldRef = opts.world;
@@ -182,6 +184,7 @@ export class GameApp implements AppController {
       tripSummary: signal<TripSummary | null>(null),
       updateReady: signal(false),
     };
+    this.storyFeed = new StoryFeed({ state: this.state, world: () => this.worldRef, toast: (text, tone) => this.toast(text, tone) });
     this.time = new TimeController(() => this.syncOverlay());
     this.time.raise('title');
     if (this.safeModeActive) this.time.raise('safemode');
@@ -352,6 +355,7 @@ export class GameApp implements AppController {
       const live = pruneToasts(toasts, now);
       if (live !== toasts) this.state.toasts.value = live;
     }
+    this.storyFeed.tick(now);
   }
 
   /** Sim events drained this frame → toasts, death, pad sheets, save triggers. */
@@ -359,6 +363,7 @@ export class GameApp implements AppController {
     if (events.length === 0) return;
     const now = this.opts.now();
     this.saves?.markDirty();
+    this.storyFeed.onEvents(events, now);
     for (const e of events) {
       switch (e.t) {
         case 'destroyed':
@@ -457,6 +462,7 @@ export class GameApp implements AppController {
     this.worldRef = w;
     this.coldLoad = coldLoad;
     this.input?.releaseAll();
+    this.storyFeed.reset();
     this.state.hudTick.value++;
   }
 
