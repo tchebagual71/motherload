@@ -507,7 +507,8 @@ export function geometryFromArrays(a: PartArrays): BufferGeometry {
 
 /**
  * A fixed-capacity geometry rebuilt from pre-built parts (pod tier variants). Rebuilding copies into
- * the existing attribute arrays, so swapping variants never allocates.
+ * the existing attribute arrays, so swapping variants never allocates. `retint()` repaints only the
+ * colours of the tintable parts, leaving positions and normals (and their versions) untouched.
  */
 export class ComposedGeometry {
   readonly geometry: BufferGeometry;
@@ -515,6 +516,9 @@ export class ComposedGeometry {
   private readonly normal: BufferAttribute;
   private readonly color: BufferAttribute;
   private n = 0;
+  /** Parts added with append() since begin(), and where each starts (vertices), for retint(). */
+  private readonly tintable: PartArrays[] = [];
+  private readonly tintableAt: number[] = [];
 
   constructor(readonly capacity: number, boundsRadius: number) {
     this.position = new BufferAttribute(new Float32Array(capacity * 3), 3).setUsage(DynamicDrawUsage);
@@ -534,6 +538,8 @@ export class ComposedGeometry {
 
   begin(): void {
     this.n = 0;
+    this.tintable.length = 0;
+    this.tintableAt.length = 0;
   }
 
   /** Copy a part; colours are lerped toward `tint` by `tintK` (0 = untouched). */
@@ -543,20 +549,13 @@ export class ComposedGeometry {
     if (this.n + src.count > this.capacity) throw new Error('ComposedGeometry capacity exceeded');
     (this.position.array as Float32Array).set(src.position.subarray(0, len), o);
     (this.normal.array as Float32Array).set(src.normal.subarray(0, len), o);
-    const dst = this.color.array as Float32Array;
-    if (tint && tintK > 0) {
-      for (let i = 0; i < len; i += 3) {
-        dst[o + i] = src.color[i] + (tint.r - src.color[i]) * tintK;
-        dst[o + i + 1] = src.color[i + 1] + (tint.g - src.color[i + 1]) * tintK;
-        dst[o + i + 2] = src.color[i + 2] + (tint.b - src.color[i + 2]) * tintK;
-      }
-    } else {
-      dst.set(src.color.subarray(0, len), o);
-    }
+    this.writeColors(src, this.n, tint, tintK);
+    this.tintable.push(src);
+    this.tintableAt.push(this.n);
     this.n += src.count;
   }
 
-  /** Copy a part's shape, painting every vertex one colour (trim bands). */
+  /** Copy a part's shape, painting every vertex one colour (trim bands; not affected by retint). */
   appendSolidColor(src: PartArrays, c: Color): void {
     const o = this.n * 3;
     const len = src.count * 3;
@@ -573,14 +572,39 @@ export class ComposedGeometry {
   }
 
   end(): void {
-    const len = this.n * 3;
-    for (const attr of [this.position, this.normal, this.color]) {
-      attr.clearUpdateRanges();
-      attr.addUpdateRange(0, len);
-      attr.needsUpdate = true;
-    }
+    for (const attr of [this.position, this.normal, this.color]) markRange(attr, this.n * 3);
     this.geometry.setDrawRange(0, this.n);
   }
+
+  /**
+   * Re-tint every part added with append() since begin() (e.g. the pod's fast-fall amber): rewrites
+   * and uploads the colours only, so outline hulls (keyed on the position version) need no re-weld.
+   */
+  retint(tint: Color | null, tintK = 0): void {
+    for (let i = 0; i < this.tintable.length; i++) this.writeColors(this.tintable[i], this.tintableAt[i], tint, tintK);
+    markRange(this.color, this.n * 3);
+  }
+
+  private writeColors(src: PartArrays, at: number, tint: Color | null, tintK: number): void {
+    const o = at * 3;
+    const len = src.count * 3;
+    const dst = this.color.array as Float32Array;
+    if (tint && tintK > 0) {
+      for (let i = 0; i < len; i += 3) {
+        dst[o + i] = src.color[i] + (tint.r - src.color[i]) * tintK;
+        dst[o + i + 1] = src.color[i + 1] + (tint.g - src.color[i + 1]) * tintK;
+        dst[o + i + 2] = src.color[i + 2] + (tint.b - src.color[i + 2]) * tintK;
+      }
+    } else {
+      dst.set(src.color.subarray(0, len), o);
+    }
+  }
+}
+
+function markRange(attr: BufferAttribute, len: number): void {
+  attr.clearUpdateRanges();
+  attr.addUpdateRange(0, len);
+  attr.needsUpdate = true;
 }
 
 // ---------------------------------------------------------------------------------------------

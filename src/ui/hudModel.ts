@@ -68,3 +68,19 @@ export function hudModel(pod: Readonly<PodState>, stats: Readonly<PodStats>, wal
     inDebt: wallet.debt > 0,
   };
 }
+
+/** By FuelWarn level 0 / 1 / 2. */
+const FUEL_ALERT: readonly string[] = ['Fuel low', 'Fuel very low', 'Fuel critical'];
+
+/**
+ * Screen-reader alert for warnings the HUD just crossed into (03 §7: warnings `aria-live="assertive"`),
+ * or null. The HUD itself is not a live region: fuel, depth and cash change many times a second.
+ */
+export function hudAlert(prev: Readonly<HudModel> | null, next: Readonly<HudModel>): string | null {
+  if (!prev) return null;
+  const parts: string[] = [];
+  if (next.hullLow && !prev.hullLow) parts.push(`Hull low, ${next.hullText} HP left`);
+  if (next.fuelWarn > prev.fuelWarn) parts.push(`${FUEL_ALERT[next.fuelWarn]}, ${next.fuelText} left`);
+  if (next.tooHeavy && !prev.tooHeavy) parts.push('Too heavy to climb');
+  return parts.length > 0 ? parts.join('. ') : null;
+}

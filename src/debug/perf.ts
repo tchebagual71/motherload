@@ -16,6 +16,9 @@ export function bucketOf(intervalMs: number): number {
   return Math.min(HIST_BUCKETS, Math.max(0, Math.floor(intervalMs / HIST_BUCKET_MS)));
 }
 
+/** The display rates a histogram resolves to (estimateDisplayHz); drops are counted against each of them. */
+export const DISPLAY_RATES: readonly number[] = [120, 90, 60, 30];
+
 /** Most common display rate implied by a histogram (60, 90, 120 or 30 Hz). */
 export function estimateDisplayHz(hist: ArrayLike<number>): number {
   let best = 0;
@@ -27,10 +30,9 @@ export function estimateDisplayHz(hist: ArrayLike<number>): number {
     }
   }
   const ms = (best + 0.5) * HIST_BUCKET_MS;
-  const rates = [120, 90, 60, 30];
   let hz = 60;
   let err = Infinity;
-  for (const r of rates) {
+  for (const r of DISPLAY_RATES) {
     const e = Math.abs(1000 / r - ms);
     if (e < err) {
       err = e;
@@ -43,7 +45,11 @@ export function estimateDisplayHz(hist: ArrayLike<number>): number {
 export class PerfMonitor {
   readonly hist = new Uint32Array(HIST_BUCKETS + 1);
   frames = 0;
+  /** Dropped against the display rate this monitor was given (live overlay). */
   dropped = 0;
+  /** Dropped against each of DISPLAY_RATES: a capture is judged at the rate it actually ran at (LPM: 30 Hz). */
+  private readonly droppedByRate = new Uint32Array(DISPLAY_RATES.length);
+  private readonly rateThresholds = DISPLAY_RATES.map(droppedThresholdMs);
   private last = -1;
   private threshold: number;
   private readonly work = new Float32Array(WORK_SAMPLES);
@@ -82,6 +88,7 @@ export class PerfMonitor {
       this.hist[bucketOf(dt)]++;
       this.frames++;
       if (dt > this.threshold) this.dropped++;
+      for (let i = 0; i < DISPLAY_RATES.length; i++) if (dt > this.rateThresholds[i]) this.droppedByRate[i]++;
     }
     this.last = t;
   }
@@ -111,6 +118,12 @@ export class PerfMonitor {
     return this.frames > 0 ? this.dropped / this.frames : 0;
   }
 
+  /** Dropped frames judged against `hz` (canon §3.14: interval > 1.25 × 1000/hz). */
+  droppedAt(hz: number): number {
+    const i = DISPLAY_RATES.indexOf(hz);
+    return i >= 0 ? this.droppedByRate[i] : hz === this.displayHz ? this.dropped : 0;
+  }
+
   /** Percentile (0..1) of recent main-thread work samples. */
   workPercentile(p: number): number {
     const n = Math.min(this.workN, WORK_SAMPLES);
@@ -123,6 +136,7 @@ export class PerfMonitor {
     this.hist.fill(0);
     this.frames = 0;
     this.dropped = 0;
+    this.droppedByRate.fill(0);
     this.workN = 0;
     this.skipGap();
   }

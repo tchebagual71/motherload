@@ -2,7 +2,7 @@
 // orange accents, a spinning drill that points where it digs, thruster flames, a blinking Sniffer LED,
 // and per-line tier variants (3 geometry steps + a trim band) swapped without per-frame allocation.
 import { Color, Group, type BufferGeometry, type Mesh } from 'three';
-import { LINES, POD_H, VX_MAX, type Line } from '../../shared/canon';
+import { HARD_LANDING_V, LINES, POD_H, VX_MAX, type Line } from '../../shared/canon';
 import { POD, UI } from '../palette';
 import type { PodModel, PodVisualState } from './api';
 import { ComposedGeometry, roleMesh, type PartArrays } from './kit';
@@ -155,7 +155,8 @@ class PipModel implements PodModel {
   // ---- variants -------------------------------------------------------------------------------
 
   private syncVariants(tiers: Record<Line, number>, fastFall: boolean): void {
-    let bodyDirty = fastFall !== this.tinted;
+    const tintDirty = fastFall !== this.tinted;
+    let bodyDirty = false;
     for (let i = 0; i < LINES.length; i++) {
       const line = LINES[i];
       const tier = clampTier(tiers[line]);
@@ -171,7 +172,10 @@ class PipModel implements PodModel {
       bodyDirty = true;
     }
     this.tinted = fastFall;
+    // A tint flip repaints colours only: recomposing would bump the position version and make the
+    // Toon outline hulls re-weld their normals (2–11 ms) on every drop past or below the threshold.
     if (bodyDirty) this.compose();
+    else if (tintDirty) this.body.retint(this.tinted ? this.amber : null, FAST_FALL_TINT);
   }
 
   /** Rebuild the body meshes from the shell + current line variants (copies only; no allocation). */
@@ -266,6 +270,19 @@ class PipModel implements PodModel {
     const w = 0.7 + 0.3 * th;
     this.flameMesh.scale.set(w, (0.25 + 0.75 * th) * flicker, w);
   }
+}
+
+/** Fast-fall tint hysteresis (tiles/s): on above the Hard Landing speed (canon §3.6), off below 5.4. */
+export const FAST_FALL_ON_V = HARD_LANDING_V;
+export const FAST_FALL_OFF_V = 5.4;
+
+/**
+ * Next fast-fall tint state for a vertical speed: amber at |v_y| > 5.88 (canon §3.6), cleared only
+ * below 5.4 so braking near the threshold does not flicker the tint every step.
+ */
+export function nextFastFall(on: boolean, vy: number): boolean {
+  const v = Math.abs(vy);
+  return on ? v >= FAST_FALL_OFF_V : v > FAST_FALL_ON_V;
 }
 
 /** Create Pip. All tier variants are pre-built; `update()` only copies or swaps them on tier changes. */

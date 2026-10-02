@@ -1,6 +1,7 @@
 // Toast queue rules (03 §6.2): at most two visible, 2.5 s each, ≤ 40 characters; a repeated text refreshes
-// the live toast instead of stacking. Pure: callers pass `now` (performance.now()).
-import type { Toast } from './types';
+// the live toast instead of stacking. A toast raised while the title, the upright card or Safe Mode covers the
+// toast layer is held, and its 2.5 s start when it can be seen (boot notices). Pure: callers pass `now`.
+import type { Overlay, Toast } from './types';
 
 export const TOAST_MS = 2_500;
 export const MAX_TOASTS = 2;
@@ -21,4 +22,19 @@ export function pushToast(list: readonly Toast[], id: number, text: string, tone
 /** The same list when nothing expired (so the signal does not fire), else the live subset. */
 export function pruneToasts(list: Toast[], now: number): Toast[] {
   return list.some((t) => t.until <= now) ? list.filter((t) => t.until > now) : list;
+}
+
+/** Overlays that cover the toast layer (ui/index.tsx mounts <Toasts> only outside them). */
+const COVERING: ReadonlySet<Overlay> = new Set<Overlay>(['title', 'upright', 'safemode']);
+
+export function toastsCovered(overlay: Overlay): boolean {
+  return COVERING.has(overlay);
+}
+
+/** Queue `item` behind a covering overlay: a repeated text moves to the end, and only the newest MAX_TOASTS stay. */
+export function holdToast<T extends { text: string }>(held: readonly T[], item: T): T[] {
+  const text = clipToast(item.text);
+  const out = held.filter((t) => t.text !== text);
+  out.push({ ...item, text });
+  return out.length > MAX_TOASTS ? out.slice(out.length - MAX_TOASTS) : out;
 }

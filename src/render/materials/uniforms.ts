@@ -29,6 +29,15 @@ export interface HfUniforms {
   uHfResolution: { value: Vector2 };
   /** 1 = draw merged ore/relic hulls (outline scope). */
   uHfOreHulls: { value: number };
+  /**
+   * Pixel Lab ordered-dither phases (whole RT texels, 0..3), added to gl_FragCoord so a dithered
+   * gradient stays fixed to its own frame while the snapped camera moves: World for world-fixed
+   * light (Magma lamps, halos), Pod for the pod's bubble, drill cone and thrust lamp (04 §5.7).
+   */
+  uHfDitherWorld: { value: Vector2 };
+  uHfDitherPod: { value: Vector2 };
+  /** Leading uHfLamps entries that travel with the pod (the thrust flame), dithered in the pod frame. */
+  uHfPodLampCount: { value: number };
 }
 
 /** Ambient LUT: one texel per mine row; rgb = band ambient tint (normalised), a = ambient A (03 §8.8). */
@@ -73,6 +82,9 @@ export function createUniforms(): HfUniforms {
     uHfOutlinePx: { value: 3 },
     uHfResolution: { value: new Vector2(1, 1) },
     uHfOreHulls: { value: 1 },
+    uHfDitherWorld: { value: new Vector2(0, 0) },
+    uHfDitherPod: { value: new Vector2(0, 0) },
+    uHfPodLampCount: { value: 0 },
   };
 }
 

@@ -220,6 +220,8 @@ export function createSkyMaterial(look: Look): ShaderMaterial {
       uCosP: { value: 1 },
       /** x offset from uBase.x, world height, radius (world units). */
       uSun: { value: new Vector3(2.4, 2.6, 0.75) },
+      /** Pixel Lab: Bayer phase (whole texels) that pins the dither to the backdrop as the camera moves. */
+      uDither: { value: new Vector2() },
     },
 vertexShader: /* glsl */ `
 out vec2 vNdc;
@@ -250,6 +252,7 @@ in vec2 vNdc;
 layout(location = 0) out vec4 outColor;
 #ifdef PIXEL_LAB
 layout(location = 1) out vec4 outNormal;
+uniform vec2 uDither;
 float bayer(vec2 p) {
   const float m[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
   ivec2 q = ivec2(mod(floor(p), 4.0));
@@ -258,7 +261,7 @@ float bayer(vec2 p) {
 #endif
 float shape(float x) {
 #ifdef PIXEL_LAB
-  return clamp(floor(x * 6.0 + bayer(gl_FragCoord.xy)) / 6.0, 0.0, 1.0);
+  return clamp(floor(x * 6.0 + bayer(gl_FragCoord.xy + uDither)) / 6.0, 0.0, 1.0);
 #else
   return x;
 #endif

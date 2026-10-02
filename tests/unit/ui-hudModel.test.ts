@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { PodState } from '../../src/pod/types';
-import { fuelWarnLevel, hudModel, massTone } from '../../src/ui/hudModel';
+import { fuelWarnLevel, hudAlert, hudModel, massTone } from '../../src/ui/hudModel';
 import type { PodStats, Wallet } from '../../src/world/api';
 
 const stats = (over: Partial<PodStats> = {}): PodStats => ({
@@ -71,5 +71,25 @@ describe('hudModel', () => {
     expect(m.depth).toBe('313ft');
     expect(m.cash).toBe('$12.3k');
     expect(m.inDebt).toBe(true);
+  });
+});
+
+describe('hudAlert (UI-10: only newly crossed warnings are announced)', () => {
+  const at = (p: Partial<PodState>, s: Partial<PodStats> = {}) => hudModel(pod(p), stats(s), wallet());
+
+  it('stays silent for ordinary ticks and on the first frame', () => {
+    expect(hudAlert(null, at({ fuel: 0.4 }))).toBeNull();
+    expect(hudAlert(at({ fuel: 6 }), at({ fuel: 5.9, row: 12 }))).toBeNull();
+    expect(hudAlert(at({ fuel: 1.9 }), at({ fuel: 1.8 }))).toBeNull(); // still the same warning level
+  });
+
+  it('announces each fuel level, the hull warning and TOO HEAVY once, when crossed', () => {
+    expect(hudAlert(at({ fuel: 2.1 }), at({ fuel: 1.9 }))).toBe('Fuel low, 1.9 L left');
+    expect(hudAlert(at({ fuel: 1.1 }), at({ fuel: 0.9 }))).toBe('Fuel very low, 0.9 L left');
+    expect(hudAlert(at({ fuel: 0.6 }), at({ fuel: 0.4 }))).toBe('Fuel critical, 0.4 L left');
+    expect(hudAlert(at({ fuel: 0.4 }), at({ fuel: 6 }))).toBeNull(); // refuelled: nothing to say
+    expect(hudAlert(at({ hull: 2.6 }), at({ hull: 2.4 }))).toBe('Hull low, 3 HP left');
+    expect(hudAlert(at({}, { cargoMass: 100 }), at({}, { cargoMass: 101 }))).toBe('Too heavy to climb');
+    expect(hudAlert(at({ hull: 3, fuel: 2.1 }), at({ hull: 2, fuel: 1.9 }))).toBe('Hull low, 2 HP left. Fuel low, 1.9 L left');
   });
 });

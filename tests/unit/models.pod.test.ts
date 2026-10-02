@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { LINES, POD_D, POD_H, POD_W, type Line } from '../../src/shared/canon';
 import type { PodVisualState } from '../../src/render/models/api';
 import { MAT_ROLES, countTriangles, listMeshes } from '../../src/render/models/kit';
-import { createPodModel } from '../../src/render/models/pod';
+import { FAST_FALL_OFF_V, createPodModel, nextFastFall } from '../../src/render/models/pod';
+import { MaterialKit, addOutlineHulls, syncHull } from '../../src/render/materials';
 import { tierStep } from '../../src/render/models/pod-parts';
 
 function tiers(t: number, overrides: Partial<Record<Line, number>> = {}): Record<Line, number> {
@@ -141,6 +142,43 @@ describe('Pip pod model', () => {
     expect(after[2]).toBeLessThan(before[2]); // amber pulls blue down
     pod.update(state({ fastFall: false, timeMs: 32 }));
     expect([color.getX(0), color.getY(0), color.getZ(0)]).toEqual(before);
+  });
+
+  it('repaints only colours when the fast-fall tint flips, so Toon hulls never re-weld', () => {
+    const pod = createPodModel();
+    const hulls = addOutlineHulls(pod.root, 'pod', new MaterialKit());
+    const body = byName(pod.root, 'pod-body').geometry;
+    const pos = body.getAttribute('position') as BufferAttribute;
+    const col = body.getAttribute('color') as BufferAttribute;
+    pod.update(state());
+    for (const h of hulls) syncHull(h);
+    const hullNormals = hulls.map((h) => (h.geometry.getAttribute('normal') as BufferAttribute).version);
+    const posVersion = pos.version;
+    const colVersion = col.version;
+    for (let i = 1; i <= 6; i++) {
+      pod.update(state({ fastFall: i % 2 === 1, grounded: false, timeMs: i * 16 }));
+      for (const h of hulls) syncHull(h);
+    }
+    expect(pos.version).toBe(posVersion);
+    expect(col.version).toBeGreaterThan(colVersion);
+    expect(hulls.map((h) => (h.geometry.getAttribute('normal') as BufferAttribute).version)).toEqual(hullNormals);
+    // A tier change still rebuilds the shape (and keeps the tint).
+    pod.update(state({ fastFall: true, tiers: tiers(4), timeMs: 200 }));
+    expect(pos.version).toBeGreaterThan(posVersion);
+    pod.update(state({ fastFall: true, tiers: tiers(4), timeMs: 216 }));
+    const tinted = [col.getX(0), col.getY(0), col.getZ(0)];
+    pod.update(state({ fastFall: false, tiers: tiers(4), timeMs: 232 }));
+    expect([col.getX(0), col.getY(0), col.getZ(0)]).not.toEqual(tinted);
+  });
+
+  it('switches the fast-fall tint with hysteresis (on above 5.88, off below 5.4)', () => {
+    expect(nextFastFall(false, -5.88)).toBe(false);
+    expect(nextFastFall(false, -5.9)).toBe(true);
+    expect(nextFastFall(false, 6)).toBe(true);
+    expect(nextFastFall(true, -5.6)).toBe(true);
+    expect(nextFastFall(true, -FAST_FALL_OFF_V)).toBe(true);
+    expect(nextFastFall(true, -5.3)).toBe(false);
+    expect(nextFastFall(true, 0)).toBe(false);
   });
 
   it('points and spins the drill where it digs, mirrored by facing', () => {

@@ -8,6 +8,10 @@
 //
 // Compression is recorded on the store record (deflated = deflate-raw of the whole file) rather than by
 // rewriting the HFSV header, so the store never depends on the codec's header layout.
+//
+// The connection is kept open for the critical path. When it dies (another tab's upgrade, or the browser closing
+// it: WebKit's storage process recycled while the PWA was backgrounded, site data cleared), the store reconnects;
+// meanwhile writes report 'closed' (the scheduler retries soon) and the compressed path waits for the reconnect.
 import { canCompress, deflateRaw, inflateRaw } from './compress';
 import { crc32 } from './crc32';
 
@@ -125,8 +129,15 @@ function commit(tx: IDBTransaction): void {
   }
 }
 
-function errorKind(e: DOMException | null): WriteError {
-  return e?.name === 'QuotaExceededError' ? 'quota' : 'failed';
+/** What a thrown or abort error means for a write, and whether the connection itself is gone. */
+function classify(e: unknown): { error: WriteError; lost: boolean } {
+  const name = e instanceof DOMException ? e.name : null;
+  // A closing connection, or a forced close aborting our transaction (we never abort our own): transient, the
+  // retry lands on the reconnected one.
+  if (name === 'InvalidStateError' || name === 'AbortError') return { error: 'closed', lost: true };
+  // WebKit's "Connection to Indexed Database server lost": reconnect, and tell the player in case it persists.
+  if (name === 'UnknownError') return { error: 'failed', lost: true };
+  return { error: name === 'QuotaExceededError' ? 'quota' : 'failed', lost: false };
 }
 
 export class SaveStore {
@@ -143,6 +154,10 @@ export class SaveStore {
   private goodSeq = -1;
   private summary: SaveSummary | null = null;
   private reopening: Promise<void> | null = null;
+  /** The last reconnect failed: writes report 'failed' (the player is told) while the next attempt runs. */
+  private reopenFailed = false;
+  /** close() was called: never reconnect. */
+  private closedByOwner = false;
 
   private constructor(opts: SaveStoreOptions, idb: IDBFactory) {
     this.slot = opts.slot ?? 1;
@@ -228,7 +243,10 @@ export class SaveStore {
     return this.issue({ seq, savedAt: this.now(), deflated: false, crc: crc32(bytes), len: bytes.length, data: bytes });
   }
 
-  /** Routine / high-priority path: deflate-raw first; dropped as stale if a newer save was issued meanwhile. */
+  /**
+   * Routine / high-priority path: deflate-raw first; dropped as stale if a newer save was issued meanwhile.
+   * Unlike the critical path it may wait, so it waits for a reconnect in progress.
+   */
   async writeRoutine(bytes: Uint8Array, summary?: SaveSummary): Promise<WriteOutcome> {
     const seq = this.nextSeq++;
     const savedAt = this.now();
@@ -243,28 +261,41 @@ export class SaveStore {
         data = bytes;
       }
     }
+    if (!this.db) {
+      this.startReopen();
+      await this.ready();
+    }
     if (seq < this.highestIssued) return { ok: false, error: 'stale' };
     if (summary) this.summary = summary;
     return this.issue({ seq, savedAt, deflated, crc, len: bytes.length, data });
   }
 
-  /** Copy a copy that just booted cleanly into the last-known-good record. */
-  async promoteGood(copy: CopyId): Promise<boolean> {
+  /**
+   * Copy the save that just booted cleanly (`copy` as it was when loaded, `seq`) into the last-known-good record.
+   * Refused when that copy has been rewritten since (two saves rotate back onto it): the newer bytes never booted.
+   */
+  async promoteGood(copy: CopyId, seq: number): Promise<boolean> {
     if (copy === 'good') return true;
     const db = await this.ready();
     if (!db) return false;
-    const tx = db.transaction(this.names.files, 'readwrite');
-    const files = tx.objectStore(this.names.files);
-    const get = files.get(this.key(copy));
-    let seq = -1;
-    // Put from inside the success callback so the transaction is still active.
-    get.onsuccess = () => {
-      const rec: unknown = get.result;
-      if (!isRecord(rec)) return;
-      seq = rec.seq;
-      files.put(rec, this.key('good'));
-    };
-    const ok = (await txDone(tx)) && seq >= 0;
+    let tx: IDBTransaction;
+    let promoted = false;
+    try {
+      tx = db.transaction(this.names.files, 'readwrite');
+      const files = tx.objectStore(this.names.files);
+      const get = files.get(this.key(copy));
+      // Put from inside the success callback so the transaction is still active.
+      get.onsuccess = () => {
+        const rec: unknown = get.result;
+        if (!isRecord(rec) || rec.seq !== seq) return;
+        promoted = true;
+        files.put(rec, this.key('good'));
+      };
+    } catch (e) {
+      if (classify(e).lost) this.lost(db);
+      return false;
+    }
+    const ok = (await txDone(tx)) && promoted;
     if (ok) this.goodSeq = seq;
     return ok;
   }
@@ -294,6 +325,7 @@ export class SaveStore {
   }
 
   close(): void {
+    this.closedByOwner = true;
     this.db?.close();
     this.db = null;
   }
@@ -319,14 +351,48 @@ export class SaveStore {
     db.onversionchange = () => {
       // Let another tab upgrade, then reconnect so the critical path keeps an open connection.
       db.close();
-      if (this.db === db) this.db = null;
-      this.reopening ??= this.connect()
-        .catch(() => undefined)
-        .finally(() => {
-          this.reopening = null;
-        });
+      this.lost(db);
     };
+    // Fired only for an abnormal close: the browser dropped the connection (backend lost, data cleared).
+    db.onclose = () => this.lost(db);
+    if (this.closedByOwner) {
+      db.close();
+      return;
+    }
     this.db = db;
+  }
+
+  /** `db` is dead: forget it (unless it was already replaced) and reconnect. */
+  private lost(db: IDBDatabase): void {
+    if (this.db !== db && this.db !== null) return;
+    try {
+      db.close();
+    } catch {
+      // Already closed.
+    }
+    this.db = null;
+    this.startReopen();
+  }
+
+  private startReopen(): void {
+    if (this.closedByOwner || this.reopening) return;
+    this.reopening = this.connect()
+      .then(() => {
+        this.reopenFailed = false;
+      })
+      .catch(() => {
+        this.reopenFailed = true;
+      })
+      .finally(() => {
+        this.reopening = null;
+      });
+  }
+
+  /** No connection: 'closed' while it reconnects (silent; retried soon), 'failed' once a reconnect has failed. */
+  private unavailable(): WriteOutcome {
+    const error: WriteError = this.reopenFailed && !this.closedByOwner ? 'failed' : 'closed';
+    this.startReopen();
+    return { ok: false, error };
   }
 
   private async ready(): Promise<IDBDatabase | null> {
@@ -362,7 +428,7 @@ export class SaveStore {
 
   private issue(rec: FileRecord): Promise<WriteOutcome> {
     const db = this.db;
-    if (!db) return Promise.resolve({ ok: false, error: 'closed' });
+    if (!db) return Promise.resolve(this.unavailable());
     const copy = this.target();
     let tx: IDBTransaction;
     try {
@@ -372,14 +438,19 @@ export class SaveStore {
       this.highestIssued = Math.max(this.highestIssued, rec.seq);
       tx.objectStore(this.names.slots).put(this.slotSnapshot(copy, rec.savedAt), this.slotKey());
     } catch (e) {
-      return Promise.resolve({ ok: false, error: e instanceof DOMException ? errorKind(e) : 'closed' });
+      // The connection may have died under us before (or without) its close event.
+      const c = e instanceof DOMException ? classify(e) : { error: 'closed' as const, lost: false };
+      if (c.lost) this.lost(db);
+      return Promise.resolve({ ok: false, error: c.error });
     }
     commit(tx);
     return new Promise((resolve) => {
       tx.oncomplete = () => resolve({ ok: true, seq: rec.seq, copy });
       const fail = (): void => {
         this.copySeq[copy] = -1;
-        resolve({ ok: false, error: errorKind(tx.error) });
+        const c = classify(tx.error);
+        if (c.lost) this.lost(db);
+        resolve({ ok: false, error: c.error });
       };
       tx.onabort = fail;
     });

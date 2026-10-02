@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { bucketOf, droppedThresholdMs, estimateDisplayHz, HIST_BUCKETS, PerfMonitor } from '../../src/debug/perf';
-import { decodePerfReport, encodePerfReport, estimateGpuMB, PERF_REPORT_PREFIX, PerfRecorder, type PerfReport } from '../../src/debug/perfReport';
+import {
+  decodePerfReport,
+  encodePerfReport,
+  estimateGpuMB,
+  PERF_REPORT_PREFIX,
+  PerfRecorder,
+  segmentFromMonitor,
+  type PerfReport,
+} from '../../src/debug/perfReport';
 import { emptyState, median, settleKilledRun, summarize } from '../../src/debug/jetsam';
 import { fromBase64Url, toBase64Url } from '../../src/debug/base64url';
 
@@ -50,6 +58,31 @@ describe('PerfMonitor (canon §3.14 dropped frames)', () => {
     const m120 = new PerfMonitor();
     feed(m120, new Array(50).fill(8.3));
     expect(estimateDisplayHz(m120.hist)).toBe(120);
+  });
+});
+
+describe('Perf Report segments judge drops at the rate the capture ran at (canon §3.14)', () => {
+  it('a clean 30 Hz capture (Low Power Mode, thermal) drops nothing', () => {
+    const m = new PerfMonitor(60); // boot builds the monitor for 60 Hz
+    feed(m, new Array(1_800).fill(1000 / 30));
+    const seg = segmentFromMonitor(m, 'toon', 'low');
+    expect(seg).toMatchObject({ displayHz: 30, frames: 1_800, dropped: 0, droppedRate: 0 });
+  });
+
+  it('a 30 Hz capture counts intervals over 41.7 ms; 60 Hz keeps its 20.8-ms threshold', () => {
+    const m30 = new PerfMonitor(60);
+    feed(m30, [...new Array(97).fill(1000 / 30), 45, 50, 40]);
+    expect(segmentFromMonitor(m30, 'pixel', 'low')).toMatchObject({ displayHz: 30, dropped: 2, droppedRate: 0.02 });
+    const m60 = new PerfMonitor(60);
+    feed(m60, [...new Array(98).fill(1000 / 60), 21, 33.4]);
+    expect(segmentFromMonitor(m60, 'toon', 'mid')).toMatchObject({ displayHz: 60, dropped: 2, droppedRate: 0.02 });
+  });
+
+  it('reset clears the per-rate counts with the segment', () => {
+    const m = new PerfMonitor(60);
+    feed(m, new Array(10).fill(50));
+    m.reset();
+    expect(m.droppedAt(30) + m.droppedAt(60)).toBe(0);
   });
 });
 

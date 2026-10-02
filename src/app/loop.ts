@@ -10,11 +10,14 @@ import type { ConsumableId } from '../shared/types';
 import type { SaveScheduler } from '../save/scheduler';
 import type { WorldApi } from '../world/api';
 import type { GameApp } from './controller';
-import type { InputController } from './types';
+import type { InputController, Overlay } from './types';
 
 export const STEP_MS = 1000 / STEP_HZ;
 /** Under an open sheet the scene barely changes: draw at most this often (04 §3.2 render on demand). */
 export const SHEET_RENDER_MS = 66;
+/** Cards over a held, still scene: drawn at the sheet rate too (battery while left on "Tap to resume"). */
+const STILL_OVERLAYS: ReadonlySet<Overlay> = new Set<Overlay>(['interrupt', 'upright']);
+const NO_EVENTS: RenderFrame['events'] = [];
 const PERF_PUBLISH_MS = 500;
 const ALPHA_MAX = 0.9999;
 
@@ -76,6 +79,8 @@ export class GameLoop {
   private firstFrameDone = false;
   private lastPerfAt = Number.NEGATIVE_INFINITY;
   private lastRenderAt = Number.NEGATIVE_INFINITY;
+  /** Test hook: the animation clock while frozen (null = running on rAF). */
+  private frozenAt: number | null = null;
   private readonly frameData: RenderFrame;
   private readonly armingData = { radius: 0, progress: 0 };
   private readonly podAudio: PodAudioState = { thrust: 0, digging: false, drillTier: 1 };
@@ -101,6 +106,7 @@ export class GameLoop {
 
   start(): void {
     if (this.raf) return;
+    this.frozenAt = null;
     this.resetClock();
     this.raf = requestAnimationFrame(this.frame);
   }
@@ -119,6 +125,29 @@ export class GameLoop {
   /** Run `n` sim steps synchronously (test hook; respects pause reasons). */
   stepNow(n: number): void {
     for (let i = 0; i < n; i++) this.stepOnce(this.deps.app.world);
+  }
+
+  /**
+   * Test hook (04 §11.4 frozen time): stop the loop and draw the scene at animation time 0. Until start(), frames
+   * advance only through stepFrozen, so screenshots do not depend on the machine's frame timing.
+   */
+  freeze(): void {
+    this.stop();
+    this.frozenAt = 0;
+    this.drawFrozen(NO_EVENTS);
+  }
+
+  /** Test hook: while frozen, `n` fixed 60-Hz frames (one sim step and one draw each) on the frozen clock. */
+  stepFrozen(n: number): void {
+    if (this.frozenAt === null) return;
+    const { app } = this.deps;
+    for (let i = 0; i < n; i++) {
+      this.stepOnce(app.world);
+      const events = app.world.drainEvents();
+      app.handleEvents(events);
+      this.frozenAt += STEP_MS;
+      this.drawFrozen(events);
+    }
   }
 
   private readonly frame = (t: number): void => {
@@ -153,8 +182,11 @@ export class GameLoop {
     app.handleEvents(events);
     if (audio) {
       const pod = world.pod;
-      this.podAudio.thrust = pod.thrust;
-      this.podAudio.digging = pod.digging;
+      // A held pod keeps its thrust and dig state (and saves it), but is silent: the thrust bed fades out and the
+      // dig ticks stop under every pause reason and the resume countdown.
+      const live = app.podRunning();
+      this.podAudio.thrust = live ? pod.thrust : 0;
+      this.podAudio.digging = live && pod.digging;
       this.podAudio.drillTier = pod.tiers.drill;
       audio.handleEvents(events, pod.tiers.drill);
       audio.update(this.podAudio, t);
@@ -172,6 +204,13 @@ export class GameLoop {
     }
   }
 
+  private drawFrozen(events: RenderFrame['events']): void {
+    if (this.frozenAt === null || this.deps.renderer.contextLost) return;
+    const f = this.buildFrame(this.deps.app.world, this.frozenAt, events);
+    f.alpha = 0;
+    this.deps.renderer.render(f);
+  }
+
   private stepOnce(world: WorldApi): void {
     const running = this.deps.app.podRunning();
     const intent = running ? (this.intentOverride ?? this.deps.input.sampleIntent()) : NO_INTENT;
@@ -180,9 +219,10 @@ export class GameLoop {
 
   private shouldRender(t: number, hadEvents: boolean): boolean {
     if (this.deps.renderer.contextLost) return false;
+    if (hadEvents || this.deps.app.podRunning()) return true;
     const st = this.deps.app.state;
-    if (st.sheet.peek() === null || hadEvents || this.deps.app.podRunning()) return true;
-    return t - this.lastRenderAt >= SHEET_RENDER_MS;
+    const still = st.sheet.peek() !== null || STILL_OVERLAYS.has(st.overlay.peek());
+    return !still || t - this.lastRenderAt >= SHEET_RENDER_MS;
   }
 
   private buildFrame(world: WorldApi, t: number, events: RenderFrame['events']): RenderFrame {

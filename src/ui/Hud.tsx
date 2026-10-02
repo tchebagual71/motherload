@@ -1,5 +1,7 @@
 // HUD row (canon §3.12; 03 §6.1): one 44-pt row under the top inset — fuel, hull, cargo, info, menu.
-// Re-renders with app.state.hudTick (≤ 10 Hz) and reads the world directly.
+// Re-renders with app.state.hudTick (≤ 10 Hz) and reads the world directly. Its buttons carry [data-tap]
+// so input/ activates them from the pointer sequence: a second finger gets no click while the stick is
+// held. Not a live region (it changes every tick); only newly crossed warnings are announced.
 import type { Signal } from '@preact/signals';
 import type { CSSProperties, JSX } from 'preact';
 import { useLayoutEffect, useRef } from 'preact/hooks';
@@ -7,7 +9,7 @@ import type { AppController } from '../app/types';
 import { inScope } from '../config/scope';
 import { closeCurrentSheet } from './actions';
 import { formatCash } from './format';
-import { hudModel, type HudModel } from './hudModel';
+import { hudAlert, hudModel, type HudModel } from './hudModel';
 import { Icon } from './icons';
 import { hudColumns, hudDigitPt } from './layout';
 import type { Viewport } from './viewport';
@@ -41,16 +43,33 @@ export function Hud({ app, vp }: { app: AppController; vp: Signal<Viewport> }): 
   };
 
   return (
-    <div class="hf-hud" style={style} role="status" aria-label="Pod status">
-      <FuelPill m={m} w={fuelW} />
-      <HullPill m={m} w={hullW} hull={world.pod.hull} />
-      <CargoPill m={m} w={cargoW} slots={stats.baySlots} onClick={onCargo} />
-      <InfoPill m={m} w={infoW} onClick={onInfo} />
-      <button type="button" class="hf-pill hf-pill-menu" style={width(menuW)} aria-label="Menu" onClick={onMenu}>
-        <span class="hf-pill-face">
-          <Icon name="menu" size={22} />
-        </span>
-      </button>
+    <>
+      <div class="hf-hud" style={style} role="group" aria-label="Pod status">
+        <FuelPill m={m} w={fuelW} />
+        <HullPill m={m} w={hullW} hull={world.pod.hull} />
+        <CargoPill m={m} w={cargoW} slots={stats.baySlots} onClick={onCargo} />
+        <InfoPill m={m} w={infoW} onClick={onInfo} />
+        <button type="button" class="hf-pill hf-pill-menu" style={width(menuW)} aria-label="Menu" data-tap="" onClick={onMenu}>
+          <span class="hf-pill-face">
+            <Icon name="menu" size={22} />
+          </span>
+        </button>
+      </div>
+      <HudAlerts m={m} />
+    </>
+  );
+}
+
+/** Assertive region for warnings just crossed (hudAlert); each new alert is a new node so it is read. */
+function HudAlerts({ m }: { m: HudModel }): JSX.Element {
+  const last = useRef<HudModel | null>(null);
+  const said = useRef({ id: 0, text: '' });
+  const alert = hudAlert(last.current, m);
+  last.current = m;
+  if (alert) said.current = { id: said.current.id + 1, text: alert };
+  return (
+    <div class="hf-sr" aria-live="assertive">
+      {said.current.text && <span key={said.current.id}>{said.current.text}</span>}
     </div>
   );
 }
@@ -99,7 +118,14 @@ function HullPill({ m, w, hull }: { m: HudModel; w: number; hull: number }): JSX
 function CargoPill({ m, w, slots, onClick }: { m: HudModel; w: number; slots: number; onClick: () => void }): JSX.Element {
   const label = `Cargo ${m.cargoText} of ${slots}${m.tooHeavy ? ', too heavy' : ''}`;
   return (
-    <button type="button" class={`hf-pill hf-pill-cargo${m.tooHeavy ? ' hf-heavy' : ''}`} style={width(w)} aria-label={label} onClick={onClick}>
+    <button
+      type="button"
+      class={`hf-pill hf-pill-cargo${m.tooHeavy ? ' hf-heavy' : ''}`}
+      style={width(w)}
+      aria-label={label}
+      data-tap=""
+      onClick={onClick}
+    >
       <span class="hf-pill-face">
         <span class="hf-pill-top">
           <Icon name={m.tooHeavy ? 'warn' : 'cargo'} size={13} class="hf-pill-icon" />
@@ -123,7 +149,14 @@ function InfoPill({ m, w, onClick }: { m: HudModel; w: number; onClick: () => vo
   );
   const cash = <span class={m.inDebt ? 'hf-cash hf-debt' : 'hf-cash'}>{m.cash}</span>;
   return (
-    <button type="button" class="hf-pill hf-pill-info" style={width(w)} aria-label={`Cash ${m.cash}, depth ${m.depth}`} onClick={onClick}>
+    <button
+      type="button"
+      class="hf-pill hf-pill-info"
+      style={width(w)}
+      aria-label={`Cash ${m.cash}, depth ${m.depth}`}
+      data-tap=""
+      onClick={onClick}
+    >
       <span class="hf-pill-face">
         <span class="hf-info-main hf-digits">{m.underground ? depth : cash}</span>
         <span class="hf-info-sub hf-digits">{m.underground ? cash : depth}</span>

@@ -1,4 +1,5 @@
 // Quality tiers (canon §3.14, 04 §5.8). Render-side knobs only; the app picks the tier.
+import type { Look } from '../shared/types';
 import type { QualityTier } from './api';
 
 /** Which gameplay objects get toon outline hulls (04 §5.5). */
@@ -43,4 +44,14 @@ export function outlineScope(tier: QualityTier, styleTest: boolean): OutlineScop
 /** Whether ore/relic hulls merged into terrain chunks are drawn for a scope. */
 export function oreHullsEnabled(scope: OutlineScope): boolean {
   return scope !== 'pod';
+}
+
+/**
+ * Whether terrain chunks carry the merged ore/relic hull geometry (04 §5.5), ≈ 27% of a chunk's
+ * triangles. Production meshes it only when the look draws it: Pixel Lab and low-tier Toon would
+ * upload and vertex-shade hull triangles only to clip every one. The M0 style test keeps it in both
+ * looks so an A/B flip needs no remesh (canon §5.1: flip ≤ 1 frame).
+ */
+export function meshOreHulls(look: Look, tier: QualityTier, styleTest: boolean): boolean {
+  return styleTest || (look === 'toon' && oreHullsEnabled(outlineScope(tier, false)));
 }

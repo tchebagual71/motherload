@@ -5,6 +5,7 @@ import type { GameLoop } from '../app/loop';
 import type { Overlay, SheetId } from '../app/types';
 import type { PodIntent } from '../pod/types';
 import type { RenderInfo, Renderer } from '../render/api';
+import { crc32, deserialize, serialize } from '../save/codec';
 import type { Look } from '../shared/types';
 import type { WorldApi } from '../world/api';
 
@@ -46,6 +47,21 @@ export interface HfTestApi {
   audioState(): string;
   /** Critical save now; resolves true when the write committed. */
   saveNow(): Promise<boolean>;
+  /**
+   * CRC-32 of the world's save bytes with the clock-like fields neutralised (step counter, interpolation origin),
+   * so it is equal across a save → reload, a context loss, or any stretch the pod is held (04 §11.3 "hash").
+   */
+  stateHash(): number;
+  /** WEBGL_lose_context on the game canvas (04 §11.3 "lose context"); false when the extension is missing. */
+  loseContext(): boolean;
+  restoreContext(): boolean;
+  /**
+   * 04 §11.4 frozen time: stop the loop and draw the scene at animation time 0; frames(n) then advances n fixed
+   * 60-Hz frames (sim step + draw), so the camera moves the same way every run. unfreeze() resumes the loop.
+   */
+  freeze(): void;
+  frames(n: number): void;
+  unfreeze(): void;
 }
 
 declare global {
@@ -63,8 +79,28 @@ export interface TestHookDeps {
   saveNow(): Promise<boolean>;
 }
 
+/** Hash of the world state a save carries, independent of how many (held) steps ran since. */
+export function worldStateHash(world: WorldApi): number {
+  const s = deserialize(world.serialize());
+  const pod = { ...s.pod, prevX: s.pod.x, prevY: s.pod.y };
+  return crc32(serialize({ ...s, stepNo: 0, pod }));
+}
+
+/** The canvas context's WEBGL_lose_context, kept once found (it is unavailable while the context is lost). */
+function contextLoser(): () => WEBGL_lose_context | null {
+  let ext: WEBGL_lose_context | null = null;
+  return () => {
+    if (!ext) {
+      const canvas = document.getElementById('game') as HTMLCanvasElement | null;
+      ext = canvas?.getContext('webgl2')?.getExtension('WEBGL_lose_context') ?? null;
+    }
+    return ext;
+  };
+}
+
 export function installTestHook(d: TestHookDeps): HfTestApi {
   const { app, loop, renderer } = d;
+  const loser = contextLoser();
   const api: HfTestApi = {
     ready: true,
     app,
@@ -93,6 +129,20 @@ export function installTestHook(d: TestHookDeps): HfTestApi {
     perfReport: d.perfReport,
     audioState: d.audioState,
     saveNow: d.saveNow,
+    stateHash: () => worldStateHash(app.world),
+    loseContext: () => {
+      const ext = loser();
+      ext?.loseContext();
+      return ext !== null;
+    },
+    restoreContext: () => {
+      const ext = loser();
+      ext?.restoreContext();
+      return ext !== null;
+    },
+    freeze: () => loop.freeze(),
+    frames: (n) => loop.stepFrozen(n),
+    unfreeze: () => loop.start(),
   };
   window.__hf = api;
   return api;

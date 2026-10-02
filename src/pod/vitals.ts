@@ -29,7 +29,7 @@ function fuelWarnLevel(frac: number): number {
  */
 export function checkVitals(pod: PodState, out: GameEvent[]): void {
   if (pod.hull <= 0 || pod.fuel <= 0) {
-    destroy(pod, pod.hull <= 0 ? 'hull' : 'fuel', out);
+    destroy(pod, destructionCause(pod), out);
     return;
   }
   const level = fuelWarnLevel(pod.fuel / maxFuelOf(pod.tiers.tank));
@@ -39,6 +39,11 @@ export function checkVitals(pod: PodState, out: GameEvent[]): void {
   const low = pod.hull < HULL_WARNING * maxHullOf(pod.tiers.hull);
   if (low && !pod.hullWarned) out.push({ t: 'hull-warning' });
   pod.hullWarned = low;
+}
+
+/** What destroyed (or would destroy) the pod: a breached hull wins over an empty tank. */
+export function destructionCause(pod: Readonly<PodState>): 'hull' | 'fuel' {
+  return pod.hull <= 0 ? 'hull' : 'fuel';
 }
 
 function destroy(pod: PodState, cause: 'hull' | 'fuel', out: GameEvent[]): void {

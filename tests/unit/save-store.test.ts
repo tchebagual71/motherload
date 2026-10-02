@@ -1,4 +1,4 @@
-import { IDBFactory } from 'fake-indexeddb';
+import { forceCloseDatabase, IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it } from 'vitest';
 import { crc32 } from '../../src/save/crc32';
 import { deflateRaw, inflateRaw } from '../../src/save/compress';
@@ -161,13 +161,30 @@ describe('SaveStore (canon §3.15; 04 §4.10)', () => {
     const idb = new IDBFactory();
     const s = await open(idb);
     await s.writeCritical(bytes(64, 1));
-    expect(await s.promoteGood('a')).toBe(true);
+    expect(await s.promoteGood('a', 1)).toBe(true);
     await s.writeCritical(bytes(64, 2));
     s.close();
     for (const k of ['slot1/a', 'slot1/b']) await tamper(idb, 'test', k, (r) => (r.len += 1));
     const r = await (await open(idb)).load((x) => x);
     expect(r.kind === 'loaded' && r.copy).toBe('good');
     expect(r.kind === 'loaded' && r.value).toEqual(bytes(64, 1));
+  });
+
+  it('promotes only the bytes that booted: a copy rewritten since is refused (04 §4.13 last-known-good)', async () => {
+    const idb = new IDBFactory();
+    const s = await open(idb);
+    await s.writeCritical(new Uint8Array([1, 1, 1, 1])); // a, seq 1
+    await s.writeCritical(new Uint8Array([2, 2, 2, 2])); // b, seq 2: the copy this boot loads
+    const r = await s.load((b) => b);
+    expect(r.kind === 'loaded' && [r.copy, r.seq]).toEqual(['b', 2]);
+    // Within BOOT_STABLE_MS: hide + pagehide (or death + respawn) rotate a → b, over the booted copy.
+    await s.writeCritical(new Uint8Array([3, 3, 3, 3]));
+    await s.writeCritical(new Uint8Array([4, 4, 4, 4]));
+    expect(await s.promoteGood('b', 2)).toBe(false);
+    expect(await s.readVerified('good')).toBeNull();
+    // Unchanged since the load: promoted.
+    expect(await s.promoteGood('b', 4)).toBe(true);
+    expect(await s.readVerified('good')).toEqual(new Uint8Array([4, 4, 4, 4]));
   });
 
   it('isolates channels in one database', async () => {
@@ -195,5 +212,85 @@ describe('SaveStore (canon §3.15; 04 §4.10)', () => {
     const s = await open(new IDBFactory());
     expect(await s.putKv('settings', { sound: false })).toBe(true);
     expect(await s.getKv('settings')).toEqual({ sound: false });
+  });
+});
+
+/** The browser closing a connection (data cleared, backend lost): fires its 'close' event. */
+function forceClose(db: IDBDatabase): void {
+  forceCloseDatabase(db as unknown as Parameters<typeof forceCloseDatabase>[0]);
+}
+
+/** An IDBFactory that remembers the connections it opened (to force-close them as the browser would). */
+function tracked(idb: IDBFactory): { idb: IDBFactory; conns: IDBDatabase[] } {
+  const conns: IDBDatabase[] = [];
+  const open = (name: string, version?: number): IDBOpenDBRequest => {
+    const req = version === undefined ? idb.open(name) : idb.open(name, version);
+    req.addEventListener('success', () => conns.push(req.result));
+    return req;
+  };
+  const factory: IDBFactory = {
+    open,
+    deleteDatabase: (n: string) => idb.deleteDatabase(n),
+    cmp: (a: unknown, b: unknown) => idb.cmp(a, b),
+    databases: () => idb.databases(),
+  };
+  return { idb: factory, conns };
+}
+
+describe('SaveStore: a connection the browser closes (WebKit storage process recycled)', () => {
+  it('reconnects on the close event; the next save lands', async () => {
+    const t = tracked(new IDBFactory());
+    const s = await SaveStore.open({ channel: 'test', idb: t.idb });
+    await s.writeCritical(bytes(16, 1));
+    forceClose(t.conns[t.conns.length - 1]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(s.isOpen).toBe(true);
+    expect(t.conns.length).toBeGreaterThanOrEqual(2);
+    expect(await s.writeCritical(bytes(16, 2))).toMatchObject({ ok: true, seq: 2 });
+    const r = await s.load((x) => x);
+    expect(r.kind === 'loaded' && r.value).toEqual(bytes(16, 2));
+  });
+
+  it('a write on the dying connection reports closed (silent, retried) and starts the reconnect', async () => {
+    const t = tracked(new IDBFactory());
+    const s = await SaveStore.open({ channel: 'test', idb: t.idb });
+    forceClose(t.conns[t.conns.length - 1]);
+    // Before the close event: db.transaction() throws InvalidStateError.
+    expect(await s.writeCritical(bytes(16, 1))).toEqual({ ok: false, error: 'closed' });
+    // The compressed path waits for the reconnect instead of failing.
+    expect(await s.writeRoutine(bytes(16, 2))).toMatchObject({ ok: true });
+    expect(s.isOpen).toBe(true);
+  });
+
+  it('a failed reconnect is reported as failed; the retry (a compressed write) reconnects and lands', async () => {
+    const t = tracked(new IDBFactory());
+    const s = await SaveStore.open({ channel: 'test', idb: t.idb });
+    let broken = true;
+    const realOpen = t.idb.open;
+    t.idb.open = (name: string, version?: number) => {
+      if (!broken) return realOpen(name, version);
+      // An open that fails (the storage backend is still gone).
+      const req = { error: new DOMException('Connection lost', 'UnknownError'), onerror: null } as unknown as IDBOpenDBRequest;
+      setTimeout(() => (req.onerror as (() => void) | null)?.(), 0);
+      return req;
+    };
+    forceClose(t.conns[t.conns.length - 1]);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(s.isOpen).toBe(false);
+    expect(await s.writeCritical(bytes(16, 1))).toEqual({ ok: false, error: 'failed' });
+    broken = false;
+    await new Promise((r) => setTimeout(r, 20));
+    expect(await s.writeRoutine(bytes(16, 2))).toMatchObject({ ok: true });
+    expect(await s.writeCritical(bytes(16, 3))).toMatchObject({ ok: true });
+  });
+
+  it('close() by the owner never reconnects', async () => {
+    const t = tracked(new IDBFactory());
+    const s = await SaveStore.open({ channel: 'test', idb: t.idb });
+    s.close();
+    expect(await s.writeCritical(bytes(4))).toEqual({ ok: false, error: 'closed' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(s.isOpen).toBe(false);
+    expect(t.conns).toHaveLength(1);
   });
 });

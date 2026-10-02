@@ -126,6 +126,28 @@ describe('ComposedGeometry', () => {
     comp.append(a);
     expect(() => comp.append(a)).toThrow();
   });
+
+  it('retints appended parts in place without touching shapes or solid-colour parts', () => {
+    const a = new GeometryBuilder().add(chamferBox(1, 1, 1, 0.1), 0xffffff).toArrays();
+    const b = new GeometryBuilder().add(cylinder(0.3, 1, 6), 0xffffff).toArrays();
+    const comp = new ComposedGeometry(a.count + b.count, 2);
+    comp.begin();
+    comp.append(a);
+    comp.appendSolidColor(b, new Color(0x0000ff));
+    comp.end();
+    const pos = comp.geometry.getAttribute('position') as BufferAttribute;
+    const col = comp.geometry.getAttribute('color') as BufferAttribute;
+    const posVersion = pos.version;
+    const colVersion = col.version;
+    comp.retint(new Color(0xff0000), 0.5);
+    expect(pos.version).toBe(posVersion);
+    expect(col.version).toBe(colVersion + 1);
+    expect(col.getX(0)).toBeCloseTo(1, 5);
+    expect(col.getY(0)).toBeCloseTo(0.5, 5);
+    expect(col.getZ(a.count)).toBeCloseTo(1, 5); // trim keeps its paint
+    comp.retint(null);
+    expect(col.getY(0)).toBeCloseTo(1, 5);
+  });
 });
 
 describe('role meshes', () => {

@@ -1,7 +1,7 @@
 // Pod movement goldens (01 §3.13) and collision behaviour.
 import { describe, expect, it } from 'vitest';
 import { climbSpeed, landingDamage, skyFade, thrustInput } from '../../src/pod';
-import { GAP_SKIM_VX, GROUND_FRICTION, MINE_W, POD_H, POD_W, SKY_ROWS, VX_MAX } from '../../src/shared/canon';
+import { AIR_DRAG, G, GAP_SKIM_VX, GROUND_FRICTION, MINE_W, POD_H, POD_W, SKY_ROWS, STEP, VX_MAX } from '../../src/shared/canon';
 import { T } from '../../src/shared/types';
 import type { PodState } from '../../src/pod/types';
 import { carve, fill, intent, makeCtx, ofType, podAt, run, shaftGrid, solidGrid, RIGHT } from './pod.helpers';
@@ -83,6 +83,27 @@ describe('pod physics: 01 §3.13 goldens', () => {
     expect(dmg).toBe(8);
     expect(pod.grounded).toBe(true);
     expect(pod.y).toBeCloseTo(-300 + HALF_H, 9);
+  });
+
+  it('a fall whose last step ends just above the floor (within contact distance) still lands and takes damage', () => {
+    const g = shaftGrid(10, 299);
+    const vy = (-8 - G * STEP) * AIR_DRAG; // velocity after this step's integration (no thrust)
+    for (const gap of [0, 1e-7, 5e-5, 9e-5]) {
+      const p = podAt(10, 299, (q) => {
+        q.vy = -8;
+        q.y = q.prevY = -300 + HALF_H + gap - vy * STEP;
+        q.grounded = false;
+      });
+      const ev = run(p, g, 1);
+      const landed = ofType(ev, 'landed');
+      expect(landed, `gap ${gap}`).toHaveLength(1);
+      expect(landed[0].v).toBeCloseTo(-vy, 6);
+      expect(ofType(ev, 'damage')).toEqual([{ t: 'damage', amount: landingDamage(-vy), cause: 'landing' }]);
+      expect(landingDamage(-vy)).toBeGreaterThan(0);
+      expect(p.grounded).toBe(false); // the hard-landing bounce
+      run(p, g, 120);
+      expect(p.grounded).toBe(true);
+    }
   });
 });
 

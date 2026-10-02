@@ -91,6 +91,9 @@ uniform vec3 uHfShadowTint;
 uniform vec3 uHfOutlineInk;
 uniform vec3 uHfMagma[3];
 uniform float uHfTime;
+uniform vec2 uHfDitherWorld;
+uniform vec2 uHfDitherPod;
+uniform int uHfPodLampCount;
 #ifdef PIXEL_LAB
 layout(location = 1) out highp vec4 hfNormalOut;
 #endif
@@ -100,9 +103,13 @@ float hfBayer(vec2 p) {
   ivec2 q = ivec2(mod(floor(p), 4.0));
   return (m[q.x + q.y * 4] + 0.5) / 16.0;
 }
-/** Quantise to n steps with ordered dithering (Pixel Lab light falloff, 03 §9.3). */
-float hfDither(float v, float n) {
-  return clamp(floor(v * n + hfBayer(gl_FragCoord.xy)) / n, 0.0, 1.0);
+/**
+ * Quantise to n steps with ordered dithering (Pixel Lab light falloff, 03 §9.3). The phase (whole
+ * texels) pins the Bayer matrix to the gradient's own frame, so it does not re-dither as the camera
+ * scrolls (uHfDitherWorld, uHfDitherPod).
+ */
+float hfDither(float v, float n, vec2 phase) {
+  return clamp(floor(v * n + hfBayer(gl_FragCoord.xy + phase)) / n, 0.0, 1.0);
 }
 /** Ramp edge: smoothed 0.04 in Toon, hard in Pixel Lab (03 §8.7). */
 float hfEdge(float t, float x) {
@@ -137,7 +144,7 @@ vec3 hfLampLight(vec3 wp) {
   float c = dot(d2, uHfCone.xy) / max(d, 1e-3);
   pod += 0.6 * uHfCone.z * smoothstep(HF_COS_CONE, HF_COS_CONE + 0.12, c) * (1.0 - smoothstep(3.5, 7.0, d)) * step(0.3, d);
   #ifdef PIXEL_LAB
-  pod = hfDither(pod, 5.0);
+  pod = hfDither(pod, 5.0, uHfDitherPod);
   #endif
   vec3 light = min(pod, 1.0) * uHfLampColor;
   for (int i = 0; i < HF_MAX_LAMPS; i++) {
@@ -145,7 +152,7 @@ vec3 hfLampLight(vec3 wp) {
     vec4 L = uHfLamps[i];
     float k = 1.0 - smoothstep(0.3 * L.w, L.w, length(wp.xy - L.xy));
     #ifdef PIXEL_LAB
-    k = hfDither(k, 4.0);
+    k = hfDither(k, 4.0, i < uHfPodLampCount ? uHfDitherPod : uHfDitherWorld);
     #endif
     light = max(light, uHfLampColors[i] * k);
   }

@@ -4,20 +4,46 @@ import type {} from '../../src/debug/testHook';
 
 /** Fixed seed, low tier, DPR 1 and standalone (Play instead of the install-first title), 04 §11.3. */
 export const TEST_QUERY = '?test=1&seed=7&tier=low&dpr=1&standalone=1';
+/** The same without the seed: boots whatever the (test-channel) store holds, as a relaunch does. */
+export const SAVED_QUERY = '?test=1&tier=low&dpr=1&standalone=1';
 
 export interface Booted {
   errors: string[];
 }
 
-export async function bootGame(page: Page, extra = ''): Promise<Booted> {
+export async function bootGame(page: Page, extra = '', query = TEST_QUERY): Promise<Booted> {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(m.text());
   });
-  await page.goto(`./${TEST_QUERY}${extra}`);
+  await page.goto(`./${query}${extra}`);
   await page.waitForFunction(() => window.__hf?.ready === true, null, { timeout: 45_000 });
   return { errors };
+}
+
+/** Relaunch: navigate (pagehide → critical save) to the unseeded URL, which loads the stored save. */
+export async function relaunch(page: Page): Promise<void> {
+  await page.goto(`./${SAVED_QUERY}`);
+  await page.waitForFunction(() => window.__hf?.ready === true, null, { timeout: 45_000 });
+}
+
+/** Hold the pod ("Tap to resume") so nothing but the step counter moves, then hash the world state. */
+export async function holdAndHash(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const hf = window.__hf!;
+    hf.setIntent(null);
+    hf.app.interrupt();
+    return hf.stateHash();
+  });
+}
+
+/** Dig straight down from the start until the pod is `rows` below where it began. */
+export async function digDown(page: Page, rows: number): Promise<void> {
+  const y0 = await page.evaluate(() => window.__hf!.pod().y);
+  await page.evaluate(() => window.__hf!.setIntent({ sy: -1 }));
+  await expect.poll(() => page.evaluate(() => window.__hf!.pod().y), { timeout: 20_000 }).toBeLessThan(y0 - rows);
+  await page.evaluate(() => window.__hf!.setIntent(null));
 }
 
 export async function pressPlay(page: Page): Promise<void> {

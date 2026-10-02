@@ -68,10 +68,13 @@ export function physicsStep(pod: PodState, grid: TerrainGrid, intent: PodIntent,
   if (moveX(pod, grid, pod.vx * STEP, floor)) pod.vx = 0;
   const y0 = pod.y;
   const hit = moveY(pod, grid, pod.vy * STEP, floor, skim);
-  if (hit === YHit.Floor) land(pod, contactSpeed(vy0, pod.vy, y0 - pod.y), out);
+  const supported = isSupported(pod, grid, floor, skim);
+  // A fall whose step ends within contact distance above a floor (no overlap, so moveY reports no hit) is
+  // still a touchdown: without this it would land silently, skipping 'landed' and the landing damage.
+  if (hit === YHit.Floor || (!wasGrounded && pod.vy < 0 && supported)) land(pod, contactSpeed(vy0, pod.vy, y0 - pod.y), out);
   else if (hit === YHit.Ceiling && pod.vy > 0) pod.vy *= BOUNCE_VY;
 
-  pod.grounded = pod.vy <= 0 && isSupported(pod, grid, floor, skim);
+  pod.grounded = pod.vy <= 0 && supported;
   if (pod.grounded) pod.vy = 0;
   pod.airSteps = pod.grounded ? 0 : pod.airSteps + 1;
 }

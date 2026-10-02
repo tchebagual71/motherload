@@ -71,6 +71,8 @@ function setCameraLayers(camera: Camera, mask: number): void {
 const MASK_MAIN = 1 << LAYER_MAIN;
 const MASK_LATE = 1 << LAYER_LATE;
 const MASK_ALL = MASK_MAIN | MASK_LATE;
+/** Camera layer masks of every scene pass (Toon; Pixel Lab passes 1 and 3), e.g. for light-set checks. */
+export const PASS_MASKS: readonly number[] = [MASK_ALL, MASK_MAIN, MASK_LATE];
 
 export class ToonPipeline {
   /** Null when rendering straight to an antialiased canvas. */

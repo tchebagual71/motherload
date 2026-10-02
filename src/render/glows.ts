@@ -1,7 +1,7 @@
 // Ore and relic glow halos (03 §8.4 emissive codes; §9.2 Toon "halo sprites", §9.3 Pixel Lab "dithered
 // halo discs"): one additive instanced draw fed from the glow sources the mesher records per chunk.
 // Halos scale with the darkness of their row (1 − ambient), so they read deep and vanish at the surface.
-import { AdditiveBlending, Color, InstancedBufferAttribute, InstancedMesh, PlaneGeometry, ShaderMaterial } from 'three';
+import { AdditiveBlending, Color, InstancedBufferAttribute, InstancedMesh, PlaneGeometry, ShaderMaterial, type Vector2 } from 'three';
 import type { Look } from '../shared/types';
 import { LAYER_LATE } from './materials';
 import { ambientAt } from './palette';
@@ -15,10 +15,12 @@ const BASE_SIZE = 1.25;
 const SIZE_PER_EMISSIVE = 1.0;
 const INTENSITY = 1.1;
 
-function glowMaterial(pixel: boolean): ShaderMaterial {
+/** `dither`: the shared world-frame Bayer phase (HfUniforms.uHfDitherWorld); halos are world-fixed. */
+function glowMaterial(pixel: boolean, dither: { value: Vector2 }): ShaderMaterial {
   return new ShaderMaterial({
     name: `hf-glow-${pixel ? 'pixel' : 'toon'}`,
     defines: pixel ? { PIXEL_LAB: '' } : {},
+    uniforms: pixel ? { uDither: dither } : {},
     transparent: true,
     depthWrite: false,
     blending: AdditiveBlending,
@@ -35,6 +37,7 @@ void main() {
 varying vec4 vGlow;
 varying vec2 vUv;
 #ifdef PIXEL_LAB
+uniform vec2 uDither;
 float bayer(vec2 p) {
   const float m[16] = float[16](0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
   ivec2 q = ivec2(mod(floor(p), 4.0));
@@ -46,7 +49,7 @@ void main() {
   float a = 1.0 - smoothstep(0.0, 1.0, r);
   a = a * a * vGlow.a;
   #ifdef PIXEL_LAB
-  a = floor(a * 4.0 + bayer(gl_FragCoord.xy)) / 4.0;
+  a = floor(a * 4.0 + bayer(gl_FragCoord.xy + uDither)) / 4.0;
   #endif
   if (a <= 0.003) discard;
   gl_FragColor = vec4(vGlow.rgb, a);
@@ -57,13 +60,14 @@ void main() {
 export class OreGlows {
   readonly mesh: InstancedMesh;
   private readonly glow: InstancedBufferAttribute;
-  private readonly materials: Record<Look, ShaderMaterial> = { toon: glowMaterial(false), pixel: glowMaterial(true) };
+  private readonly materials: Record<Look, ShaderMaterial>;
   private readonly colour = new Color();
   private count = 0;
   private ambientFloor = 0;
   private readonly visit = (x: number, y: number, hex: number, emissive: number): void => this.add(x, y, hex, emissive);
 
-  constructor(look: Look) {
+  constructor(look: Look, dither: { value: Vector2 }) {
+    this.materials = { toon: glowMaterial(false, dither), pixel: glowMaterial(true, dither) };
     this.mesh = new InstancedMesh(new PlaneGeometry(1, 1), this.materials[look], MAX_GLOWS);
     this.mesh.name = 'ore-glows';
     this.glow = new InstancedBufferAttribute(new Float32Array(MAX_GLOWS * 4), 4);

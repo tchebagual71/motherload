@@ -174,6 +174,42 @@ describe('incentives (canon §3.8)', () => {
   });
 });
 
+describe('trades need a live pod grounded on the Rim (canon §2.4; 01 §3.10)', () => {
+  it('refuses buys and sales in the sky, in a surface hole and for a wreck; quotes still answer', () => {
+    const w = newWorld();
+    w.debugGiveCash(10_000);
+    w.pod.cargo.push({ kind: 'mineral', tier: 2 });
+    w.pod.hull = 6;
+    const tryAll = () => [w.buyFuel('fill'), w.sellAll(), w.repairAll(), w.buyUpgrade('drill', 2), w.buyConsumable('jerrycan', 1)];
+    const refusedAll = (reason: string) => Array.from({ length: 5 }, () => ({ ok: false, reason }));
+
+    stepUntil(w, intent({ thrust: true }), (w) => w.pod.y > 2);
+    const cash = w.wallet.cash;
+    const fuel = w.pod.fuel;
+    w.drainEvents();
+    expect(tryAll()).toEqual(refusedAll('Land on the Rim first'));
+    expect(w.wallet.cash).toBe(cash);
+    expect(w.pod).toMatchObject({ fuel, hull: 6, cargo: [{ kind: 'mineral', tier: 2 }] });
+    expect(w.drainEvents()).toEqual([]);
+    expect(w.fuelQuote('fill').amount).toBeGreaterThan(0);
+    expect(w.repairQuote().amount).toBeGreaterThan(0);
+
+    stepUntil(w, NO_INTENT, onRim, 600);
+    stepUntil(w, DOWN, (w) => w.pod.y < 0 && w.pod.grounded && w.pod.dig === null); // into a row-0 hole
+    expect(tryAll()).toEqual(refusedAll('Land on the Rim first'));
+
+    w.pod.hull = 0;
+    run(w, NO_INTENT, 1);
+    expect(w.pod.destroyed).toBe(true);
+    expect(tryAll()).toEqual(refusedAll('Salvage first'));
+
+    w.respawn();
+    expect(w.buyFuel(1)).toEqual({ ok: false, reason: 'Tank is already full' });
+    expect(w.buyConsumable('jerrycan', 1)).toMatchObject({ ok: true });
+    expect(w.buyUpgrade('drill', 2)).toMatchObject({ ok: true });
+  });
+});
+
 describe('Rim pads (canon §2.4)', () => {
   it('arrive, stay shut after the sheet closes, re-arm after leaving the footprint', () => {
     const w = newWorld();
@@ -276,6 +312,39 @@ describe('destruction and respawn (canon §4.2)', () => {
     w.pod.cargo.push({ kind: 'mineral', tier: 1 });
     w.sellAll();
     expect(w.wallet).toMatchObject({ cash: 25, debt: 0 });
+  });
+
+  it('a save made during the death card restores a wreck that reports itself once, on the first running step', () => {
+    const w = newWorld();
+    prepareColumn(w, SHAFT_X, [COPPER, COPPER, COPPER]);
+    digTo(w, 3);
+    w.pod.fuel = 0.02;
+    stepUntil(w, UP, (w) => w.pod.destroyed, 600);
+    const cash = w.wallet.cash;
+
+    const r = World.deserialize(w.serialize());
+    expect(r.pod.destroyed).toBe(true);
+    const y = r.pod.y;
+    expect(run(r, UP, 120, false)).toEqual([]); // behind the title / resume gate: nothing yet
+    expect(run(r, UP, 1)).toEqual([{ t: 'destroyed', cause: 'fuel' }]);
+    expect(run(r, UP, 600)).toEqual([]); // reported once; the wreck stays put until salvage
+    expect(r.pod.y).toBe(y);
+    expect(r.story.destructions).toBe(1);
+
+    const fee = r.respawn();
+    expect(fee).toMatchObject({ fee: 25, debt: 25 - cash });
+    expect(r.pod).toMatchObject({ destroyed: false, fuel: 10, cargo: [] });
+    expect(r.padUnderPod()).toBe('pump');
+    r.drainEvents();
+    expect(ofType(run(r, NO_INTENT, 300), 'destroyed')).toEqual([]);
+  });
+
+  it('a restored hull wreck reports cause hull; a live save never reports a death', () => {
+    const w = newWorld();
+    w.pod.hull = 0;
+    expect(ofType(run(w, NO_INTENT, 1), 'destroyed')).toEqual([{ t: 'destroyed', cause: 'hull' }]);
+    expect(run(World.deserialize(w.serialize()), NO_INTENT, 1)).toEqual([{ t: 'destroyed', cause: 'hull' }]);
+    expect(ofType(run(World.deserialize(newWorld().serialize()), NO_INTENT, 60), 'destroyed')).toEqual([]);
   });
 
   it('the fee scales with installed tiers', () => {

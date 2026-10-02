@@ -1,6 +1,6 @@
 // Camera math (canon §3.4, 03 §5, 04 §5.7 snapping). Pure: no three, no DOM, so it is unit-testable.
 // World: x right, y up (y = 0 at the Rim surface), z toward the camera. Angles in degrees unless noted.
-import { CAMERA, MINE_W, VX_MAX } from '../shared/canon';
+import { CAMERA, MINE_W, POD_H, STEP_HZ, VX_MAX } from '../shared/canon';
 import type { CameraMode, ViewportLayout } from './api';
 
 export const DEG = Math.PI / 180;
@@ -161,13 +161,17 @@ export class FollowAxis {
     this.spring.v = 0;
   }
 
-  update(pos: number, vel: number, deadZone: number, omega: number, dt: number): number {
+  /**
+   * Drag the window so `pos` stays within `deadLow` below and `deadHigh` above its centre, then step
+   * the spring toward the centre (fed the target's velocity while the window is being dragged).
+   */
+  update(pos: number, vel: number, deadLow: number, deadHigh: number, omega: number, dt: number): number {
     let goalV = 0;
-    if (pos - this.goal > deadZone) {
-      this.goal = pos - deadZone;
+    if (pos - this.goal > deadHigh) {
+      this.goal = pos - deadHigh;
       goalV = vel;
-    } else if (this.goal - pos > deadZone) {
-      this.goal = pos + deadZone;
+    } else if (this.goal - pos > deadLow) {
+      this.goal = pos + deadLow;
       goalV = vel;
     }
     springStep(this.spring, this.goal, goalV, omega, dt);
@@ -178,6 +182,80 @@ export class FollowAxis {
 /** Horizontal look-ahead in tiles for a pod velocity (canon §3.4: 1.5 tiles at full drive). */
 export function lookAheadX(vx: number): number {
   return CAMERA.lookAhead * clamp(vx / VX_MAX, -1, 1);
+}
+
+/** Below this downward speed (tiles/s) the pod counts as not descending (grounded settling, hovering). */
+export const DESCEND_V = 0.25;
+/** Downward lead of the vertical focus at full fall speed (tiles). */
+export const DESCEND_LEAD = 0.4;
+/** Fall speed (tiles/s) at which the lead is complete. */
+export const DESCEND_LEAD_V = 4;
+/** The one-sided window outlives a descent by this long, so a dig or fall comes to rest on the anchor. */
+export const DESCEND_HOLD_S = 0.25;
+
+/**
+ * Vertical focus offset below a falling pod (canon §3.4 visibility rule, "descending"). The symmetric
+ * ±1 dead zone let the focus trail a tile above a falling or digging pod, so the pod sat a tile under
+ * its 35% anchor and the rows it heads into slid under the control zone. Descending, the window is
+ * one-sided (the pod may never drop below the focus) and a fall leads by up to 0.4 tiles: on the SE
+ * (03 §1.2) the anchor leaves 6.2 fully clear rows below and 5.4 above, so a pod crossing into its next
+ * row needs the lead to keep 6 rows clear, and 0.4 is all the rows above can give.
+ */
+export function descentLead(vy: number): number {
+  return vy < -DESCEND_V ? DESCEND_LEAD * clamp(-vy / DESCEND_LEAD_V, 0, 1) : 0;
+}
+
+/**
+ * A down dig as a steady descent: where the pod would be if it moved at the dig's average rate, and
+ * that rate (tiles/s). A dig holds the pod for its first 37.5% and then slides it in, so following the
+ * pod itself makes the focus lag every slide (by most of a tile with fast drills); following the steady
+ * path scrolls a dig chain evenly with the pod between its anchor and 0.41 tiles above it.
+ */
+export interface DigDescent {
+  y: number;
+  vy: number;
+}
+
+/** The parts of the pod's dig state the steady path needs (pod/types DigState). */
+export interface DigLike {
+  readonly dir: 'down' | 'left' | 'right';
+  readonly r: number;
+  readonly progress: number;
+  readonly total: number;
+  readonly fromY: number;
+}
+
+/**
+ * Turns the pod's down digs into a DigDescent per frame. The step that finishes a dig clears the
+ * DigState, so its frame (the pod has just come to rest on the path's end, `digging` still set) keeps
+ * the path's last step instead of dropping the descent for a frame between chained digs.
+ */
+export class DigDescentTracker {
+  private readonly out: DigDescent = { y: 0, vy: 0 };
+  private fromY = 0;
+  private toY = 0;
+  private total = 1;
+  private held = false;
+
+  /** `alpha` = render interpolation between the last two steps; `digging` = the last step advanced a dig. */
+  update(dig: DigLike | null, podY: number, digging: boolean, alpha: number): DigDescent | null {
+    if (dig && dig.dir === 'down') {
+      this.fromY = dig.fromY;
+      this.toY = -(dig.r + 1) + POD_H / 2; // resting on the cell's floor (pod/dig finishDig)
+      this.total = Math.max(1, dig.total);
+      this.held = true;
+      return this.path(dig.progress - 1 + alpha);
+    }
+    this.held = this.held && !dig && digging && podY === this.toY;
+    return this.held ? this.path(this.total - 1 + alpha) : null;
+  }
+
+  private path(progress: number): DigDescent {
+    const f = clamp(progress / this.total, 0, 1);
+    this.out.y = this.fromY + (this.toY - this.fromY) * f;
+    this.out.vy = ((this.toY - this.fromY) * STEP_HZ) / this.total;
+    return this.out;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -246,6 +324,8 @@ export interface RigInput {
   podY: number;
   vx: number;
   vy: number;
+  /** The down dig in progress, if any (the vertical follow tracks its steady path). */
+  digDown?: DigDescent | null;
   layout: ViewportLayout;
   mode: CameraMode;
   touching: boolean;
@@ -271,6 +351,8 @@ export class CameraRig {
   private readonly fx = new FollowAxis();
   private readonly fy = new FollowAxis();
   private buildBlend = 0;
+  /** Seconds left of the one-sided vertical window (descending, plus DESCEND_HOLD_S). */
+  private descendHold = 0;
   private initialised = false;
   private readonly play: CameraAngles = { yaw: 0, pitch: 0, ppu: 0 };
   private readonly build: CameraAngles = { yaw: 0, pitch: 0, ppu: 0 };
@@ -279,6 +361,7 @@ export class CameraRig {
     this.fx.snap(x);
     this.fy.snap(y);
     this.climb.reset();
+    this.descendHold = 0;
     this.initialised = true;
   }
 
@@ -295,8 +378,13 @@ export class CameraRig {
       this.snap(podX, podY);
     }
     const omega = CAMERA.followOmega;
-    const fxPos = this.fx.update(podX + lookAheadX(vx), vx, CAMERA.deadZone, omega, dt);
-    const fyPos = this.fy.update(podY, vy, CAMERA.deadZone, omega, dt);
+    const dead = CAMERA.deadZone;
+    const fxPos = this.fx.update(podX + lookAheadX(vx), vx, dead, dead, omega, dt);
+    const dig = input.digDown;
+    const followY = dig ? dig.y : podY - descentLead(vy);
+    const followV = dig ? dig.vy : vy;
+    this.descendHold = followV < -DESCEND_V ? DESCEND_HOLD_S : Math.max(0, this.descendHold - dt);
+    const fyPos = this.fy.update(followY, followV, this.descendHold > 0 ? 0 : dead, dead, omega, dt);
 
     const t = blendT(fyPos);
     const climbBlend = this.climb.update(vy, dt, input.touching);
@@ -322,7 +410,9 @@ export class CameraRig {
 
 /**
  * Fill basis + lookAt so the focus point lands on the anchor row, then apply the underground slab
- * clamp weighted by the blend t (pose.yaw/pitch/ppu/anchor/t must be set).
+ * clamp weighted by the blend t (pose.yaw/pitch/ppu/anchor/t must be set). The clamp slides the view
+ * along the camera's right vector, which has no vertical screen component, so the focus stays on its
+ * anchor row; a step s along `right` moves the slab centre (z = 0.5) by s / cos(yaw).
  */
 export function composeLookAt(pose: CameraPose, focusX: number, focusY: number, layout: ViewportLayout): void {
   cameraBasis(pose.yaw, pose.pitch, pose.dir, pose.right, pose.up);
@@ -332,10 +422,13 @@ export function composeLookAt(pose: CameraPose, focusX: number, focusY: number, 
   l.x = focusX + pose.up.x * offset;
   l.y = focusY + pose.up.y * offset;
   l.z = pose.up.z * offset;
+  const cosYaw = Math.cos(pose.yaw * DEG);
   const centre = slabCentreX(l, pose.yaw);
-  const halfWidth = layout.width / 2 / pose.ppu / Math.cos(pose.yaw * DEG);
+  const halfWidth = layout.width / 2 / pose.ppu / cosYaw;
   const clamped = clampSlabCentre(centre, halfWidth);
-  l.x += (clamped - centre) * pose.t;
+  const s = (clamped - centre) * cosYaw * pose.t;
+  l.x += s * pose.right.x;
+  l.z += s * pose.right.z;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -371,6 +464,16 @@ export interface TexelSnap {
   /** Integer device-px blit offsets (x right, y up) that put the unsnapped centre on screen centre. */
   offX: number;
   offY: number;
+}
+
+/**
+ * Bayer-matrix phase (0..3) for an ordered dither whose gradient lives in a frame offset `texels` RT
+ * texels from the view centre: the shader adds it to gl_FragCoord.xy, so the pattern stays fixed to
+ * that frame while the snapped camera moves by whole texels (a gl_FragCoord-keyed dither re-dithers
+ * 4–19% of the image per texel step). World frame: the snapped centre's own texel coordinate.
+ */
+export function bayerPhase(texels: number): number {
+  return ((Math.round(texels) % 4) + 4) % 4;
 }
 
 /**

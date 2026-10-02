@@ -23,18 +23,18 @@ import { isLodeVisible, scopeFloorRow } from '../terrain/scope';
 import type { TerrainGrid } from '../terrain/grid';
 import type { WorldApi } from '../world/api';
 import type { CreateRenderer, QualityTier, RenderFrame, RenderInfo, Renderer, RendererOptions, ViewportLayout } from './api';
-import { CameraRig, DEG, composeLookAt, pixelScaleK, pixelTargetSize, quantizeDeg, snapPixelPpu, snapToTexels, type CameraPose, type TexelSnap } from './camera';
+import { CameraRig, DEG, DigDescentTracker, bayerPhase, composeLookAt, pixelScaleK, pixelTargetSize, quantizeDeg, snapPixelPpu, snapToTexels, type CameraPose, type TexelSnap } from './camera';
 import { createFx } from './fx/fx';
 import { addOutlineHulls, applyLookMaterials, disposeMaterialKit, getMaterialKit, setHullsEnabled, setLayerDeep, syncHull, LAYER_LATE, type MaterialKit } from './materials';
 import type { FxSystem, PodModel, PodVisualState, RimBuildingsModel, YardPropsModel } from './models/api';
-import { createPodModel } from './models/pod';
+import { createPodModel, nextFastFall } from './models/pod';
 import { createRimBuildings } from './models/rim';
 import { createYardProps } from './models/yard';
 import { OreGlows } from './glows';
 import { Overlays } from './overlay';
 import { AMBIENT_FLOOR, BRIGHT_MINES_AMBIENT, LIGHT, SURFACE } from './palette';
 import { PixelPipeline, ToonPipeline } from './pipelines';
-import { QUALITY, REMESH_NEAR_POD, oreHullsEnabled, outlineScope, toonDpr, type OutlineScope } from './quality';
+import { QUALITY, REMESH_NEAR_POD, meshOreHulls, oreHullsEnabled, outlineScope, toonDpr, type OutlineScope } from './quality';
 import { Surface } from './surface';
 import { ChunkMeshes, LAMP_RADII } from './terrain/chunks';
 import type { MesherOptions } from './terrain/mesher';
@@ -76,6 +76,7 @@ class HfRenderer implements Renderer {
   private readonly pixelCam = new OrthographicCamera(-1, 1, 1, -1, ORTHO_NEAR, ORTHO_FAR);
   private readonly perspCam: PerspectiveCamera | null;
   private readonly rig = new CameraRig();
+  private readonly digDescent = new DigDescentTracker();
   private readonly chunks: ChunkMeshes;
   private readonly surface: Surface;
   private readonly overlays = new Overlays();
@@ -99,8 +100,9 @@ class HfRenderer implements Renderer {
   private toonScale = 1;
   private readonly device = { w: 1, h: 1 };
   private readonly snap: TexelSnap = { dRight: 0, dUp: 0, offX: 0, offY: 0 };
-  /** Texel-snapped look-at of the Pixel Lab camera. */
+  /** Texel-snapped look-at of the Pixel Lab camera, and its texel size (world units per RT pixel). */
   private readonly pixelLook = { x: 0, y: 0, z: 0 };
+  private texel = 1;
   private readonly infoData: RenderInfo;
   private lost = false;
   private lastTimeMs = Number.NaN;
@@ -152,7 +154,7 @@ class HfRenderer implements Renderer {
     this.infoData = { drawCalls: 0, triangles: 0, look: this.look, quality: this.quality, pixelScale: 1 };
 
     this.chunks = new ChunkMeshes(this.kit.terrain(this.look));
-    this.glows = new OreGlows(this.look);
+    this.glows = new OreGlows(this.look, this.kit.uniforms.uHfDitherWorld);
     this.surface = new Surface(this.kit.terrain(this.look), this.kit.sky(this.look));
     this.pod = createPodModel();
     this.rim = createRimBuildings();
@@ -324,7 +326,7 @@ class HfRenderer implements Renderer {
     this.mesherOpts = {
       floorRow: overlayFloorRow(scope),
       lodeVisible: (lode: Lode): boolean => isLodeVisible(lode, scope),
-      hulls: true,
+      hulls: meshOreHulls(this.look, this.quality, this.precompileBoth),
     };
     this.chunks.reset();
     this.rig.snap(world.pod.x, world.pod.y);
@@ -362,8 +364,9 @@ class HfRenderer implements Renderer {
 
   private updateCamera(frame: RenderFrame, px: number, py: number, dt: number): CameraPose {
     const pod = frame.world.pod;
+    const digDown = this.digDescent.update(pod.dig, pod.y, pod.digging, frame.alpha);
     const pose = this.rig.update(
-      { podX: px, podY: py, vx: pod.vx, vy: pod.vy, layout: this.layout, mode: frame.mode, touching: frame.touching },
+      { podX: px, podY: py, vx: pod.vx, vy: pod.vy, digDown, layout: this.layout, mode: frame.mode, touching: frame.touching },
       dt,
     );
     if (this.look === 'pixel' && !this.perspCam) {
@@ -408,6 +411,7 @@ class HfRenderer implements Renderer {
       const rtW = this.pixel.width;
       const rtH = this.pixel.height;
       const texel = this.k / (pose.ppu * this.layout.dpr);
+      this.texel = texel;
       const lookRight = l.x * pose.right.x + l.y * pose.right.y + l.z * pose.right.z;
       const lookUp = l.x * pose.up.x + l.y * pose.up.y + l.z * pose.up.z;
       snapToTexels(lookRight, lookUp, texel, this.k, { w: rtW, h: rtH }, this.device, this.snap);
@@ -475,9 +479,33 @@ class HfRenderer implements Renderer {
       u.uHfLampColors.value[0].copy(this.thrustColor).multiplyScalar(0.8);
       lamps = 1;
     }
+    u.uHfPodLampCount.value = lamps;
     lamps = this.chunks.collectLights(px, py, lamps, QUALITY[this.quality].lamps, u.uHfLamps.value, u.uHfLampColors.value, this.magmaColor);
     u.uHfLampCount.value = lamps;
+    this.updateDither(pose, px, py);
     this.updateBackdrop(pose);
+  }
+
+  /**
+   * Pixel Lab dither phases (04 §5.7): the snapped camera moves by whole texels, so keying the Bayer
+   * matrix on gl_FragCoord alone would re-dither every light falloff and halo per step. World-fixed
+   * light uses the snapped centre's texel coordinate; the pod's bubble, cone and flame its own.
+   */
+  private updateDither(pose: CameraPose, px: number, py: number): void {
+    const u = this.kit.uniforms;
+    if (this.look !== 'pixel' || this.perspCam) {
+      u.uHfDitherWorld.value.set(0, 0);
+      u.uHfDitherPod.value.set(0, 0);
+      return;
+    }
+    const { right: r, up } = pose;
+    const l = this.pixelLook;
+    const lookR = (l.x * r.x + l.y * r.y + l.z * r.z) / this.texel;
+    const lookU = (l.x * up.x + l.y * up.y + l.z * up.z) / this.texel;
+    const podR = (px * r.x + py * r.y) / this.texel;
+    const podU = (px * up.x + py * up.y) / this.texel;
+    u.uHfDitherWorld.value.set(bayerPhase(lookR), bayerPhase(lookU));
+    u.uHfDitherPod.value.set(bayerPhase(lookR - podR), bayerPhase(lookU - podU));
   }
 
   /** Backdrop uniforms for the camera actually rendering this frame (04 §5.1 Sky). */
@@ -488,9 +516,11 @@ class HfRenderer implements Renderer {
     const l = cam === this.pixelCam ? this.pixelLook : pose.lookAt;
     const cosP = Math.cos(pose.pitch * DEG);
     const lookRight = l.x * pose.right.x + l.y * pose.right.y + l.z * pose.right.z;
-    (u.uBase.value as Vector2).set(lookRight, l.y - BACKDROP_DIST * Math.tan(pose.pitch * DEG));
+    const base = (u.uBase.value as Vector2).set(lookRight, l.y - BACKDROP_DIST * Math.tan(pose.pitch * DEG));
     (u.uHalf.value as Vector2).set((cam.right - cam.left) / 2, (cam.top - cam.bottom) / 2);
     u.uCosP.value = cosP;
+    // The backdrop's own frame: x along right, height foreshortened by cos(pitch) (passes.ts sky).
+    if (pixel) (u.uDither.value as Vector2).set(bayerPhase(base.x / this.texel), bayerPhase((base.y * cosP) / this.texel));
   }
 
   private updateModels(frame: RenderFrame, px: number, py: number, dt: number): void {
@@ -507,7 +537,7 @@ class HfRenderer implements Renderer {
     v.vy = pod.vy;
     v.tiers = pod.tiers;
     v.timeMs = frame.timeMs;
-    v.fastFall = Math.abs(pod.vy) > 5.88;
+    v.fastFall = nextFastFall(v.fastFall, pod.vy);
     this.pod.update(v);
     this.rim.update(frame.timeMs);
     this.yard?.update(frame.timeMs);
@@ -551,6 +581,12 @@ class HfRenderer implements Renderer {
     const scope: OutlineScope = outlineScope(this.quality, this.precompileBoth);
     this.fx.setBudget(QUALITY[this.quality].particles);
     this.kit.uniforms.uHfOreHulls.value = oreHullsEnabled(scope) ? 1 : 0;
+    const hulls = meshOreHulls(this.look, this.quality, this.precompileBoth);
+    if (this.mesherOpts && this.mesherOpts.hulls !== hulls) {
+      // Production look/tier change: remesh resident chunks with (or without) hull geometry.
+      this.mesherOpts.hulls = hulls;
+      this.chunks.forceAll();
+    }
     setHullsEnabled(this.pod.root, 'pod', true, this.look);
     for (const root of [this.rim.root, this.yard?.root]) if (root) setHullsEnabled(root, 'buildings', scope !== 'pod', this.look);
   }
@@ -609,11 +645,23 @@ class HfRenderer implements Renderer {
 
   /** Real lights only for materials outside the look kit (placeholders); look materials ignore them. */
   private addFallbackLights(): void {
-    const hemi = new HemisphereLight(SURFACE.hemiSky, SURFACE.hemiGround, 0.55);
-    const sun = new DirectionalLight(SURFACE.sun, 1);
-    sunDirection(sun.position).multiplyScalar(50);
-    this.scene.add(hemi, sun);
+    this.scene.add(...createFallbackLights());
   }
+}
+
+/**
+ * The hemisphere + sun fallback lights, on every layer. three gathers only the lights a pass's camera
+ * layers can see and keys every program on the light counts, so lights on layer 0 alone made Pixel Lab
+ * pass 3 (LAYER_LATE) draw with no lights while precompile() had built its programs with two: the first
+ * thrust, arming or look flip then compiled shaders mid-play (canon §5.1 "flip ≤ 1 frame").
+ */
+export function createFallbackLights(): [HemisphereLight, DirectionalLight] {
+  const hemi = new HemisphereLight(SURFACE.hemiSky, SURFACE.hemiGround, 0.55);
+  const sun = new DirectionalLight(SURFACE.sun, 1);
+  sunDirection(sun.position).multiplyScalar(50);
+  hemi.layers.enableAll();
+  sun.layers.enableAll();
+  return [hemi, sun];
 }
 
 export const createRenderer: CreateRenderer = (canvas, layout, opts) => new HfRenderer(canvas, layout, opts);

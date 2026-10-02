@@ -6,10 +6,11 @@ import { channel } from '../platform/channel';
 import { BootTracker } from '../save/bootTrack';
 import { decodeSaveCode, encodeSaveCode } from '../save/exportCode';
 import type { SaveSink } from '../save/scheduler';
-import { SaveStore, type CopyId, type WriteOutcome } from '../save/store';
+import { SaveStore, type CopyId, type SaveSummary, type WriteOutcome } from '../save/store';
 import { World } from '../world/world';
 import type { WorldApi } from '../world/api';
 import type { SafeModeHooks, SaveCodes, WorldFactory } from './controller';
+import { damagedFallbackNotice, NOTICE, previousCopyNotice } from './notices';
 
 export const worlds: WorldFactory = {
   create: (seed) => new World({ seed, scope: SCOPE }),
@@ -23,6 +24,23 @@ export const nullSink: SaveSink = {
   writeCritical: () => Promise.resolve<WriteOutcome>({ ok: false, error: 'closed' }),
   writeRoutine: () => Promise.resolve<WriteOutcome>({ ok: false, error: 'closed' }),
 };
+
+/** A sink that writes nowhere until a store is attached (a store that opened after boot gave up on it). */
+export class LateSink implements SaveSink {
+  private target: SaveSink = nullSink;
+
+  attach(s: SaveSink): void {
+    this.target = s;
+  }
+
+  writeCritical(bytes: Uint8Array, summary?: SaveSummary): Promise<WriteOutcome> {
+    return this.target.writeCritical(bytes, summary);
+  }
+
+  writeRoutine(bytes: Uint8Array, summary?: SaveSummary): Promise<WriteOutcome> {
+    return this.target.writeRoutine(bytes, summary);
+  }
+}
 
 /** Non-sim randomness is fine in app/: a fresh claim gets a random 32-bit seed. */
 export function randomSeed(): number {
@@ -39,67 +57,134 @@ export function parseSeed(v: string | null): number | null {
   return Number(v) >>> 0;
 }
 
-export async function openStore(): Promise<SaveStore | null> {
+/**
+ * The ?seed override is part of the ?test=1 API (04 §11.3) only: there saves go to the isolated `test` channel.
+ * Anywhere else a fixed-seed world would be autosaved over the player's real save.
+ */
+export function seedOverride(params: URLSearchParams, testMode: boolean): number | null {
+  return testMode ? parseSeed(params.get('seed')) : null;
+}
+
+/** How long boot waits for IndexedDB (a stuck WebKit open, an upgrade blocked by another tab) before going on. */
+export const STORE_OPEN_TIMEOUT_MS = 3_000;
+
+export interface OpenedStore {
+  store: SaveStore | null;
+  /** The open outlived STORE_OPEN_TIMEOUT_MS: boot went on without it. Settles when it opens (null = failed). */
+  late: Promise<SaveStore | null> | null;
+}
+
+/** Storage problems never block boot (platform/storage.ts): a failed or stuck open boots without a store. */
+export async function openStore(
+  open: () => Promise<SaveStore> = () => SaveStore.open({ channel: channel() }),
+  timeoutMs = STORE_OPEN_TIMEOUT_MS,
+): Promise<OpenedStore> {
+  const pending = Promise.resolve()
+    .then(open)
+    .catch(() => null);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
+  const first = await Promise.race([pending, timeout]);
+  clearTimeout(timer);
+  return first === 'timeout' ? { store: null, late: pending } : { store: first, late: null };
+}
+
+/**
+ * Use a store that opened after boot went on without it, but only if it holds no copies: this session never
+ * loaded a stored save, so writing its world would overwrite one. Otherwise the store is closed again and the
+ * session stays unsaved (the boot notice asks for a restart).
+ */
+export async function adoptLateStore(late: Promise<SaveStore | null>): Promise<SaveStore | null> {
+  const s = await late;
+  if (!s) return null;
   try {
-    return await SaveStore.open({ channel: channel() });
+    if ((await s.listCopies()).length === 0) return s;
   } catch {
-    return null;
+    // Unreadable: leave it alone.
   }
+  s.close();
+  return null;
+}
+
+/** The stored save a world came from: promoted to last-known-good after a clean boot, if still these bytes. */
+export interface LoadedCopy {
+  copy: CopyId;
+  seq: number;
 }
 
 export interface InitialWorld {
   world: WorldApi;
   coldLoad: boolean;
-  /** Stored copy the world came from (promoted to last-known-good after a clean boot). */
-  copy: CopyId | null;
-  notice: { text: string; tone: 'info' | 'warn' } | null;
+  loaded: LoadedCopy | null;
+  /** Boot notice; `aboutWorld` = about the loaded copy (moot once the player starts a new game). */
+  notice: { text: string; tone: 'info' | 'warn'; aboutWorld: boolean } | null;
   /** Safe Mode (04 §4.13): the copy whose boots keep dying before their first frame. */
   safeModeCopy: CopyId | null;
 }
 
-function minutesOlder(ms: number): string {
-  return `${Math.max(1, Math.round(ms / 60_000))} min older`;
-}
-
-export async function loadInitialWorld(store: SaveStore | null, tracker: BootTracker, seedParam: number | null): Promise<InitialWorld> {
+export async function loadInitialWorld(opened: OpenedStore, tracker: BootTracker, seedParam: number | null): Promise<InitialWorld> {
   const fresh = (notice: InitialWorld['notice'] = null, safeModeCopy: CopyId | null = null): InitialWorld => ({
     world: worlds.create(seedParam ?? randomSeed()),
     coldLoad: false,
-    copy: null,
+    loaded: null,
     notice,
     safeModeCopy,
   });
   if (seedParam !== null) return fresh();
-  if (!store) return fresh({ text: 'Saving is unavailable in this browser', tone: 'warn' });
+  const store = opened.store;
+  if (!store) return fresh({ text: opened.late ? NOTICE.savesNotLoading : NOTICE.savesUnavailable, tone: 'warn', aboutWorld: false });
 
+  // The 04 §4.10 read path: the newest copy that verifies and decodes. The tracked copy is always the one about
+  // to be decoded and booted, so a copy that keeps killing the boot (in its decode, or later) reaches Safe Mode
+  // on its own count, fallback copies included.
   const copies = await store.listCopies();
   if (copies.length === 0) return fresh();
-  const latest = copies[0].copy;
-  if (tracker.begin(store.slot, latest).safeMode) return fresh(null, latest);
-
-  const r = await store.load((b) => worlds.deserialize(b));
-  if (r.kind === 'loaded') {
-    if (r.copy !== latest) tracker.retarget(r.copy);
-    const notice = r.fallback ? { text: `Save damaged: restored the previous copy (${minutesOlder(r.olderByMs)})`, tone: 'warn' as const } : null;
-    return { world: r.value, coldLoad: true, copy: r.copy, notice, safeModeCopy: null };
+  for (let i = 0; i < copies.length; i++) {
+    const info = copies[i];
+    const verdict = i === 0 ? tracker.begin(store.slot, info.copy) : tracker.retarget(info.copy);
+    if (verdict.safeMode) return fresh(null, info.copy);
+    const bytes = await store.readVerified(info.copy);
+    if (!bytes) continue;
+    let world: WorldApi;
+    try {
+      world = worlds.deserialize(bytes);
+    } catch {
+      continue; // Corrupt content behind a valid CRC: the next older copy.
+    }
+    const notice = i > 0 ? { text: damagedFallbackNotice(copies[0].savedAt - info.savedAt), tone: 'warn' as const, aboutWorld: true } : null;
+    return { world, coldLoad: true, loaded: { copy: info.copy, seq: info.seq }, notice, safeModeCopy: null };
   }
   tracker.clear();
-  return fresh(r.kind === 'damaged' ? { text: 'Save damaged: started a new claim', tone: 'warn' } : null);
+  return fresh({ text: NOTICE.damagedNewClaim, tone: 'warn', aboutWorld: true });
 }
 
-/** Safe Mode actions over the failing copy: export it, or fall back to the next older copy. */
-export function safeModeHooks(store: SaveStore, tracker: BootTracker, failing: CopyId, onLoaded: (copy: CopyId) => void): SafeModeHooks {
+/**
+ * Safe Mode actions over the failing copy: export it, or "Load previous copy (n min older)". With no older copy
+ * that loads, the failing copy itself is booted once more (a repeat death brings Safe Mode back next launch), so
+ * the action is never a dead end.
+ */
+export function safeModeHooks(store: SaveStore, tracker: BootTracker, failing: CopyId, onLoaded: (loaded: LoadedCopy) => void): SafeModeHooks {
+  const decode = (b: Uint8Array): WorldApi => worlds.deserialize(b);
   return {
     exportCode: async () => {
       const bytes = await store.readVerified(failing);
       return bytes ? encodeSaveCode(bytes) : null;
     },
     loadPrevious: async () => {
-      const r = await store.load((b) => worlds.deserialize(b), [failing]);
-      if (r.kind !== 'loaded') return { ok: false, reason: 'No older copy: export it, then start a new game' };
-      tracker.begin(store.slot, r.copy);
-      onLoaded(r.copy);
-      return { ok: true, world: r.value };
+      const older = await store.load(decode, [failing]);
+      if (older.kind === 'loaded') {
+        tracker.begin(store.slot, older.copy);
+        onLoaded({ copy: older.copy, seq: older.seq });
+        return { ok: true, world: older.value, message: previousCopyNotice(older.olderByMs) };
+      }
+      const others = (await store.listCopies()).map((c) => c.copy).filter((c) => c !== failing);
+      const again = await store.load(decode, others);
+      if (again.kind !== 'loaded') return { ok: false, reason: NOTICE.noOlderCopy };
+      tracker.begin(store.slot, again.copy);
+      onLoaded({ copy: again.copy, seq: again.seq });
+      return { ok: true, world: again.value, message: NOTICE.retryingCopy };
     },
   };
 }

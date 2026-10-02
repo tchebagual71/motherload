@@ -7,7 +7,7 @@ import { T, type CargoItem, type ConsumableId, type RimBuildingId, type Scope } 
 import { generateWorld, type GenMeta } from '../terrain/generate';
 import type { TerrainGrid } from '../terrain/grid';
 import { applyScopeOverlay, scopeFloorRow } from '../terrain/scope';
-import { PUMP_PAD_X, createPod, podStats, stepPod, type PodStepCtx } from '../pod';
+import { PUMP_PAD_X, createPod, destructionCause, podStats, stepPod, type PodStepCtx } from '../pod';
 import type { PodIntent, PodState } from '../pod/types';
 import * as econ from '../economy';
 import type { EconomyCtx, PartsLedger } from '../economy';
@@ -98,6 +98,12 @@ export class World implements WorldApi {
   private readonly rng: Rng;
   private readonly pads: PadArming;
   private events: GameEvent[] = [];
+  /**
+   * The pod was already destroyed when this World was restored (a save written during the death card,
+   * before respawn): its 'destroyed' event went to a previous session, so the app's death → salvage →
+   * respawn flow would never start. The first running step reports it again (see step()).
+   */
+  private deathUnreported: boolean;
   /** Reused every step (no per-step allocation). */
   private readonly podCtx: PodStepCtx;
   private readonly shop: EconomyCtx;
@@ -119,6 +125,7 @@ export class World implements WorldApi {
     this.steps = s.stepNo;
     this.rng = Rng.fromState(s.rng);
     this.pads = new PadArming(s.pads);
+    this.deathUnreported = s.pod.destroyed;
     this.podCtx = { floorRow: scopeFloorRow(this.scope), deepHeat: this.deepHeat, rng: this.rng, stepNo: this.steps, scope: this.scope };
     this.shop = { pod: this.pod, wallet: this.wallet, scope: this.scope, parts: econ.EMPTY_PARTS, emit: this.emit };
   }
@@ -164,12 +171,20 @@ export class World implements WorldApi {
       if (pod.destroyed) this.story.destructions++;
       else this.applyRules(intent, mark);
     } else {
-      // Paused (velocity kept, canon §4.5): no interpolation drift while frames keep rendering.
+      // Paused (velocity kept, canon §4.5) or wrecked: no interpolation drift while frames keep rendering.
       pod.prevX = pod.x;
       pod.prevY = pod.y;
+      // A restored wreck is reported once the pod would run, i.e. after the title and resume gate, so the
+      // death card and salvage happen in view. Its destruction was counted when it happened.
+      if (podRunning && this.deathUnreported) this.reportRestoredDeath();
     }
     if (this.steps % FACTORY_EVERY === FACTORY_PHASE) this.tickFactory();
     this.steps++;
+  }
+
+  private reportRestoredDeath(): void {
+    this.deathUnreported = false;
+    this.emit({ t: 'destroyed', cause: destructionCause(this.pod) });
   }
 
   drainEvents(): GameEvent[] {
@@ -240,12 +255,21 @@ export class World implements WorldApi {
   }
 
   // ------------------------------------------------------------------ services
+  // Trades need a live pod grounded on the Rim (canon §2.4; 01 §3.10: a pad, or a sign tap that drives it
+  // there), never one in the sky, in a surface hole, underground or awaiting salvage. Quotes, lists and quick
+  // slots stay available anywhere.
+
+  /** Why a trade is refused right now, or null when the pod may trade. */
+  private tradeRefusal(): Result | null {
+    if (this.pod.destroyed) return econ.fail('Salvage first');
+    return isOnRim(this.pod) ? null : econ.fail('Land on the Rim first');
+  }
 
   fuelQuote(liters: number | 'fill'): Quote {
     return econ.fuelQuote(this.shop, liters);
   }
   buyFuel(liters: number | 'fill'): Result {
-    return econ.buyFuel(this.shop, liters);
+    return this.tradeRefusal() ?? econ.buyFuel(this.shop, liters);
   }
   cargoGroups(): CargoGroup[] {
     return econ.cargoGroups(this.pod.cargo);
@@ -254,25 +278,25 @@ export class World implements WorldApi {
     return econ.cargoValue(this.pod.cargo);
   }
   sellAll(): Result {
-    return econ.sellAll(this.shop);
+    return this.tradeRefusal() ?? econ.sellAll(this.shop);
   }
   repairQuote(): Quote {
     return econ.repairQuote(this.shop);
   }
   repairAll(): Result {
-    return econ.repairAll(this.shop);
+    return this.tradeRefusal() ?? econ.repairAll(this.shop);
   }
   garageCards(): UpgradeCard[] {
     return econ.garageCards(this.shop);
   }
   buyUpgrade(line: Line, tier: number): Result {
-    return econ.buyUpgrade(this.shop, line, tier);
+    return this.tradeRefusal() ?? econ.buyUpgrade(this.shop, line, tier);
   }
   shedItems(): ShopItem[] {
     return econ.shedItems(this.shop);
   }
   buyConsumable(id: ConsumableId, n: number): Result {
-    return econ.buyConsumable(this.shop, id, n);
+    return this.tradeRefusal() ?? econ.buyConsumable(this.shop, id, n);
   }
   setQuickSlot(slot: number, id: ConsumableId): void {
     econ.setQuickSlot(this.shop, slot, id);
@@ -285,6 +309,7 @@ export class World implements WorldApi {
     const pod = this.pod;
     placePod(pod, PUMP_PAD_X, STAND_Y, true);
     pod.destroyed = false;
+    this.deathUnreported = false;
     pod.fuelWarn = -1;
     pod.hullWarned = false;
     this.pads.latch(PUMP_PAD);

@@ -1,6 +1,6 @@
 // Pod-mode input (03 §3; 04 §6.1; canon §3.12): Pointer Events on the canvas (floating stick, world
-// taps), delegated pointer handling on the UI root for quick slots and THRUST, the dev keyboard, and
-// browser-gesture suppression. Produces one PodIntent per sim step via sampleIntent().
+// taps), delegated pointer handling on the UI root for quick slots, THRUST and [data-tap] HUD buttons,
+// the dev keyboard, and browser-gesture suppression. Produces one PodIntent per sim step via sampleIntent().
 import type { AppController, InputController } from '../app/types';
 import { inScope, SCOPE } from '../config/scope';
 import type { PodIntent } from '../pod/types';
@@ -14,6 +14,7 @@ import { installGestureGuards } from './gestures';
 import { KeyboardState, type KeyCommand, type KeyIntent } from './keyboard';
 import { stickSector } from './sectors';
 import { slotDecision } from './slots';
+import { ClickSwallow, TapTracker } from './taps';
 import { stickSpawnZone, type ControlSize, type InputLayout } from './zones';
 
 export interface CreateInputOptions {
@@ -52,6 +53,9 @@ export function createInput(opts: CreateInputOptions): InputController {
   let thrustPointer = -1;
   let pendingFire = -1;
   let armRaf = 0;
+  const taps = new TapTracker();
+  const tapEls = new Map<number, HTMLElement>();
+  const swallow = new ClickSwallow<HTMLElement>();
 
   const sample = (e: PointerEvent): PointerSample => {
     scratch.id = e.pointerId;
@@ -60,6 +64,18 @@ export function createInput(opts: CreateInputOptions): InputController {
     scratch.t = performance.now();
     return scratch;
   };
+
+  /** Pointer sample in client space on the event's own clock (button taps). */
+  const eventSample = (e: PointerEvent): PointerSample => {
+    scratch.id = e.pointerId;
+    scratch.x = e.clientX;
+    scratch.y = e.clientY;
+    scratch.t = e.timeStamp;
+    return scratch;
+  };
+
+  /** The sim is paused (sheet or overlay up): input must not queue actions for when it resumes. */
+  const paused = (): boolean => app.state.sheet.peek() !== null || app.state.overlay.peek() !== null;
 
   // ---------------------------------------------------------------- visuals
   const publishStick = (): void => {
@@ -187,13 +203,43 @@ export function createInput(opts: CreateInputOptions): InputController {
     if (arbiter.roleOf(e.pointerId) !== null && arbiter.cancel(e.pointerId)) publishStick();
   };
 
-  // ---------------------------------------------------------------- UI-root pointers (slots, THRUST)
+  // ---------------------------------------------------------------- UI-root pointers (slots, THRUST, taps)
   const controlOf = (e: PointerEvent): HTMLElement | null =>
     e.target instanceof Element ? (e.target.closest('[data-slot],[data-thrust]') as HTMLElement | null) : null;
 
+  /** A [data-tap] button pressed by touch or pen (mouse and keyboard keep the native click). */
+  const tapButtonOf = (e: PointerEvent): HTMLElement | null =>
+    e.pointerType !== 'mouse' && e.target instanceof Element ? (e.target.closest('[data-tap]') as HTMLElement | null) : null;
+
+  const onTapDown = (e: PointerEvent, el: HTMLElement): void => {
+    tapEls.set(e.pointerId, el);
+    taps.down(eventSample(e));
+    swallow.pressed(el);
+  };
+
+  /** Activate through the button's own click handler, then claim the browser's click if one follows. */
+  const onTapUp = (e: PointerEvent, el: HTMLElement): void => {
+    tapEls.delete(e.pointerId);
+    if (!taps.up(eventSample(e)) || !el.isConnected) return;
+    el.click();
+    swallow.claim(el, e.timeStamp);
+  };
+
+  const onUiClick = (e: MouseEvent): void => {
+    const target = e.target;
+    if (swallow.take(e.timeStamp, (el) => target instanceof Element && el.contains(target))) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  };
+
   const onUiDown = (e: PointerEvent): void => {
     const el = controlOf(e);
-    if (!el) return;
+    if (!el) {
+      const tap = tapButtonOf(e);
+      if (tap) onTapDown(e, tap);
+      return;
+    }
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     app.unlockAudio();
     e.preventDefault();
@@ -216,17 +262,21 @@ export function createInput(opts: CreateInputOptions): InputController {
   };
 
   const onUiMove = (e: PointerEvent): void => {
+    if (taps.has(e.pointerId)) taps.move(eventSample(e));
     if (e.pointerId !== press.pointerId) return;
     if (press.move(sample(e))) clearPressVisuals();
   };
 
   const onUiUp = (e: PointerEvent): void => {
-    if (e.pointerId === thrustPointer) releaseThrust();
+    const tap = tapEls.get(e.pointerId);
+    if (tap) onTapUp(e, tap);
+    else if (e.pointerId === thrustPointer) releaseThrust();
     else if (e.pointerId === press.pointerId) endPress(sample(e));
   };
 
   const onUiCancel = (e: PointerEvent): void => {
-    if (e.pointerId === thrustPointer) {
+    if (tapEls.delete(e.pointerId)) taps.cancel(e.pointerId);
+    else if (e.pointerId === thrustPointer) {
       releaseThrust();
       opts.onInterrupt?.('pointercancel');
     } else if (e.pointerId === press.pointerId) {
@@ -249,6 +299,8 @@ export function createInput(opts: CreateInputOptions): InputController {
       case 'drive':
         return true;
       case 'slotDown':
+        // A number key in a menu must not spend the item when the menu closes.
+        if (paused()) return false;
         beginSlot(cmd.slot, keySample(cmd.slot));
         return true;
       case 'slotUp':
@@ -293,6 +345,9 @@ export function createInput(opts: CreateInputOptions): InputController {
     releaseThrust();
     keys.clear();
     pendingFire = -1;
+    taps.clear();
+    tapEls.clear();
+    swallow.clear();
     publishStick();
   };
 
@@ -301,7 +356,7 @@ export function createInput(opts: CreateInputOptions): InputController {
   };
 
   const disposeGuards = installGestureGuards(canvas);
-  const listen: [EventTarget, string, EventListener][] = [
+  const listen: [EventTarget, string, EventListener, boolean?][] = [
     [canvas, 'pointerdown', onCanvasDown as EventListener],
     [canvas, 'pointermove', onCanvasMove as EventListener],
     [canvas, 'pointerup', onCanvasUp as EventListener],
@@ -311,12 +366,13 @@ export function createInput(opts: CreateInputOptions): InputController {
     [uiRoot, 'pointermove', onUiMove as EventListener],
     [uiRoot, 'pointerup', onUiUp as EventListener],
     [uiRoot, 'pointercancel', onUiCancel as EventListener],
+    [uiRoot, 'click', onUiClick as EventListener, true],
     [window, 'keydown', onKeyDown as EventListener],
     [window, 'keyup', onKeyUp as EventListener],
     [window, 'blur', releaseAll],
     [document, 'visibilitychange', onVisibility],
   ];
-  for (const [target, type, fn] of listen) target.addEventListener(type, fn);
+  for (const [target, type, fn, capture] of listen) target.addEventListener(type, fn, capture);
 
   return {
     /** Returns a reused object: read it (or copy it) before the next call. */
@@ -344,7 +400,7 @@ export function createInput(opts: CreateInputOptions): InputController {
     releaseAll,
     dispose(): void {
       releaseAll();
-      for (const [target, type, fn] of listen) target.removeEventListener(type, fn);
+      for (const [target, type, fn, capture] of listen) target.removeEventListener(type, fn, capture);
       disposeGuards();
     },
   };

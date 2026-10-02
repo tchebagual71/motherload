@@ -23,6 +23,7 @@ export { revealAround } from './sense';
 export { thrustInput, skyFade } from './physics';
 export { PUMP_PAD_X } from './consumables';
 export { blocksPod, forcedFloorRow } from './collision';
+export { destructionCause } from './vitals';
 
 export interface PodStepCtx {
   /** Rows ≥ this are treated as an undiggable, impassable scope floor (M0 r128 / MVP r320 overlay; 584 = Seal in v1). */

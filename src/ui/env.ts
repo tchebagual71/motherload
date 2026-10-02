@@ -17,8 +17,3 @@ export function isIOS(): boolean {
   const ua = navigator.userAgent;
   return /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
-
-/** OS-level reduced-motion preference. */
-export function prefersReducedMotion(): boolean {
-  return typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-}

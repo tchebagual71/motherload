@@ -1,6 +1,7 @@
 // Garage (canon §2.4, §2.6; 01 §3.10; 03 §6.3–6.4): one card per line (installed vs next tier, price, BUY
 // or the blocker), pinned Repair all. Lines outside this build's scope show greyed "Coming soon".
 import type { JSX } from 'preact';
+import { useRef } from 'preact/hooks';
 import type { AppController } from '../../app/types';
 import type { Line } from '../../shared/canon';
 import type { UpgradeCard } from '../../world/api';
@@ -28,11 +29,23 @@ const LINE_ICON: Readonly<Record<Line, IconName>> = {
   bay: 'bay',
   scanner: 'scanner',
 };
+/** A BUY this soon after a purchase is the same finger tapping twice: ignored (the next tier slid in under it). */
+const REBUY_GUARD_MS = 300;
 
 export function GarageSheet({ app, close, leaving }: { app: AppController; close: () => void; leaving?: boolean }): JSX.Element {
   app.state.hudTick.value;
   const w = app.world;
   const cards = w.garageCards();
+  // Ranked once when the sheet opens: re-ranking after a purchase would slide another line's BUY under the
+  // finger that just bought, and move cards while the player reads them.
+  const order = useRef<readonly Line[] | null>(null);
+  order.current ??= garageOrder(cards);
+  const lastBuy = useRef(-Infinity);
+  const buy = (c: UpgradeCard): void => {
+    const now = performance.now();
+    if (now - lastBuy.current < REBUY_GUARD_MS) return;
+    if (act(app, () => w.buyUpgrade(c.line, c.tier)).ok) lastBuy.current = now;
+  };
   const repair = w.repairQuote();
   const stats = w.stats();
   const damaged = w.pod.hull < stats.maxHull - 0.05;
@@ -41,8 +54,6 @@ export function GarageSheet({ app, close, leaving }: { app: AppController; close
     : repair.amount <= 0
       ? 'No cash for repairs'
       : `${repair.limitedByCash ? 'Repair' : 'Repair all'} ${formatHp(repair.amount)} HP · ${formatCash(repair.cost)}`;
-  // Buyable cards first, then ones blocked by cash/parts, then out-of-scope lines.
-  const ordered = [...cards].sort((a, b) => cardRank(a) - cardRank(b));
   return (
     <BottomSheet
       title="Garage"
@@ -56,8 +67,8 @@ export function GarageSheet({ app, close, leaving }: { app: AppController; close
       }
     >
       <ul class="hf-cards">
-        {ordered.map((c) => (
-          <LineCard key={c.line} card={c} onBuy={() => act(app, () => w.buyUpgrade(c.line, c.tier))} />
+        {inGarageOrder(order.current, cards).map((c) => (
+          <LineCard key={c.line} card={c} onBuy={() => buy(c)} />
         ))}
       </ul>
     </BottomSheet>
@@ -67,6 +78,20 @@ export function GarageSheet({ app, close, leaving }: { app: AppController; close
 function cardRank(c: UpgradeCard): number {
   if (!c.available) return 2;
   return c.blocker === null ? 0 : 1;
+}
+
+/** Line order for a freshly opened Garage: buyable first, then blocked by cash/parts, then out of scope. */
+export function garageOrder(cards: readonly UpgradeCard[]): Line[] {
+  return [...cards].sort((a, b) => cardRank(a) - cardRank(b)).map((c) => c.line);
+}
+
+/** `cards` in a fixed line order; lines missing from it (none in practice) follow in catalogue order. */
+export function inGarageOrder(order: readonly Line[], cards: readonly UpgradeCard[]): UpgradeCard[] {
+  const pos = (l: Line): number => {
+    const i = order.indexOf(l);
+    return i < 0 ? order.length : i;
+  };
+  return [...cards].sort((a, b) => pos(a.line) - pos(b.line));
 }
 
 function LineCard({ card, onBuy }: { card: UpgradeCard; onBuy: () => void }): JSX.Element {

@@ -196,6 +196,39 @@ describe('beacons', () => {
     }
   });
 
+  it('Hop Beacon lands only on Rim columns that hold the pod: never a surface hole or the survey shaft', () => {
+    const g = solidGrid();
+    carve(g, 26, 0, 26, 45); // the survey shaft
+    for (const x of [0, 7, 11, 12, 13, 33, 47]) carve(g, x, 0, x, 30); // player-dug shafts, incl. a 3-wide one and both edges
+    const rng = new Rng(7, STREAM.HOP_BEACON);
+    const ctx = makeCtx({ rng });
+    const seen = new Set<number>();
+    for (let k = 0; k < 500; k++) {
+      const p = podAt(20, -1, (q) => {
+        stocked(q);
+        q.quickSlots[0] = 'hopBeacon';
+        q.tiers.hull = 7;
+        q.hull = 180;
+      });
+      const before = Rng.fromState(rng.s);
+      const ev = run(p, g, 1, fire(0), ctx);
+      // Replay contract: one x draw, then one height draw.
+      before.next();
+      before.next();
+      expect(rng.s).toEqual(before.s);
+      const tp = ofType(ev, 'teleport')[0];
+      seen.add(Math.floor(tp.x));
+      expect(g.get(Math.floor(tp.x), 0)).not.toBe(T.AIR);
+      for (let i = 0; i < 400 && !p.grounded; i++) ev.push(...run(p, g, 1, intent(), ctx));
+      expect(p.grounded).toBe(true);
+      expect(p.y).toBeGreaterThan(0);
+      const dmg = ofType(ev, 'damage');
+      expect(dmg).toHaveLength(1);
+      expect([5, 6]).toContain(dmg[0].amount);
+    }
+    expect(seen.size).toBe(MINE_W - 8); // every solid Rim column is still a target
+  });
+
   it('Hop Beacon targets are deterministic in the RNG stream', () => {
     const g = solidGrid();
     const xs = [1, 2].map(() => {

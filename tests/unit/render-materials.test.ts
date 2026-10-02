@@ -3,9 +3,13 @@ import {
   BoxGeometry,
   BufferAttribute,
   Group,
+  Light,
   Mesh,
   MeshLambertMaterial,
+  OrthographicCamera,
+  Scene,
   ShaderLib,
+  type ShaderMaterial,
   type WebGLProgramParametersWithUniforms,
   type WebGLRenderer,
 } from 'three';
@@ -14,7 +18,10 @@ import { LAYER_LATE, LAYER_MAIN, MaterialKit, addOutlineHulls, applyLookMaterial
 import { createShadedMaterial } from '../../src/render/materials/look';
 import { createAmbientLut } from '../../src/render/materials/uniforms';
 import { ambientAt } from '../../src/render/palette';
-import { QUALITY, outlineScope, oreHullsEnabled, toonDpr } from '../../src/render/quality';
+import { QUALITY, meshOreHulls, outlineScope, oreHullsEnabled, toonDpr } from '../../src/render/quality';
+import { OreGlows } from '../../src/render/glows';
+import { PASS_MASKS } from '../../src/render/pipelines';
+import { createFallbackLights } from '../../src/render/renderer';
 
 function compileToon(kind: Parameters<typeof createShadedMaterial>[0], look: 'toon' | 'pixel'): { vs: string; fs: string; key: string; defines: Record<string, unknown> } {
   const kit = new MaterialKit();
@@ -54,6 +61,23 @@ describe('render materials', () => {
   it('writes the view normal to a second attachment only in Pixel Lab', () => {
     expect(compileToon('solid', 'pixel').fs).toContain('hfNormalOut = vec4(normalize(normal)');
     expect(compileToon('terrain', 'pixel').fs).toContain('layout(location = 1) out highp vec4 hfNormalOut');
+  });
+
+  it('keys every Pixel Lab dither on its frame phase, never on gl_FragCoord alone', () => {
+    const kit = new MaterialKit();
+    for (const kind of ['terrain', 'solid'] as const) {
+      const fs = compileToon(kind, 'pixel').fs;
+      expect(fs).toContain('hfBayer(gl_FragCoord.xy + phase)');
+      expect(fs).toContain('hfDither(pod, 5.0, uHfDitherPod)');
+      expect(fs).toContain('i < uHfPodLampCount ? uHfDitherPod : uHfDitherWorld');
+    }
+    const glow = new OreGlows('pixel', kit.uniforms.uHfDitherWorld).materialFor('pixel');
+    expect(glow.uniforms.uDither).toBe(kit.uniforms.uHfDitherWorld);
+    const sky = kit.sky('pixel') as ShaderMaterial;
+    for (const fs of [glow.fragmentShader, sky.fragmentShader]) {
+      expect(fs).toContain('bayer(gl_FragCoord.xy + uDither)');
+      expect(fs).not.toMatch(/bayer\(gl_FragCoord\.xy\)/i);
+    }
   });
 
   it('swaps tagged meshes to shared per-look materials and layers transparent ones late', () => {
@@ -128,6 +152,24 @@ describe('render materials', () => {
     expect(hull.geometry.getAttribute('position')).toBe(other.getAttribute('position'));
   });
 
+  it('shows the fallback lights to every pass, so precompiled programs match the drawn ones', () => {
+    // three keys programs on the lights gathered for the camera's layers (WebGLRenderer.compile /
+    // projectObject: light.layers.test(camera.layers)); every pass and precompile() must see one set.
+    const scene = new Scene();
+    scene.add(...createFallbackLights());
+    const gathered = (mask: number | null): number => {
+      const cam = new OrthographicCamera();
+      if (mask !== null) cam.layers.mask = mask;
+      let n = 0;
+      scene.traverseVisible((o) => {
+        if ((o as Light).isLight && o.layers.test(cam.layers)) n++;
+      });
+      return n;
+    };
+    expect(gathered(null)).toBe(2); // precompile() with a fresh camera
+    for (const mask of PASS_MASKS) expect(gathered(mask)).toBe(2);
+  });
+
   it('bakes the ambient LUT from the palette', () => {
     const lut = createAmbientLut();
     const data = lut.image.data as Uint8Array;
@@ -151,5 +193,13 @@ describe('render quality', () => {
     expect(oreHullsEnabled('pod')).toBe(false);
     expect(QUALITY.low.lamps).toBe(8);
     expect(QUALITY.high.particles).toBe(900);
+  });
+
+  it('meshes ore hull geometry only where a look draws it (M0 keeps it for instant flips)', () => {
+    expect(meshOreHulls('pixel', 'mid', false)).toBe(false);
+    expect(meshOreHulls('pixel', 'high', false)).toBe(false);
+    expect(meshOreHulls('toon', 'low', false)).toBe(false); // low outlines the pod only
+    expect(meshOreHulls('toon', 'mid', false)).toBe(true);
+    for (const look of ['toon', 'pixel'] as const) for (const tier of ['low', 'mid', 'high'] as const) expect(meshOreHulls(look, tier, true)).toBe(true);
   });
 });

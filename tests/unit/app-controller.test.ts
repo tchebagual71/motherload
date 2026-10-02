@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEATH_CARD_MS, GameApp, IMPORT_DRY_RUN_STEPS, salvageFee, type ControllerOptions } from '../../src/app/controller';
+import { NOTICE } from '../../src/app/notices';
 import { defaultSettings } from '../../src/app/settings';
+import { TOAST_MS } from '../../src/app/toasts';
 import type { InputController } from '../../src/app/types';
 import type { PodIntent } from '../../src/pod/types';
 import type { GameEvent } from '../../src/shared/events';
@@ -178,6 +180,7 @@ describe('GameApp: death and salvage (canon §4.2)', () => {
 describe('GameApp: toasts, actions, settings', () => {
   it('afterAction toasts failures and saves soon after successes', () => {
     const { app, saves, audio } = makeApp();
+    app.start();
     app.afterAction({ ok: false, reason: 'Need $5 more' });
     expect(app.state.toasts.value.map((t) => t.text)).toEqual(['Need $5 more']);
     expect(audio.play).toHaveBeenCalledWith('error');
@@ -187,6 +190,7 @@ describe('GameApp: toasts, actions, settings', () => {
 
   it('sim toast events and incentives become toasts', () => {
     const { app } = makeApp();
+    app.start();
     app.handleEvents([
       { t: 'toast', text: 'Paved — dig beside the pad' },
       { t: 'incentive', row: 40, ft: 500, cash: 1_000 },
@@ -214,6 +218,67 @@ describe('GameApp: toasts, actions, settings', () => {
     expect(audio.setEnabled).toHaveBeenLastCalledWith(false);
     expect(audio.setRespectSilent).toHaveBeenLastCalledWith(false);
     expect(settingsStore.saveSettings).toHaveBeenCalled();
+  });
+});
+
+describe('GameApp: toasts under the title, upright card and Safe Mode (03 §6.2)', () => {
+  it('a boot notice raised behind the title shows for its full 2.5 s after Play', () => {
+    const { app, advance } = makeApp();
+    app.toast('Damaged save: loaded copy 5 min older', 'warn');
+    expect(app.state.toasts.value).toEqual([]);
+    advance(10_000); // the player reads the title for 10 s
+    app.tick(16, 10_000);
+    app.start();
+    expect(app.state.toasts.value).toMatchObject([{ text: 'Damaged save: loaded copy 5 min older', tone: 'warn', until: 10_000 + TOAST_MS }]);
+  });
+
+  it('holds toasts while landscape and releases them with "Tap to resume"', () => {
+    const { app } = makeApp();
+    app.start();
+    app.setUpright(true);
+    app.toast('Bay full', 'warn');
+    expect(app.state.toasts.value).toEqual([]);
+    app.setUpright(false);
+    expect(app.state.overlay.value).toBe('interrupt');
+    expect(app.state.toasts.value.map((t) => t.text)).toEqual(['Bay full']);
+  });
+
+  it('a notice about the loaded world is dropped when New game replaces it; others survive', () => {
+    const { app } = makeApp();
+    app.worldNotice('Damaged save: loaded copy 5 min older', 'warn');
+    app.toast(NOTICE.savesUnavailable, 'warn');
+    app.newGame();
+    expect(app.state.toasts.value.map((t) => t.text)).toEqual([NOTICE.savesUnavailable, 'New claim staked']);
+  });
+
+  it('a Safe Mode failure waits behind the card and is dropped by New game', async () => {
+    const safeMode = { exportCode: vi.fn(async () => null), loadPrevious: vi.fn(async () => ({ ok: false as const, reason: NOTICE.noOlderCopy })) };
+    const { app } = makeApp({ safeMode });
+    app.start();
+    await vi.waitFor(() => expect(safeMode.loadPrevious).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(app.state.overlay.value).toBe('safemode');
+    app.newGame();
+    expect(app.state.toasts.value.map((t) => t.text)).toEqual(['New claim staked']);
+  });
+});
+
+describe('GameApp: service-worker update (04 §9.2)', () => {
+  it('never reloads by itself, even on the title; the chip applies it after a critical save', () => {
+    const { app, saves } = makeApp();
+    const apply = vi.fn(async () => undefined);
+    app.notifyUpdateReady(apply);
+    expect(apply).not.toHaveBeenCalled();
+    expect(saves.critical).not.toHaveBeenCalled();
+    expect(app.updateReady.value).toBe(true);
+    app.start();
+    expect(app.state.toasts.value.map((t) => t.text)).toEqual([NOTICE.updateReady]);
+    app.applyUpdate();
+    expect(saves.critical).toHaveBeenCalledTimes(1);
+    expect(saves.critical.mock.invocationCallOrder[0]).toBeLessThan(apply.mock.invocationCallOrder[0]);
+    expect(app.updateReady.value).toBe(false);
+    app.applyUpdate();
+    expect(apply).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -264,7 +329,8 @@ describe('GameApp: Safe Mode', () => {
   it('holds the pod and saving until the player picks a way out', async () => {
     const recovered = fakeWorld();
     const onSafeModeResolved = vi.fn();
-    const safeMode = { exportCode: vi.fn(async () => 'HF1:failing'), loadPrevious: vi.fn(async () => ({ ok: true as const, world: recovered })) };
+    const message = 'Loaded previous copy (5 min older)';
+    const safeMode = { exportCode: vi.fn(async () => 'HF1:failing'), loadPrevious: vi.fn(async () => ({ ok: true as const, world: recovered, message })) };
     const { app, saves } = makeApp({ safeMode, hooks: { onSafeModeResolved } });
     expect(app.state.overlay.value).toBe('safemode');
     expect(saves.setEnabled).toHaveBeenLastCalledWith(false);
@@ -274,6 +340,10 @@ describe('GameApp: Safe Mode', () => {
     expect(app.world).toBe(recovered);
     expect(saves.setEnabled).toHaveBeenLastCalledWith(true);
     expect(app.state.overlay.value).toBe('title');
+    // Which copy loaded is said once the title is gone (the toast layer is hidden under it).
+    expect(app.state.toasts.value).toEqual([]);
+    app.start();
+    expect(app.state.toasts.value.map((t) => t.text)).toEqual([message]);
   });
 
   it('New game leaves Safe Mode straight into play', () => {

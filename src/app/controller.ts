@@ -1,6 +1,7 @@
 // AppController (src/app/types.ts): the only object the UI talks to. Owns the reactive AppState, the
-// TimeController (pause reasons, resume gate), toasts, death → salvage → respawn, saves on the 04 §4.12 triggers
-// and export/import with the 04 §4.13 dry run. Renderer, input, audio and saves are attached by boot.ts.
+// TimeController (pause reasons, resume gate), toasts, death → salvage → respawn, saves on the 04 §4.12 triggers,
+// export/import with the 04 §4.13 dry run and the waiting service-worker update (04 §9.2). Renderer, input, audio
+// and saves are attached by boot.ts.
 import { effect, signal } from '@preact/signals';
 import type { QualityTier, Renderer } from '../render/api';
 import { NO_INTENT } from '../pod/types';
@@ -11,8 +12,9 @@ import type { DecodedCode } from '../save/exportCode';
 import type { WriteOutcome } from '../save/store';
 import type { Result, WorldApi } from '../world/api';
 import type { SettingsStore } from './settings';
+import { NOTICE } from './notices';
 import { TimeController, type PodMotion, type SheetReason } from './time';
-import { pruneToasts, pushToast } from './toasts';
+import { holdToast, pruneToasts, pushToast, toastsCovered } from './toasts';
 import type { AppController, AppState, DeathInfo, InputController, Overlay, SheetId, Settings, Toast } from './types';
 
 export const DEATH_CARD_MS = 3_000;
@@ -76,15 +78,18 @@ export interface SavePort {
 export interface SafeModeHooks {
   /** Export code of the copy that keeps failing, or null to export the live world. */
   exportCode(): Promise<string | null>;
-  /** Load the next older copy ("Load previous copy (n min older)"). */
-  loadPrevious(): Promise<{ ok: true; world: WorldApi } | { ok: false; reason: string }>;
+  /**
+   * "Load previous copy (n min older)"; with no older copy, the failing copy itself once more. `message` says
+   * which one loaded.
+   */
+  loadPrevious(): Promise<{ ok: true; world: WorldApi; message: string } | { ok: false; reason: string }>;
 }
 
 export interface AppHooks {
   /** Look changed (perf segments, persistence beyond settings). */
   onLook?(look: Look): void;
   onSettings?(next: Settings, prev: Settings): void;
-  /** Title / Safe Mode left: the player is now playing (wake lock, deferred engine start). */
+  /** Title / Safe Mode left: the player is now playing. */
   onPlay?(): void;
   /** Safe Mode resolved: boot starts the renderer, input and loop it had held back. */
   onSafeModeResolved?(): void;
@@ -113,9 +118,18 @@ export interface ControllerOptions {
   hooks?: AppHooks;
 }
 
+/** A toast raised while the toast layer was covered; `world` set = about that world (dropped if it is replaced). */
+interface HeldToast {
+  text: string;
+  tone: Toast['tone'];
+  world: WorldApi | null;
+}
+
 export class GameApp implements AppController {
   readonly state: AppState;
   readonly time: TimeController;
+  /** 04 §9.2: a new service worker is waiting; the "Update ready" chip (Rim or menu) shows while true. */
+  readonly updateReady = signal(false);
   private worldRef: WorldApi;
   private renderer: Renderer | null = null;
   private input: InputController | null = null;
@@ -129,6 +143,7 @@ export class GameApp implements AppController {
   private safeModeActive: boolean;
   private prevSheet: SheetId = null;
   private updateApply: (() => Promise<void>) | null = null;
+  private held: HeldToast[] = [];
   private readonly disposeSheetEffect: () => void;
 
   constructor(private readonly opts: ControllerOptions) {
@@ -251,7 +266,15 @@ export class GameApp implements AppController {
   }
 
   toast(text: string, tone: Toast['tone'] = 'info'): void {
-    this.state.toasts.value = pushToast(this.state.toasts.peek(), ++this.toastId, text, tone, this.opts.now());
+    this.show({ text, tone, world: null });
+  }
+
+  /**
+   * A notice about the live world (which copy loaded, and why): a toast, but one that is dropped if this world
+   * is replaced (New game, import) while it still waits behind the title or Safe Mode.
+   */
+  worldNotice(text: string, tone: Toast['tone'] = 'info'): void {
+    this.show({ text, tone, world: this.worldRef });
   }
 
   async exportSave(): Promise<string> {
@@ -369,11 +392,24 @@ export class GameApp implements AppController {
     else if (this.time.clear('ctxlost')) this.interrupt();
   }
 
-  /** A new service worker is waiting (04 §9.2): never mid-trip — apply on the title screen only. */
+  /**
+   * A new service worker is waiting (04 §9.2). It is never applied by itself (a reload under the player's thumb):
+   * the "Update ready" chip calls applyUpdate(), and otherwise it installs at the next launch.
+   */
   notifyUpdateReady(apply: () => Promise<void>): void {
     this.updateApply = apply;
-    if (this.state.overlay.peek() === 'title') this.applyPendingUpdate();
-    else this.toast('Update ready: it installs next launch', 'info');
+    this.updateReady.value = true;
+    this.toast(NOTICE.updateReady, 'info');
+  }
+
+  /** The chip's tap (04 §9.2): critical save, then skipWaiting and reload. */
+  applyUpdate(): void {
+    const apply = this.updateApply;
+    if (!apply) return;
+    this.updateApply = null;
+    this.updateReady.value = false;
+    this.saves?.critical(this.opts.now());
+    void apply();
   }
 
   /** Replace the live world (new game, import, Safe Mode recovery). */
@@ -399,6 +435,22 @@ export class GameApp implements AppController {
     const o = this.time.overlay();
     if (this.state.overlay.peek() !== o) this.state.overlay.value = o;
     this.publishCountdown();
+    if (this.held.length > 0 && !toastsCovered(o)) this.releaseHeld();
+  }
+
+  /** Title, upright card and Safe Mode cover the toast layer: hold the toast, and start its 2.5 s once it shows. */
+  private show(t: HeldToast): void {
+    if (toastsCovered(this.state.overlay.peek())) {
+      this.held = holdToast(this.held, t);
+      return;
+    }
+    this.state.toasts.value = pushToast(this.state.toasts.peek(), ++this.toastId, t.text, t.tone, this.opts.now());
+  }
+
+  private releaseHeld(): void {
+    const held = this.held;
+    this.held = [];
+    for (const t of held) if (t.world === null || t.world === this.worldRef) this.show({ ...t, world: null });
   }
 
   /** countdownMs is UI-facing: publish in 100-ms steps, not every frame. */
@@ -481,12 +533,12 @@ export class GameApp implements AppController {
     if (!hooks) return;
     const r = await hooks.loadPrevious();
     if (!r.ok) {
-      this.toast(r.reason, 'warn');
+      this.worldNotice(r.reason, 'warn');
       return;
     }
     this.setWorld(r.world, true);
     this.leaveSafeMode();
-    this.toast('Loaded the previous copy', 'good');
+    this.worldNotice(r.message, 'good');
     this.opts.hooks?.onSafeModeResolved?.();
   }
 
@@ -495,13 +547,5 @@ export class GameApp implements AppController {
     this.safeModeActive = false;
     this.saves?.setEnabled(true);
     this.time.clear('safemode');
-  }
-
-  private applyPendingUpdate(): void {
-    const apply = this.updateApply;
-    if (!apply) return;
-    this.updateApply = null;
-    this.saves?.critical(this.opts.now());
-    void apply();
   }
 }

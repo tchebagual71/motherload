@@ -57,14 +57,17 @@ function round(v: number, digits = 2): number {
   return Math.round(v * k) / k;
 }
 
+/** One look/tier segment. Drops are judged at the display rate the capture actually ran at (canon §3.14). */
 export function segmentFromMonitor(m: PerfMonitor, look: Look, tier: QualityTier): PerfSegment {
+  const displayHz = estimateDisplayHz(m.hist);
+  const dropped = m.droppedAt(displayHz);
   return {
     look,
     tier,
     frames: m.frames,
-    dropped: m.dropped,
-    droppedRate: round(m.droppedRate, 4),
-    displayHz: estimateDisplayHz(m.hist),
+    dropped,
+    droppedRate: round(m.frames > 0 ? dropped / m.frames : 0, 4),
+    displayHz,
     hist: Array.from(m.hist),
     cpuP50: round(m.workPercentile(0.5)),
     cpuP95: round(m.workPercentile(0.95)),

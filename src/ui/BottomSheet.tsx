@@ -29,6 +29,16 @@ export function BottomSheet({ title, icon, onClose, footer, leaving, class: cls,
     sheet.current?.focus({ preventScroll: true });
   }, []);
 
+  // A swipe-close leaves the drag offset inline so the exit animation starts under the finger. If the same
+  // sheet is wanted again before it unmounts (SheetHost keeps the instance), it must sit fully open again.
+  useEffect(() => {
+    const el = sheet.current;
+    if (leaving || !el) return;
+    drag.current = { id: -1, y0: 0, t0: 0, dy: 0 };
+    el.style.transform = '';
+    el.style.transition = '';
+  }, [leaving]);
+
   const onDown = (e: PointerEvent): void => {
     if (drag.current.id !== -1 || (e.target instanceof Element && e.target.closest('button'))) return;
     drag.current = { id: e.pointerId, y0: e.clientY, t0: e.timeStamp, dy: 0 };

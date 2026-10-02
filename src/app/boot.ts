@@ -1,6 +1,7 @@
 // Boot sequence (04 §3, §4.13, §9): settings → layout → tier → save store + boot tracking (Safe Mode) → world →
 // AppController → UI → audio/saves/lifecycle → renderer + input + loop. Safe Mode holds the renderer, input and
 // loop back until the player picks a way out (that screen is DOM-only).
+import { effect } from '@preact/signals';
 import { AudioEngine, MAX_VOICES, MAX_VOICES_LOW } from '../audio/engine';
 import { SCOPE } from '../config/scope';
 import { readJetsamSummary } from '../debug/jetsam';
@@ -17,19 +18,33 @@ import { createWakeLock } from '../platform/wakeLock';
 import type { QualityTier, Renderer } from '../render/api';
 import { createRenderer } from '../render/renderer';
 import { BOOT_STABLE_MS, BootTracker } from '../save/bootTrack';
-import { SaveScheduler } from '../save/scheduler';
-import type { CopyId, SaveStore, WriteError } from '../save/store';
+import { SaveScheduler, type SaveSink } from '../save/scheduler';
+import type { WriteError } from '../save/store';
 import type { Look } from '../shared/types';
 import { mountUI } from '../ui';
 import { debugEnabled } from '../ui/env';
-import { codes, loadInitialWorld, nullSink, openStore, parseSeed, randomSeed, safeModeHooks, worlds } from './bootWorld';
+import {
+  adoptLateStore,
+  codes,
+  LateSink,
+  loadInitialWorld,
+  nullSink,
+  openStore,
+  randomSeed,
+  safeModeHooks,
+  seedOverride,
+  worlds,
+  type LoadedCopy,
+} from './bootWorld';
 import { GameApp, isRimBuilding, type AppHooks } from './controller';
 import { orientationFlipped } from './layout';
 import { GameLoop } from './loop';
+import { NOTICE } from './notices';
 import { createSettingsStore, defaultSettings, initialLook, type SettingsStore } from './settings';
 import { resolveTier } from './tier';
 import type { Settings } from './types';
 import { createViewportTracker, parseDprOverride, type ViewportTracker } from './viewport';
+import { inPlay, WakePolicy } from './wakePolicy';
 
 const SAVE_ERROR_TOAST_GAP_MS = 60_000;
 const PRELOAD_RELOAD_KEY = 'preloadReload';
@@ -86,21 +101,40 @@ function readConfig(): BootConfig {
   };
 }
 
+/**
+ * 04 §4.13: only boots that die in view count towards Safe Mode. A boot hidden or left (pagehide) before its
+ * first frame was closed by the player, not killed by the save; visible again (or back from the bfcache), it
+ * counts again. Returns a function removing the listeners.
+ */
+function trackLeftBoot(tracker: BootTracker): () => void {
+  const sync = (): void => tracker.setLeft(document.visibilityState === 'hidden');
+  const left = (): void => tracker.setLeft(true);
+  sync();
+  document.addEventListener('visibilitychange', sync);
+  window.addEventListener('pagehide', left);
+  window.addEventListener('pageshow', sync);
+  return () => {
+    document.removeEventListener('visibilitychange', sync);
+    window.removeEventListener('pagehide', left);
+    window.removeEventListener('pageshow', sync);
+  };
+}
+
 /** Autosave policy over the store. Disabled until this boot draws its first frame (see wireEngine). */
-function createSaves(app: GameApp, store: SaveStore | null): SaveScheduler {
+function createSaves(app: GameApp, sink: SaveSink): SaveScheduler {
   let lastErrorAt = Number.NEGATIVE_INFINITY;
   let persistAsked = false;
   const onError = (error: WriteError | 'serialize'): void => {
     const now = performance.now();
     if (error === 'closed' || now - lastErrorAt < SAVE_ERROR_TOAST_GAP_MS) return;
     lastErrorAt = now;
-    app.toast(error === 'quota' ? 'Storage full: export your save (Menu → Saves)' : 'Could not save: export your save', 'warn');
+    app.toast(error === 'quota' ? NOTICE.storageFull : NOTICE.saveFailed, 'warn');
   };
   const saves = new SaveScheduler(
     {
       serialize: () => app.world.serialize(),
       summarize: () => ({ deepestRow: app.world.story.deepestRow, cash: app.world.wallet.cash, trips: app.world.story.trips }),
-      sink: store ?? nullSink,
+      sink,
       onError,
       onSaved: () => {
         // canon §3.15: persist() after the first save.
@@ -277,7 +311,7 @@ function embedded(): boolean {
   }
 }
 
-/** 04 §9.2: prompt-type service worker; the controller applies a waiting update only on the title screen. */
+/** 04 §9.2: prompt-type service worker; a waiting update is applied only from the controller's update chip. */
 function wireServiceWorker(app: GameApp): void {
   let sw: ServiceWorkerHandle | null = null;
   void registerServiceWorker({
@@ -293,11 +327,13 @@ export async function boot(): Promise<void> {
   const uiRoot = el<HTMLElement>('ui');
 
   // ---- world (store, boot tracking, Safe Mode)
-  const store = await openStore();
   const tracker = new BootTracker(local, lsKey('boot'));
-  const initial = await loadInitialWorld(store, tracker, parseSeed(cfg.params.get('seed')));
-  let loadedCopy: CopyId | null = initial.copy;
-  let recoveredCopy: CopyId | null = null;
+  const untrackLeft = trackLeftBoot(tracker);
+  const opened = await openStore();
+  const store = opened.store;
+  const initial = await loadInitialWorld(opened, tracker, seedOverride(cfg.params, cfg.testMode));
+  let loadedCopy: LoadedCopy | null = initial.loaded;
+  let recoveredCopy: LoadedCopy | null = null;
   const safeMode = store && initial.safeModeCopy ? safeModeHooks(store, tracker, initial.safeModeCopy, (c) => (recoveredCopy = c)) : null;
 
   // ---- controller
@@ -342,14 +378,23 @@ export async function boot(): Promise<void> {
   audio.installUnlockListeners();
   app.attachAudio(audio);
 
-  const saves = createSaves(app, store);
+  const lateSink = opened.late ? new LateSink() : null;
+  const saves = createSaves(app, store ?? lateSink ?? nullSink);
+  if (opened.late && lateSink) {
+    void adoptLateStore(opened.late).then((s) => {
+      if (!s) return;
+      lateSink.attach(s);
+      app.toast(NOTICE.savesBack, 'good');
+    });
+  }
   let engine: { loop: GameLoop; renderer: Renderer } | null = null;
   wireLifecycle(app, saves, audio, () => engine?.loop ?? null);
 
   const perf = new PerfMonitor(60, cfg.navStart);
   const reporter = createPerfReporter(cfg, app, perf, viewport);
-  const wake = createWakeLock();
-  hooks.onPlay = () => wake.want(true);
+  // Wake Lock while in play; released after 25 s held by the title, a card or a sheet (03 §3.8).
+  const wake = new WakePolicy(createWakeLock());
+  effect(() => wake.update(inPlay(app.state.overlay.value, app.state.sheet.value)));
   hooks.onLook = (l) => reporter.recorder.switchTo(l, cfg.resolveQuality(app.state.settings.peek().quality));
   hooks.onSettings = (next, prev) => {
     if (next.controlSize !== prev.controlSize) viewport.setControlSize(next.controlSize);
@@ -364,7 +409,11 @@ export async function boot(): Promise<void> {
   // ---- UI
   mountUI(uiRoot, app);
   document.getElementById('boot')?.remove();
-  if (initial.notice) app.toast(initial.notice.text, initial.notice.tone);
+  // Held behind the title (or Safe Mode) until the toast layer shows; a notice about the loaded copy is dropped if
+  // the player starts a new game instead.
+  const notice = initial.notice;
+  if (notice?.aboutWorld) app.worldNotice(notice.text, notice.tone);
+  else if (notice) app.toast(notice.text, notice.tone);
 
   // ---- engine (held back while Safe Mode is up)
   const engineDeps: EngineDeps = {
@@ -381,11 +430,13 @@ export async function boot(): Promise<void> {
     onFirstFrame: () => {
       reporter.marks.firstFrameMs = performance.now() - cfg.navStart;
       tracker.phase('firstFrame');
+      untrackLeft();
       saves.setEnabled(true);
       setTimeout(() => {
-        // Ran cleanly for 10 s: forget the boot record and vouch for the copy we loaded (last-known-good).
+        // Ran cleanly for 10 s: forget the boot record and vouch for the save we loaded (last-known-good), if its
+        // copy still holds those bytes.
         tracker.clear();
-        if (store && loadedCopy) void store.promoteGood(loadedCopy);
+        if (store && loadedCopy) void store.promoteGood(loadedCopy.copy, loadedCopy.seq);
       }, BOOT_STABLE_MS);
     },
   };

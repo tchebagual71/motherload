@@ -7,6 +7,8 @@ import { MeshBuilder, XF } from '../../src/render/terrain/meshBuilder';
 import { BACK_Z, ChunkMesher, FRONT_Z, aoValue, type MesherOptions } from '../../src/render/terrain/mesher';
 import { bandIndexAt, jitterHex } from '../../src/render/terrain/colors';
 import { oreShape, relicShape } from '../../src/render/terrain/shapes';
+import { generateWorld } from '../../src/terrain/generate';
+import { CHUNKS_X } from '../../src/terrain/grid';
 
 const OPTS: MesherOptions = { floorRow: 10_000, lodeVisible: () => true, hulls: false };
 
@@ -130,6 +132,22 @@ describe('render mesher', () => {
     let hullVerts = 0;
     for (let v = 0; v < hulled.vcount; v++) if (hulled.ext[v * 4 + 1] & XF.HULL) hullVerts++;
     expect(hullVerts).toBe(shapeTris * 3);
+  });
+
+  it('leaves every hull triangle out of hull-less chunks (≈ a quarter of real terrain)', () => {
+    const grid = generateWorld(7).grid;
+    const m = new ChunkMesher();
+    const b = new MeshBuilder(64, 64);
+    let withHulls = 0, without = 0, hullVerts = 0;
+    for (let cy = 0; cy < 9; cy++) {
+      for (let cx = 0; cx < CHUNKS_X; cx++) {
+        withHulls += m.mesh(grid, cx, cy, { ...OPTS, floorRow: 128, hulls: true }, b).triangles;
+        without += m.mesh(grid, cx, cy, { ...OPTS, floorRow: 128, hulls: false }, b).triangles;
+        for (let v = 0; v < b.vcount; v++) if (b.ext[v * 4 + 1] & XF.HULL) hullVerts++;
+      }
+    }
+    expect(hullVerts).toBe(0);
+    expect(without / withHulls).toBeLessThan(0.8);
   });
 
   it('keeps every ore and relic template within the 12–56 triangle range', () => {

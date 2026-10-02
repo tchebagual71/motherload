@@ -90,6 +90,29 @@ describe('SaveScheduler (04 §4.12)', () => {
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
+  it('a critical write the store could not take is retried: soon while it reconnects, else at the routine cadence', async () => {
+    const { sched, s, settle, onError } = scheduler();
+    s.writeCritical.mockResolvedValueOnce({ ok: false, error: 'closed' });
+    sched.critical(1_000);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sched.isDirty).toBe(true);
+    expect(onError).toHaveBeenCalledWith('closed', 'critical');
+    sched.tick(1_000 + SOON_MS);
+    expect(s.writeRoutine).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(sched.isDirty).toBe(false);
+
+    s.writeCritical.mockResolvedValueOnce({ ok: false, error: 'failed' });
+    sched.critical(5_000);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sched.isDirty).toBe(true);
+    sched.tick(5_000 + SOON_MS);
+    expect(s.writeRoutine).toHaveBeenCalledTimes(1);
+    sched.tick(5_000 + SAVE_ROUTINE_MS);
+    expect(s.writeRoutine).toHaveBeenCalledTimes(2);
+    await settle();
+  });
+
   it('writes nothing while disabled (Safe Mode)', () => {
     const { sched, s } = scheduler();
     sched.setEnabled(false);
@@ -148,8 +171,54 @@ describe('boot tracking and Safe Mode (04 §4.13)', () => {
     const kv = memoryKeyValue();
     const t = new BootTracker(kv, 'k');
     t.begin(1, 'b');
-    t.retarget('a');
+    expect(t.retarget('a')).toEqual({ fails: 0, safeMode: false });
     expect(t.current).toEqual({ slot: 1, copy: 'a', phase: 'load', n: 0 });
+  });
+
+  it('a fallback copy that keeps dying gets the Safe Mode verdict on its own count', () => {
+    const kv = memoryKeyValue();
+    const boot = () => new BootTracker(kv, 'k');
+    // The newest copy b never verifies; every boot falls back to a and dies before its first frame.
+    const verdicts = [1, 2, 3].map(() => {
+      const t = boot();
+      expect(t.begin(1, 'b').safeMode).toBe(false);
+      return t.retarget('a');
+    });
+    expect(verdicts).toEqual([
+      { fails: 0, safeMode: false },
+      { fails: 1, safeMode: false },
+      { fails: 2, safeMode: true },
+    ]);
+  });
+
+  it('a boot left before its first frame (hidden, pagehide) is not a failure', () => {
+    const kv = memoryKeyValue();
+    const boot = () => new BootTracker(kv, 'k');
+    const dies = boot();
+    dies.begin(1, 'a'); // crashes in view
+    for (let i = 0; i < 3; i++) {
+      const t = boot();
+      expect(t.begin(1, 'a').fails).toBe(1);
+      t.setLeft(true); // reloaded / switched away before the first frame
+      expect(t.current?.left).toBe(true);
+    }
+    const back = boot();
+    back.begin(1, 'a');
+    back.setLeft(true);
+    back.setLeft(false); // visible again, then dies in view: counts
+    expect(boot().begin(1, 'a')).toEqual({ fails: 2, safeMode: true });
+  });
+
+  it('hidden before the record exists still marks the boot; firstFrame clears the mark', () => {
+    const kv = memoryKeyValue();
+    const t = new BootTracker(kv, 'k');
+    t.setLeft(true);
+    t.begin(1, 'a');
+    expect(t.current).toEqual({ slot: 1, copy: 'a', phase: 'load', n: 0, left: true });
+    t.phase('firstFrame');
+    expect(t.current).toEqual({ slot: 1, copy: 'a', phase: 'firstFrame', n: 0 });
+    t.setLeft(true);
+    expect(t.current?.left).toBeUndefined();
   });
 });
 

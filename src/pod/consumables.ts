@@ -13,7 +13,7 @@ import type { GameEvent } from '../shared/events';
 import type { Rng } from '../shared/rng';
 import type { ConsumableId } from '../shared/types';
 import type { TerrainGrid } from '../terrain/grid';
-import { HALF_H } from './collision';
+import { HALF_H, blocksPod } from './collision';
 import { cancelDig, centreRow } from './dig';
 import { blast } from './hazards';
 import { maxFuelOf, maxHullOf } from './stats';
@@ -61,7 +61,7 @@ function applyConsumable(pod: PodState, grid: TerrainGrid, id: ConsumableId, rng
       return;
     case 'hopBeacon': {
       // Draw order (x, then height) is part of the replay contract.
-      const x = rng.int(MINE_W) + 0.5;
+      const x = hopColumn(grid, rng, floor) + 0.5;
       const height = HOP_MIN_ROWS + rng.next() * HOP_SPAN_ROWS;
       teleport(pod, id, x, height + HALF_H, false, out);
       return;
@@ -70,6 +70,19 @@ function applyConsumable(pod: PodState, grid: TerrainGrid, id: ConsumableId, rng
       teleport(pod, id, PUMP_PAD_X, HALF_H, true, out);
       return;
   }
+}
+
+/**
+ * Hop Beacon target column: a random Rim column whose row-0 cell holds the pod up, so a hop never drops it
+ * into a surface hole or the survey shaft (canon §2.7: lands on the Rim, 5–6 HP). Exactly one RNG draw.
+ */
+function hopColumn(grid: TerrainGrid, rng: Rng, floor: number): number {
+  let n = 0;
+  for (let c = 0; c < MINE_W; c++) if (blocksPod(grid, c, 0, floor)) n++;
+  if (n === 0) return rng.int(MINE_W); // unreachable: paved pads cannot be dug
+  let k = rng.int(n);
+  for (let c = 0; c < MINE_W; c++) if (blocksPod(grid, c, 0, floor) && k-- === 0) return c;
+  return 0;
 }
 
 /** Move the pod instantly (no render interpolation across the jump). */

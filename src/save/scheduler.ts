@@ -3,6 +3,8 @@
 //   soon      — shop/upgrade, Rim arrival, hull damage: compressed write ≤ 1 s later (coalesced).
 //   routine   — every 30 s while dirty.
 // One compressed write is in flight at a time; requests made meanwhile coalesce into one follow-up write.
+// A write that does not land leaves the game dirty, so a later write retries it: a critical write the store could
+// not take ('closed': it is reconnecting) is retried as a "soon" save, anything else at the routine cadence.
 import { SAVE_ROUTINE_MS } from '../shared/canon';
 import type { SaveSummary, WriteError, WriteOutcome } from './store';
 
@@ -76,7 +78,13 @@ export class SaveScheduler {
     this.dirty = false;
     this.soonAt = Number.POSITIVE_INFINITY;
     this.lastSavedAt = now;
-    void done.then((o) => this.report('critical', o));
+    void done.then((o) => {
+      if (!o.ok && o.error !== 'stale') {
+        this.dirty = true;
+        if (o.error === 'closed') this.soonAt = Math.min(this.soonAt, now + this.soonMs);
+      }
+      this.report('critical', o);
+    });
     return done;
   }
 
