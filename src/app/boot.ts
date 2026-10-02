@@ -451,6 +451,7 @@ export async function boot(): Promise<void> {
   };
   if (!safeMode) start();
 
+  app.setPerfReporter(() => reporter.report(engine?.renderer ?? null));
   if (debugEnabled()) (window as Window & { __hfDebug?: unknown }).__hfDebug = { app, perfReport: () => reporter.report(engine?.renderer ?? null) };
   if (import.meta.env.PROD && !cfg.testMode && !embedded()) wireServiceWorker(app);
 }

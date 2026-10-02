@@ -40,6 +40,12 @@ describe('settings', () => {
       respectSilent: true,
       quality: 'auto',
       showPerf: false,
+      textScale: 1,
+      oneHanded: false,
+      thrustMode: 'hold',
+      returnTick: 'training',
+      landingAssist: false,
+      steadyDrill: false,
     });
     expect(defaultSettings(375, 667).controlSize).toBe('S');
     expect(defaultSettings(375, 667, true).reducedMotion).toBe(true);

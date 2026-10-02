@@ -15,7 +15,20 @@ import type { SettingsStore } from './settings';
 import { NOTICE } from './notices';
 import { TimeController, type PodMotion, type SheetReason } from './time';
 import { holdToast, pruneToasts, pushToast, toastsCovered } from './toasts';
-import type { AppController, AppState, DeathInfo, InputController, Overlay, SheetId, Settings, Toast } from './types';
+import type {
+  AppController,
+  AppState,
+  DeathInfo,
+  GoalChip,
+  InputController,
+  Mode,
+  Overlay,
+  RadioMessage,
+  SheetId,
+  Settings,
+  Toast,
+  TripSummary,
+} from './types';
 
 export const DEATH_CARD_MS = 3_000;
 export const HUD_TICK_MS = 100;
@@ -128,8 +141,6 @@ interface HeldToast {
 export class GameApp implements AppController {
   readonly state: AppState;
   readonly time: TimeController;
-  /** 04 §9.2: a new service worker is waiting; the "Update ready" chip (Rim or menu) shows while true. */
-  readonly updateReady = signal(false);
   private worldRef: WorldApi;
   private renderer: Renderer | null = null;
   private input: InputController | null = null;
@@ -143,6 +154,7 @@ export class GameApp implements AppController {
   private safeModeActive: boolean;
   private prevSheet: SheetId = null;
   private updateApply: (() => Promise<void>) | null = null;
+  private perfReporter: (() => Promise<string>) | null = null;
   private held: HeldToast[] = [];
   private readonly disposeSheetEffect: () => void;
 
@@ -164,6 +176,11 @@ export class GameApp implements AppController {
       standalone: signal(opts.standalone),
       styleTest: signal(opts.styleTest),
       perf: signal<{ fps: number; frameMs: number; drawCalls: number; tris: number } | null>(null),
+      mode: signal<Mode>('play'),
+      radio: signal<RadioMessage[]>([]),
+      goal: signal<GoalChip | null>(null),
+      tripSummary: signal<TripSummary | null>(null),
+      updateReady: signal(false),
     };
     this.time = new TimeController(() => this.syncOverlay());
     this.time.raise('title');
@@ -398,18 +415,41 @@ export class GameApp implements AppController {
    */
   notifyUpdateReady(apply: () => Promise<void>): void {
     this.updateApply = apply;
-    this.updateReady.value = true;
+    this.state.updateReady.value = true;
     this.toast(NOTICE.updateReady, 'info');
   }
 
   /** The chip's tap (04 §9.2): critical save, then skipWaiting and reload. */
-  applyUpdate(): void {
+  async applyUpdate(): Promise<void> {
     const apply = this.updateApply;
     if (!apply) return;
     this.updateApply = null;
-    this.updateReady.value = false;
+    this.state.updateReady.value = false;
     this.saves?.critical(this.opts.now());
-    void apply();
+    await apply();
+  }
+
+  /** Perf Report export code; boot wires the recorder via setPerfReporter(). */
+  async perfReport(): Promise<string> {
+    return this.perfReporter ? this.perfReporter() : '';
+  }
+  setPerfReporter(fn: () => Promise<string> | string): void {
+    this.perfReporter = async () => fn();
+  }
+
+  /** Build mode (canon §4.11): the pod freezes while building; the factory keeps running. Filled in by the MVP build UX. */
+  enterBuild(): void {
+    if (this.state.mode.value === 'build') return;
+    this.state.mode.value = 'build';
+  }
+  exitBuild(): void {
+    if (this.state.mode.value === 'play') return;
+    this.state.mode.value = 'play';
+  }
+
+  dismissRadio(id: number): void {
+    const q = this.state.radio.value;
+    if (q.some((m) => m.id === id)) this.state.radio.value = q.filter((m) => m.id !== id);
   }
 
   /** Replace the live world (new game, import, Safe Mode recovery). */

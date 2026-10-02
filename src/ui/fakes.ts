@@ -2,7 +2,7 @@
 // exercised without the real simulation. Not used by the game. Economy numbers follow canon §2.6–2.7, §3.8
 // closely enough to look right; physics is a toy.
 import { signal } from '@preact/signals';
-import type { AppController, AppState, DeathInfo, Overlay, Settings, SheetId, Toast } from '../app/types';
+import type { AppController, AppState, DeathInfo, GoalChip, Overlay, RadioMessage, Settings, SheetId, Toast, TripSummary } from '../app/types';
 import type { PodIntent, PodState } from '../pod/types';
 import {
   BAY,
@@ -475,6 +475,12 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     respectSilent: true,
     quality: 'auto',
     showPerf: false,
+    textScale: 1,
+    oneHanded: false,
+    thrustMode: 'hold',
+    returnTick: 'training',
+    landingAssist: false,
+    steadyDrill: false,
   };
   const state: AppState = {
     overlay: signal<Overlay>(opts.overlay ?? null),
@@ -490,6 +496,11 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     standalone: signal(opts.standalone ?? true),
     styleTest: signal(opts.styleTest ?? true),
     perf: signal<{ fps: number; frameMs: number; drawCalls: number; tris: number } | null>(null),
+    mode: signal<'play' | 'build'>('play'),
+    radio: signal<RadioMessage[]>([]),
+    goal: signal<GoalChip | null>(null),
+    tripSummary: signal<TripSummary | null>(null),
+    updateReady: signal(false),
   };
   let toastId = 0;
   let hudAcc = 0;
@@ -497,6 +508,21 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
   const app: FakeApp = {
     state,
     world,
+    enterBuild() {
+      state.mode.value = 'build';
+    },
+    exitBuild() {
+      state.mode.value = 'play';
+    },
+    async applyUpdate() {
+      state.updateReady.value = false;
+    },
+    async perfReport() {
+      return 'HFPR:fake';
+    },
+    dismissRadio(id) {
+      state.radio.value = state.radio.value.filter((m) => m.id !== id);
+    },
     openSheet(id) {
       state.sheet.value = id;
     },

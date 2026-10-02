@@ -34,7 +34,7 @@ describe('GameEvent → SFX (03 §11.4)', () => {
     [{ t: 'consumable-used', id: 'pop' }, null],
     [{ t: 'depth-record', row: 12 }, null],
     [{ t: 'pad-arrive', id: 'pump' }, null],
-    [{ t: 'radio', sender: 'Dot', text: 'hi' }, null],
+    [{ t: 'radio', sender: 'Dot', beat: 'test', cards: ['hi'] }, null],
   ];
   it.each(cases)('%o → %s', (e, id) => {
     expect(cueForEvent(e, CTX)?.id ?? null).toBe(id);

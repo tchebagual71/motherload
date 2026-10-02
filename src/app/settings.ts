@@ -21,6 +21,12 @@ export function defaultSettings(screenWidth: number, screenHeight: number, osRed
     respectSilent: true,
     quality: 'auto',
     showPerf: false,
+    textScale: 1,
+    oneHanded: false,
+    thrustMode: 'hold',
+    returnTick: 'training',
+    landingAssist: false,
+    steadyDrill: false,
   };
 }
 
@@ -44,6 +50,12 @@ export function sanitizeSettings(raw: unknown, d: Settings): Settings {
     respectSilent: pickBool(r.respectSilent, d.respectSilent),
     quality: quality === 'auto' || isQualityTier(quality) ? quality : d.quality,
     showPerf: pickBool(r.showPerf, d.showPerf),
+    textScale: r.textScale === 1 || r.textScale === 1.15 || r.textScale === 1.3 ? r.textScale : d.textScale,
+    oneHanded: pickBool(r.oneHanded, d.oneHanded),
+    thrustMode: r.thrustMode === 'hold' || r.thrustMode === 'toggle' ? r.thrustMode : d.thrustMode,
+    returnTick: r.returnTick === 'training' || r.returnTick === 'on' || r.returnTick === 'off' ? r.returnTick : d.returnTick,
+    landingAssist: pickBool(r.landingAssist, d.landingAssist),
+    steadyDrill: pickBool(r.steadyDrill, d.steadyDrill),
   };
 }
 

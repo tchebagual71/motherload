@@ -270,13 +270,13 @@ describe('GameApp: service-worker update (04 §9.2)', () => {
     app.notifyUpdateReady(apply);
     expect(apply).not.toHaveBeenCalled();
     expect(saves.critical).not.toHaveBeenCalled();
-    expect(app.updateReady.value).toBe(true);
+    expect(app.state.updateReady.value).toBe(true);
     app.start();
     expect(app.state.toasts.value.map((t) => t.text)).toEqual([NOTICE.updateReady]);
     app.applyUpdate();
     expect(saves.critical).toHaveBeenCalledTimes(1);
     expect(saves.critical.mock.invocationCallOrder[0]).toBeLessThan(apply.mock.invocationCallOrder[0]);
-    expect(app.updateReady.value).toBe(false);
+    expect(app.state.updateReady.value).toBe(false);
     app.applyUpdate();
     expect(apply).toHaveBeenCalledTimes(1);
   });

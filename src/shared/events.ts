@@ -31,4 +31,14 @@ export type GameEvent =
   | { t: 'purchase'; kind: 'fuel' | 'repair' | 'upgrade' | 'consumable'; amount: number; line?: Line; tier?: number; id?: ConsumableId }
   | { t: 'coop-credit'; liters: number }
   | { t: 'toast'; text: string; tone?: 'info' | 'warn' | 'good' }
-  | { t: 'radio'; sender: 'Dot' | 'Channel Zero' | 'Marlow' | 'the Surveyor'; text: string };
+  | { t: 'radio'; beat: string; sender: 'Dot' | 'Channel Zero' | 'Marlow' | 'the Surveyor' | 'Deepreach log'; cards: string[] }
+  // ---- Factory (02 §10.10 events) ----
+  | { t: 'first-lift-delivery' }
+  | { t: 'first-ingot'; item: string }
+  | { t: 'unlock'; rung: string; label: string }
+  | { t: 'export-sale'; amount: number; count: number }
+  | { t: 'ghost-complete'; kind: string }
+  | { t: 'lode-pinged'; lodeId: number }
+  // ---- Story / progression ----
+  | { t: 'milestone'; id: string; title: string }
+  | { t: 'starter-kit' };
