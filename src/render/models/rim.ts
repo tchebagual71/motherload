@@ -332,8 +332,8 @@ class PadLights {
       const start = caps.vertexCount;
       for (let i = 0; i < PAD_STUDS; i++) {
         const x = b.x0 + 0.5 + i;
-        housings.add(cylinder(0.13, 0.05, 8, 0.015), DARK, at(x, 0.025, PAD_STUD_Z));
-        caps.add(cylinder(0.08, 0.05, 8, 0.02), PAD_COLOURS[b.id], at(x, 0.045, PAD_STUD_Z));
+        housings.add(cylinder(0.17, 0.05, 8, 0.015), DARK, at(x, 0.025, PAD_STUD_Z));
+        caps.add(cylinder(0.12, 0.05, 8, 0.02), PAD_COLOURS[b.id], at(x, 0.045, PAD_STUD_Z));
       }
       this.capRanges.push(start, caps.vertexCount - start);
     }

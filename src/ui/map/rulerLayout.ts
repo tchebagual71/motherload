@@ -50,7 +50,8 @@ export function contextTop(v: RulerViewport, s: RulerSettings): number {
   return clusterTop - gap - size;
 }
 
-export function rulerGeometry(v: RulerViewport, s: RulerSettings): RulerGeometry {
+/** `railOnly`: build mode, where the hit strip shrinks to the rail (03 §4.11). */
+export function rulerGeometry(v: RulerViewport, s: RulerSettings, railOnly = false): RulerGeometry {
   const dominantRight = !s.leftHanded;
   const right = s.oneHanded ? !dominantRight : dominantRight;
   const top = v.it + TOUCH.hudRow + TOP_GAP;
@@ -58,12 +59,13 @@ export function rulerGeometry(v: RulerViewport, s: RulerSettings): RulerGeometry
   // One-handed puts the rail on the stick side: keep its hit strip above the stick zone (0.45 H, canon §3.12).
   if (s.oneHanded) bottom = Math.min(bottom, 0.45 * v.h - CONTEXT_GAP);
   bottom = Math.max(top + RULER_HIT, bottom);
+  const hit = railOnly ? RULER_RAIL : RULER_HIT;
   if (right) {
     const x1 = v.w - v.ir;
-    return { side: 'right', railX0: x1 - RULER_RAIL, railX1: x1, hitX0: x1 - RULER_HIT, hitX1: x1, top, bottom };
+    return { side: 'right', railX0: x1 - RULER_RAIL, railX1: x1, hitX0: x1 - hit, hitX1: x1, top, bottom };
   }
   const x0 = v.il + LEFT_EDGE_GAP;
-  return { side: 'left', railX0: x0, railX1: x0 + RULER_RAIL, hitX0: x0, hitX1: x0 + RULER_HIT, top, bottom };
+  return { side: 'left', railX0: x0, railX1: x0 + RULER_RAIL, hitX0: x0, hitX1: x0 + hit, top, bottom };
 }
 
 /** Rail y of a mine row: the rail maps rows 0 … floorRow onto its height (03 §4.11). */

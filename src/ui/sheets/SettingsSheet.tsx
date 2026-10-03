@@ -40,6 +40,7 @@ export function SettingsSheet({ app, close, leaving }: { app: AppController; clo
       <SectionTitle>Display</SectionTitle>
       <Segmented<Look> label="Look" value={look} options={LOOKS} onChange={(v) => app.setLook(v)} />
       <Segmented<Settings['quality']> label="Quality" value={s.quality} options={QUALITY} onChange={(v) => set({ quality: v })} />
+      <Switch label="Battery mode" hint="30 fps, fewer particles" value={s.batterySaver === true} onChange={(v) => set({ batterySaver: v })} />
       <Switch label="Bright Mines" hint="Lifts the darkness underground" value={s.brightMines} onChange={(v) => set({ brightMines: v })} />
       <Switch label="Reduced motion" hint="No shake, squash or camera shots" value={s.reducedMotion} onChange={(v) => set({ reducedMotion: v })} />
       <Switch label="Performance HUD" hint="fps, frame time, draw calls" value={s.showPerf} onChange={(v) => set({ showPerf: v })} />

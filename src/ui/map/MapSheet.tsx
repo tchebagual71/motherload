@@ -34,7 +34,7 @@ function SelectionCard({ sel }: { sel: MapSelection | null }): JSX.Element {
   return (
     <div class="hf-map-card">
       <span class="hf-map-swatch" style={l.colour === null ? undefined : { background: hex(l.colour) }} aria-hidden="true">
-        {l.letter}
+        <b>{l.letter}</b>
       </span>
       <span class="hf-map-card-text">
         <b>{l.title}</b>

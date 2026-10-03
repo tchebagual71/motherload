@@ -1,25 +1,16 @@
 // Basic map and depth-ruler model (03 §4.11, §6.6; canon §3.1 "Map", §3.2 pings). Pure: no DOM.
 // The map image is one RGBA texel per cell (48 × rows), drawn scaled with nearest filtering; the lode,
 // ping and pod markers are drawn over it at a fixed ≥ 24-pt size.
-import { LODE_H, LODE_W, M0_FLOOR_ROW, MINE_W, MVP_SEAL_ROW, SEAL_ROW, SURVEY_PING_ROW, TILE_FT, type Purity } from '../../shared/canon';
+import { LODE_H, LODE_W, MINE_W, SURVEY_PING_ROW, TILE_FT, type Purity } from '../../shared/canon';
 import { F, T, mineralTierOf, relicIdOf, type Lode, type LodeMetal, type Scope } from '../../shared/types';
-import { ORES, RELIC_COLOURS, SPECIAL, STRATA, SURFACE } from '../../render/palette';
-import { bandIndexAt } from '../../render/terrain/colors';
+import { LODE_ORE_TIER, ORES, RELIC_COLOURS, SPECIAL, STRATA, SURFACE } from '../../render/palette';
+import { bandIndexAt, mixHex, scaleHex } from '../../render/terrain/colors';
+import { isLodeVisible, scopeFloorRow } from '../../terrain/scope';
 import { formatInt } from '../format';
 
-/** First unplayable row: M0 floor r128, MVP temporary Seal r320, the Seal r584 (canon §5.5). */
-export function mapFloorRow(scope: Scope): number {
-  return scope === 'm0' ? M0_FLOOR_ROW : scope === 'mvp' ? MVP_SEAL_ROW : SEAL_ROW;
-}
-
-/** Rows the map and ruler show: the Rim (row 0) down to and including the floor row. */
+/** Rows the map and ruler show: the Rim (row 0) down to and including the floor row (MVP r320). */
 export function mapRows(scope: Scope): number {
-  return mapFloorRow(scope) + 1;
-}
-
-/** Kerogen and Thorium lodes are Unknown seams before v1 (canon §3.2): never on the map. */
-export function lodeInScope(lode: Lode, scope: Scope): boolean {
-  return lode.scope !== 'v1' || scope === 'v1';
+  return scopeFloorRow(scope) + 1;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -27,7 +18,8 @@ export function lodeInScope(lode: Lode, scope: Scope): boolean {
 // ---------------------------------------------------------------------------------------------
 
 export const FOG = 0x1f1724;
-const AIR_K = 0.62;
+/** Open cells sit between the band's back wall and its rock, well clear of the fog. */
+const AIR_MIX = 0.35;
 const LODE_ROCK_K = 0.85;
 
 export interface MapSource {
@@ -35,11 +27,6 @@ export interface MapSource {
   readonly terrain: Uint8Array;
   readonly flags: Uint8Array;
   lodeAt(x: number, r: number): Lode | null;
-}
-
-function scale(hex: number, k: number): number {
-  const c = (s: number): number => Math.min(255, Math.round(((hex >> s) & 0xff) * k));
-  return (c(16) << 16) | (c(8) << 8) | c(0);
 }
 
 /**
@@ -53,12 +40,12 @@ export function cellColour(src: MapSource, x: number, r: number, floorRow: numbe
   if ((flags & F.CHARTED) === 0) return FOG;
   const code = src.terrain[i];
   const band = STRATA[bandIndexAt(x, r, src.seed)];
-  if (code === T.AIR) return scale(band.back, AIR_K);
+  if (code === T.AIR) return mixHex(band.back, band.front, AIR_MIX);
   if (r === 0) return code === T.PAVED ? SURFACE.rimPaving : SURFACE.rimAsphalt;
   if (code === T.LODE_ROCK) {
     const lode = src.lodeAt(x, r);
-    const tier = lode && lode.discovered ? METAL_TIER[lode.metal] : 0;
-    return tier > 0 ? scale(ORES[tier - 1].base, LODE_ROCK_K) : scale(band.front, LODE_ROCK_K);
+    const tier = lode && lode.discovered ? LODE_ORE_TIER[lode.metal] : 0;
+    return tier > 0 ? scaleHex(ORES[tier - 1].base, LODE_ROCK_K) : scaleHex(band.front, LODE_ROCK_K);
   }
   if ((flags & F.SEEN) !== 0) {
     const tier = mineralTierOf(code);
@@ -73,7 +60,7 @@ export function cellColour(src: MapSource, x: number, r: number, floorRow: numbe
 
 /** Fill `out` (RGBA, 48 × rows) with the map image. ≈ 15k cells in the MVP: well under a millisecond. */
 export function paintMap(src: MapSource, scope: Scope, out: Uint8ClampedArray): void {
-  const floor = mapFloorRow(scope);
+  const floor = scopeFloorRow(scope);
   const rows = Math.min(out.length / (4 * MINE_W), mapRows(scope));
   for (let r = 0; r < rows; r++) {
     for (let x = 0; x < MINE_W; x++) {
@@ -91,7 +78,6 @@ export function paintMap(src: MapSource, scope: Scope, out: Uint8ClampedArray): 
 // Lodes, pings and marks
 // ---------------------------------------------------------------------------------------------
 
-export const METAL_TIER: Record<LodeMetal, number> = { hematite: 1, copper: 2, cobalt: 3, gold: 4, iridium: 5, thorium: 6, kerogen: 0 };
 const METAL_NAME: Record<LodeMetal, string> = {
   hematite: 'Hematite',
   copper: 'Copper',
@@ -139,12 +125,13 @@ export function feetText(row: number): string {
 /** Lodes the player knows about: discovered ones, plus pinged ones still to find. */
 export function knownLodes(lodes: readonly Lode[], scope: Scope, deepestRow: number): MapLode[] {
   const out: MapLode[] = [];
-  const floor = mapFloorRow(scope);
+  const floor = scopeFloorRow(scope);
   for (const l of lodes) {
-    if (!lodeInScope(l, scope) || l.top >= floor) continue;
+    // Kerogen and Thorium lodes are Unknown seams before v1 (canon §3.2): never on the map.
+    if (!isLodeVisible(l, scope) || l.top >= floor) continue;
     const pinged = !l.discovered && isPinged(l, deepestRow);
     if (!l.discovered && !pinged) continue;
-    const tier = METAL_TIER[l.metal];
+    const tier = LODE_ORE_TIER[l.metal];
     out.push({
       id: l.id,
       cx: l.x0 + LODE_W / 2,

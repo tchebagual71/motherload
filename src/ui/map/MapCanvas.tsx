@@ -5,11 +5,12 @@
 import type { JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
 import type { AppController } from '../../app/types';
-import { MINE_W, RIM_BUILDINGS, TOUCH, type RimBuildingId } from '../../shared/canon';
+import { BANDS, MINE_W, RIM_BUILDINGS, TOUCH, type RimBuildingId } from '../../shared/canon';
 import { ORES, POD, ROLE, SURFACE, UI } from '../../render/palette';
 import {
   FOG,
   MAP_SKY_ROWS,
+  feetText,
   MARKER_PT,
   centreOn,
   clampView,
@@ -49,6 +50,7 @@ interface Pointer {
 /** Map state for one open sheet: image, view, markers and the gesture in progress. */
 class MapPainter {
   readonly image = document.createElement('canvas');
+  private readonly ctx: CanvasRenderingContext2D | null;
   view: MapView | null = null;
   lodes: MapLode[] = [];
   readonly markers: Marker[] = [];
@@ -65,6 +67,7 @@ class MapPainter {
     private readonly canvas: HTMLCanvasElement,
     private readonly onSelect: (s: MapSelection | null) => void,
   ) {
+    this.ctx = canvas.getContext('2d');
     const w = app.world;
     const rows = mapRows(w.scope);
     this.image.width = MINE_W;
@@ -206,7 +209,7 @@ class MapPainter {
 
   private draw(t: number): void {
     const v = this.view;
-    const ctx = this.canvas.getContext('2d');
+    const ctx = this.ctx;
     if (!v || !ctx) return;
     const dpr = this.canvas.width / Math.max(1, v.w);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -216,11 +219,18 @@ class MapPainter {
     ctx.imageSmoothingEnabled = false;
     const top = toScreen(v, 0, 0);
     ctx.drawImage(this.image, top.x, top.y, MINE_W * v.scale, this.rows * v.scale);
+    this.drawBandMarks(ctx, v);
     for (const layer of mapLayers()) layer.draw(ctx, v, toScreen);
     const phase = this.reducedMotion ? 0.5 : (t % PULSE_PERIOD_MS) / PULSE_PERIOD_MS;
     this.markers.length = 0;
-    for (const l of this.lodes) this.drawLode(ctx, v, l, phase);
+    // The selected lode draws last, over the pod, so its highlight always shows.
+    let selected: MapLode | null = null;
+    for (const l of this.lodes) {
+      if (this.selected === `lode${l.id}`) selected = l;
+      else this.drawLode(ctx, v, l, phase);
+    }
     this.drawPod(ctx, v, phase);
+    if (selected) this.drawLode(ctx, v, selected, phase);
   }
 
   private drawSky(ctx: CanvasRenderingContext2D, v: MapView): void {
@@ -239,9 +249,33 @@ class MapPainter {
       ctx.lineWidth = 1.5;
       ctx.strokeRect(p.x + 0.75, p.y + 0.75, w - 1.5, 2 * v.scale - 1.5);
       if (v.scale >= 5) {
+        // The full name when it fits the 4-cell front, else its initial.
+        const name = RIM_LABEL[b.id];
+        const label = ctx.measureText(name).width <= w - 4 ? name : name[0];
         ctx.fillStyle = css(UI.ink);
-        ctx.fillText(RIM_LABEL[b.id], p.x + w / 2, p.y + v.scale);
+        ctx.fillText(label, p.x + w / 2, p.y + v.scale);
       }
+    }
+  }
+
+  /** Depth at each band top inside the floor (canon §2.5), on the map's left edge, so a scrolled map keeps its bearings. */
+  private drawBandMarks(ctx: CanvasRenderingContext2D, v: MapView): void {
+    const left = toScreen(v, 0, 0).x;
+    ctx.font = '800 11px Nunito, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.lineWidth = 3;
+    for (let i = 1; i < BANDS.length; i++) {
+      const top = BANDS[i].top;
+      if (top >= this.rows - 1) break;
+      const y = toScreen(v, 0, top).y;
+      if (y < -12 || y > v.h) continue;
+      ctx.fillStyle = css(UI.cream, 0.85);
+      ctx.fillRect(left, y - 1, 8, 2);
+      const label = feetText(top);
+      ctx.strokeStyle = css(UI.ink, 0.85);
+      ctx.strokeText(label, left + 4, y + 3);
+      ctx.fillText(label, left + 4, y + 3);
     }
   }
 

@@ -89,7 +89,7 @@ export class GameLoop {
   private readonly podAudio: PodAudioState = { thrust: 0, digging: false, drillTier: 1 };
   private readonly sample: FrameSample = {
     now: 0, intervalMs: 0, workMs: 0, submitMs: 0, phase: 'title', look: 'toon', tier: 'mid', deviceDpr: 1,
-    manualTier: false, contextLost: false, rimArrival: false,
+    manualTier: false, contextLost: false, rimArrival: false, battery: false,
   };
   private lastBodyAt = -1;
   private submitMs = 0;

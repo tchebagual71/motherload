@@ -677,10 +677,17 @@ class HfRenderer implements Renderer {
   }
 }
 
-/** Armed-pad bitmask for the Rim lights (bit i = RIM_BUILDINGS[i]; 03 §6.4). */
-export function armedPads(world: Pick<WorldApi, 'isPadArmed'>): number {
+/**
+ * Armed-pad bitmask for the Rim lights (bit i = RIM_BUILDINGS[i]; 03 §6.4). A pad the pod is not standing on
+ * re-arms as soon as the pod leaves it (canon §2.4), so only the pad under the pod can be disarmed (latched).
+ */
+export function armedPads(world: Pick<WorldApi, 'isPadArmed' | 'padUnderPod'>): number {
+  const under = world.padUnderPod();
   let mask = 0;
-  for (let i = 0; i < RIM_BUILDINGS.length; i++) if (world.isPadArmed(RIM_BUILDINGS[i].id as RimBuildingId)) mask |= 1 << i;
+  for (let i = 0; i < RIM_BUILDINGS.length; i++) {
+    const id = RIM_BUILDINGS[i].id as RimBuildingId;
+    if (id !== under || world.isPadArmed(id)) mask |= 1 << i;
+  }
   return mask;
 }
 

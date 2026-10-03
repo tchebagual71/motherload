@@ -264,13 +264,14 @@ function wireQualityChanges(cfg: BootConfig, app: GameApp, reporter: PerfReporte
     const text = QUALITY_NOTICE[reason];
     if (text) app.toast(text, 'info');
   };
-  if (cfg.crashed) notify('crash');
+  // A tier the player picked is unaffected, so it gets no toast.
+  const auto = (): boolean => app.state.settings.peek().quality === 'auto';
+  if (cfg.crashed && auto()) notify('crash');
   cfg.governor.setOnChange((_tier, reason) => {
-    const setting = app.state.settings.peek().quality;
-    const tier = cfg.resolveQuality(setting);
+    const tier = cfg.resolveQuality(app.state.settings.peek().quality);
     renderer()?.setQuality(tier);
     reporter.recorder.switchTo(app.state.look.peek(), tier);
-    notify(reason);
+    if (auto()) notify(reason);
   });
 }
 
@@ -330,7 +331,10 @@ function startEngine(d: EngineDeps): { loop: GameLoop; renderer: Renderer } | nu
     perf: d.perf,
     layout: () => viewport.layout,
     osReducedMotion: cfg.osReducedMotionNow,
-    quality: createLoopQuality(cfg.governor, cfg.run, () => app.state.settings.peek().batterySaver === true),
+    quality: createLoopQuality(cfg.governor, cfg.run, {
+      batterySetting: () => app.state.settings.peek().batterySaver === true,
+      autoTier: () => app.state.settings.peek().quality === 'auto',
+    }),
     onFirstTick: d.onFirstTick,
     onFirstFrame: d.onFirstFrame,
     onError: (e) => {

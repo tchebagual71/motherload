@@ -1542,6 +1542,16 @@ button.hf-pill {
   left: auto;
   right: 0;
 }
+.hf-ruler-rim {
+  position: absolute;
+  top: -2px;
+  left: -4px;
+  right: -4px;
+  height: 4px;
+  border-radius: 2px;
+  background: #c9a98a;
+  border: 1px solid var(--hf-ink);
+}
 .hf-ruler-deepest {
   position: absolute;
   left: -2px;
@@ -1671,6 +1681,9 @@ button.hf-pill {
   border: var(--bw) solid var(--hf-ink);
   border-radius: 6px;
   transform: rotate(45deg) scale(0.8);
+}
+.hf-map-swatch > b {
+  transform: rotate(-45deg) scale(1.25);
 }
 .hf-map-swatch-pod {
   border-radius: 50%;

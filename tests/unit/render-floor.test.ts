@@ -52,7 +52,7 @@ describe('scope floor (INT-11)', () => {
     for (let v = 0; v < below.vcount; v++) expect(below.pos[v * 3 + 2]).toBeGreaterThanOrEqual(FRONT_Z - 1e-6);
   });
 
-  it('caps the floor with a hazard band and posts the Co-op sign every 8 columns under the 2,000-triangle cap', () => {
+  it('caps the floor with a hazard band and posts the Co-op sign every 6 columns under the 2,000-triangle cap', () => {
     const g = solidGrid();
     for (let x = 0; x < MINE_W; x++) g.set(x, MVP_SEAL_ROW - 1, T.AIR);
     for (let cx = 0; cx < CHUNKS_X; cx++) {
@@ -60,7 +60,7 @@ describe('scope floor (INT-11)', () => {
       expect(b.triangles).toBeLessThanOrEqual(2000);
     }
     const withSign = mesh(g, 0, floorChunk).triangles;
-    // The same chunk without a floor is plain rock: the cap row adds its band, rivets and two signs.
+    // The same chunk without a floor is plain rock: the cap row adds its band, rivets and three signs.
     const rock = mesh(g, 0, floorChunk, { ...OPTS, floorRow: 10_000 }).triangles;
     expect(withSign).toBeGreaterThan(rock + 400);
   });
@@ -90,7 +90,8 @@ describe('sign font', () => {
   it('measures lines with one pixel of spacing between glyphs', () => {
     expect(textWidthPx('')).toBe(0);
     expect(textWidthPx('CO-OP')).toBe(5 * GLYPH_ADVANCE - 1);
-    expect(Math.max(...FLOOR_SIGN_LINES.map(textWidthPx))).toBe(textWidthPx('DRILLING RIGHTS'));
+    expect(Math.max(...FLOOR_SIGN_LINES.map(textWidthPx))).toBe(textWidthPx('DRILLING'));
+    expect(FLOOR_SIGN_LINES.join(' ')).toBe('CO-OP DRILLING RIGHTS END HERE');
   });
 });
 

@@ -6,8 +6,8 @@
 // nothing generated below it shows) and the slab frame.
 import { CHUNK, MINE_H, MINE_W } from '../../shared/canon';
 import { hash32 } from '../../shared/rng';
-import { F, T, mineralTierOf, relicIdOf, type Lode, type LodeMetal } from '../../shared/types';
-import { ORES, RELIC_COLOURS, ROLE, SHADING, SPECIAL, STRATA, SURFACE, UI } from '../palette';
+import { F, T, mineralTierOf, relicIdOf, type Lode } from '../../shared/types';
+import { LODE_ORE_TIER, ORES, RELIC_COLOURS, ROLE, SHADING, SPECIAL, STRATA, SURFACE, UI } from '../palette';
 import { bandIndexAt, jitterHex, mixHex, scaleHex } from './colors';
 import { MeshBuilder, XF } from './meshBuilder';
 import { SLOT_BASE, SLOT_HIGHLIGHT, SLOT_SPARKLE, oreShape, relicShape, type ShapeTemplate } from './shapes';
@@ -27,8 +27,10 @@ const TURF_STRIP = 0.22;
 /** Internal code for the scope floor and every row below it (drawn as a sealed band, impassable; INT-11). */
 export const FLOOR_CODE = 255;
 /** The temporary Seal's sign (03 §8.12 MVP), one line per entry, every 8 columns along the floor. */
-export const FLOOR_SIGN_LINES = ['CO-OP', 'DRILLING RIGHTS', 'END HERE'] as const;
-const SIGN = { every: 8, first: 1, inset: 0.2, width: 5.6, top: 0.36, pad: 0.17, px: 0.058, lineGap: 3, emissive: 0.12 } as const;
+export const FLOOR_SIGN_LINES = ['CO-OP', 'DRILLING', 'RIGHTS', 'END HERE'] as const;
+/** Narrow 4-line plates every 6 columns: one always fits whole on the SE's ~8-column view (03 §1.1). */
+const SIGN = { every: 6, first: 1, inset: 0.2, top: 0.36, pad: 0.17, px: 0.058, lineGap: 3, emissive: 0.12 } as const;
+const SIGN_WIDTH = Math.max(...FLOOR_SIGN_LINES.map(textWidthPx)) * SIGN.px + 2 * SIGN.pad;
 const HAZARD = { top: 0.05, bottom: 0.3, stripe: 0.25 } as const;
 const SEAL_JOINT_EVERY = 4;
 const MAGMA_EMISSIVE = 2.0;
@@ -64,7 +66,6 @@ export interface MesherOptions {
 }
 
 const AO = SHADING.ao;
-const METAL_TIER: Record<LodeMetal, number> = { hematite: 1, copper: 2, cobalt: 3, gold: 4, iridium: 5, thorium: 6, kerogen: 0 };
 
 /** 0fps vertex AO: both sides occluded → darkest; else count of occluders (03 §8.9). */
 export function aoValue(side1: boolean, side2: boolean, corner: boolean): number {
@@ -465,7 +466,7 @@ export class ChunkMesher {
     const lode = this.src.lodeAt(x, r);
     if (!lode || lode.x0 !== x || lode.top !== r) return;
     const visible = this.opts.lodeVisible(lode);
-    const tier = METAL_TIER[lode.metal];
+    const tier = LODE_ORE_TIER[lode.metal];
     const ore = visible && tier > 0 ? ORES[tier - 1] : null;
     const hex = !visible ? UNKNOWN_VEIN : ore ? ore.base : KEROGEN;
     this.lodeOutline(x, r);
@@ -554,7 +555,7 @@ export class ChunkMesher {
     const lines = FLOOR_SIGN_LINES;
     const linePx = GLYPH_H + SIGN.lineGap;
     const textH = (lines.length * linePx - SIGN.lineGap) * SIGN.px;
-    const right = left + SIGN.width;
+    const right = left + SIGN_WIDTH;
     const bottom = top - textH - 2 * SIGN.pad;
     const o = this.out;
     o.color(BRASS).extra(0.05).box(left - 0.06, bottom - 0.06, FRONT_Z, right + 0.06, top + 0.06, FRONT_Z + 0.05, scaleHex(BRASS, 0.7));
@@ -566,7 +567,7 @@ export class ChunkMesher {
     o.color(UI.ink).extra(0);
     for (let i = 0; i < lines.length; i++) {
       const w = textWidthPx(lines[i]) * SIGN.px;
-      emitText(o, lines[i], left + (SIGN.width - w) / 2, top - SIGN.pad - i * linePx * SIGN.px, SIGN.px, FRONT_Z + 0.085);
+      emitText(o, lines[i], left + (SIGN_WIDTH - w) / 2, top - SIGN.pad - i * linePx * SIGN.px, SIGN.px, FRONT_Z + 0.085);
     }
   }
 

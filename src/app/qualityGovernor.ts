@@ -1,7 +1,7 @@
 // Automatic quality (canon §3.14 "Tiers"; 04 §5.8, §10.5): the auto tier (device default, a background title-screen
 // benchmark applied at the next Rim arrival, crash-loop / context-loss / sustained-overload drops), dynamic
 // resolution for production Toon, and battery mode (Low Power Mode suspected, or the setting). No DOM: storage and
-// the wall clock are injected; boot.ts wires the page lifecycle (installRunTracking).
+// the wall clock are injected; boot.ts wires the page lifecycle (createQuality).
 import type { QualityTier } from '../render/api';
 import { QUALITY } from '../render/quality';
 import { readJson, writeJson, type KeyValue } from '../platform/storage';
@@ -266,6 +266,8 @@ export interface FrameSample {
   contextLost: boolean;
   /** A trip ended this frame (Rim arrival): a pending benchmark move applies. */
   rimArrival: boolean;
+  /** Battery mode ran this frame at 30 fps (LoopQuality fills it in). */
+  battery: boolean;
 }
 
 const CONTEXT_LOSSES = { count: 3, windowMs: 60_000 } as const;
@@ -287,7 +289,9 @@ export function readQualityRecord(kv: KeyValue, key: string, device: TierProbe):
 export class QualityGovernor {
   private readonly record: QualityRecord;
   private readonly bench = new TitleBenchmark();
+  /** The benchmark's move, waiting for a Rim arrival; taken once per session. */
   private pending: -1 | 0 | 1 = 0;
+  private benchTaken = false;
   private readonly dr: DynamicResolution;
   private drTier: QualityTier | null = null;
   private drDevice = 0;
@@ -342,20 +346,33 @@ export class QualityGovernor {
     this.lastWork = f.workMs;
     if (this.opts.pinned) return;
     this.trackContext(f);
-    if (f.intervalMs <= 0 || f.intervalMs > 250) return;
-    if (f.phase === 'title' && !f.manualTier) this.bench.sample(f.intervalMs, f.submitMs);
-    if (this.bench.done && this.pending === 0) this.pending = this.bench.verdict();
     if (f.rimArrival) this.applyPending(f.manualTier);
+    // A stall (page hidden, debugger) says nothing about frame cost.
+    if (f.intervalMs <= 0 || f.intervalMs > 250) return;
+    this.benchmark(f);
     if (f.phase === 'play') this.resolution(f);
+  }
+
+  /**
+   * Title frames that drew at the full 60-Hz cadence feed the benchmark (a 30-fps battery cadence would read as
+   * drops); its verdict is taken once and waits for the next Rim arrival.
+   */
+  private benchmark(f: FrameSample): void {
+    if (this.benchTaken) return;
+    if (f.phase === 'title' && !f.manualTier && !f.battery && f.submitMs > 0) this.bench.sample(f.intervalMs, f.submitMs);
+    if (!this.bench.done) return;
+    this.benchTaken = true;
+    this.pending = this.bench.verdict();
   }
 
   private resolution(f: FrameSample): void {
     this.syncDr(f);
-    const target = this.lpm.active || this.record.fps30 ? FRAME_30_MS : FRAME_60_MS;
+    const target = f.battery ? FRAME_30_MS : FRAME_60_MS;
     const over = f.intervalMs > DROP_FACTOR * target;
     const under = this.drActive && !over && f.workMs < 0.7 * MAIN_THREAD_BUDGET_MS[f.tier];
     this.dr.frame(f.now, over, under);
-    if (this.dr.overloaded(f.now)) {
+    // A tier the player picked is theirs (04 §5.8 "player overrides win"): no overload drop under it.
+    if (!f.manualTier && this.dr.overloaded(f.now)) {
       // The next frame re-derives the resolution range for the lowered tier (or the 30-fps rung).
       this.drTier = null;
       this.dr.reset(1, 1);
@@ -435,14 +452,18 @@ export interface LoopQuality {
   readonly battery: boolean;
 }
 
-/**
- * Glue between the loop, the governor and crash-loop tracking. `batterySetting` reads Settings → Battery saver; the
- * governor adds Low Power Mode and the 30-fps ladder rung.
- */
-export function createLoopQuality(gov: QualityGovernor, run: RunTracker | null, batterySetting: () => boolean): LoopQuality {
+export interface LoopQualitySettings {
+  /** Settings → Battery mode. */
+  batterySetting(): boolean;
+  /** Settings → Quality is Auto: the 30-fps ladder rung applies (a picked tier reverts it, 04 §10.5). */
+  autoTier(): boolean;
+}
+
+/** Glue between the loop, the governor and crash-loop tracking. */
+export function createLoopQuality(gov: QualityGovernor, run: RunTracker | null, settings: LoopQualitySettings): LoopQuality {
   let lastRaf = -1;
   let lastBody = Number.NEGATIVE_INFINITY;
-  const battery = (): boolean => batterySetting() || gov.lowPower || gov.forced30;
+  const battery = (): boolean => settings.batterySetting() || gov.lowPower || (gov.forced30 && settings.autoTier());
   return {
     admit(t) {
       if (lastRaf >= 0) gov.cadence(t, t - lastRaf);
@@ -452,6 +473,7 @@ export function createLoopQuality(gov: QualityGovernor, run: RunTracker | null, 
       return true;
     },
     report(sample) {
+      sample.battery = battery();
       gov.frame(sample);
       run?.beat();
     },
