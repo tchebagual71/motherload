@@ -4,7 +4,10 @@ import type { GameApp } from '../app/controller';
 import type { GameLoop } from '../app/loop';
 import type { Overlay, SheetId } from '../app/types';
 import type { PodIntent } from '../pod/types';
-import type { RenderInfo, Renderer } from '../render/api';
+import type { BuildFrame, RenderInfo, Renderer } from '../render/api';
+import type { Plane } from '../factory/api';
+import type { BuildSession } from '../ui/build/session';
+import type { Mode } from '../app/types';
 import { crc32, deserialize, serialize } from '../save/codec';
 import type { Look } from '../shared/types';
 import type { WorldApi } from '../world/api';
@@ -64,6 +67,13 @@ export interface HfTestApi {
   freeze(): void;
   frames(n: number): void;
   unfreeze(): void;
+  // ---- build mode (MVP) ----
+  /** The build-mode session (tool, pending ghost, camera), or null in M0 builds. */
+  readonly build: BuildSession | null;
+  mode(): Mode;
+  buildFrame(): BuildFrame | null;
+  /** CSS px of a plane cell's centre (the renderer's BuildRendererApi.cellToScreen). */
+  cellToScreen(plane: Plane, x: number, y: number): { x: number; y: number };
 }
 
 declare global {
@@ -79,6 +89,7 @@ export interface TestHookDeps {
   perfReport(): Promise<string>;
   audioState(): string;
   saveNow(): Promise<boolean>;
+  build?: BuildSession | null;
 }
 
 /**
@@ -151,6 +162,10 @@ export function installTestHook(d: TestHookDeps): HfTestApi {
     freeze: () => loop.freeze(),
     frames: (n) => loop.stepFrozen(n),
     unfreeze: () => loop.start(),
+    build: d.build ?? null,
+    mode: () => app.state.mode.peek(),
+    buildFrame: () => app.state.buildFrame.peek(),
+    cellToScreen: (plane, x, y) => renderer.cellToScreen(plane, x, y),
   };
   window.__hf = api;
   return api;

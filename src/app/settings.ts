@@ -59,6 +59,7 @@ export function sanitizeSettings(raw: unknown, d: Settings): Settings {
     landingAssist: pickBool(r.landingAssist, d.landingAssist),
     steadyDrill: pickBool(r.steadyDrill, d.steadyDrill),
     ...(r.batterySaver === true && { batterySaver: true }),
+    ...(r.instantBuild === true && { instantBuild: true }),
     music: pickBool(r.music, d.music),
   };
 }

@@ -4,7 +4,7 @@
 import { HARD_LANDING_V, TOUCH } from '../shared/canon';
 import type { Overlay } from './types';
 
-export type PauseReason = 'sheet' | 'menu' | 'settings' | 'interrupt' | 'upright' | 'death' | 'title' | 'ctxlost' | 'safemode';
+export type PauseReason = 'sheet' | 'menu' | 'settings' | 'interrupt' | 'upright' | 'death' | 'title' | 'ctxlost' | 'safemode' | 'build';
 export type SheetReason = 'sheet' | 'menu' | 'settings';
 
 export interface PodMotion {
@@ -15,7 +15,7 @@ export interface PodMotion {
 
 const SHEET_REASONS: readonly SheetReason[] = ['sheet', 'menu', 'settings'];
 /** While any of these holds the pod, a new `interrupt` adds nothing: their own exit applies the gate. */
-const MODAL_REASONS: readonly PauseReason[] = ['title', 'safemode', 'death', 'sheet', 'menu', 'settings'];
+const MODAL_REASONS: readonly PauseReason[] = ['title', 'safemode', 'death', 'sheet', 'menu', 'settings', 'build'];
 /** Overlay precedence, highest first (only one overlay shows at a time). 'ctxlost' is "Restoring graphics…" (04 §5.6). */
 const OVERLAY_ORDER: readonly (PauseReason & Exclude<Overlay, null>)[] = ['safemode', 'title', 'upright', 'ctxlost', 'death', 'interrupt'];
 
@@ -101,6 +101,17 @@ export class TimeController {
     }
     if (changed) this.onChange();
     if (changed && kind === null) this.gate(needsSheetCountdown(p));
+  }
+
+  /**
+   * Build mode (canon §4.5, §4.11): the pod freezes, the factory runs. Leaving it applies the same gate as a sheet
+   * (airborne with |v_y| > 5.88 → countdown). Returns true when the state changed.
+   */
+  setBuild(on: boolean, p: PodMotion): boolean {
+    if (on) return this.raise('build');
+    if (!this.clear('build')) return false;
+    this.gate(needsSheetCountdown(p));
+    return true;
   }
 
   startCountdown(ms: number = TOUCH.resumeCountdownMs): void {

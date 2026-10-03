@@ -39,6 +39,7 @@ const PATHS = {
   coin: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM14.5 9a2.5 2 0 0 0-5 0c0 2.5 5 1.5 5 4.5a2.5 2 0 0 1-5 0M12 6v1.5M12 16.5V18',
   undo: 'M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3',
   flip: 'M7 20V4M3 8l4-4 4 4M17 4v16M13 16l4 4 4-4',
+  build: 'M4 21V4h15M4 4l5 5M15 4v4M13 8h4v4h-4zM2 21h6M9 9l6-5',
 } as const;
 
 export type IconName = keyof typeof PATHS;

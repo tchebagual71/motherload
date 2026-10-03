@@ -26,6 +26,8 @@ import './styles.css';
 import { createViewport, type Viewport } from './viewport';
 import { MapHost } from './map/MapSheet';
 import { Ruler } from './map/Ruler';
+import { BuildLayer } from './build/BuildLayer';
+import type { BuildSession } from './build/session';
 
 /** The UI faces declared in styles.css (03 §10.5). Both looks' faces start loading at boot (≈ 45 KB,
  *  precached) instead of on first use, so an A/B flip does not flash the fallback (04 §7.1 preloads). */
@@ -38,16 +40,25 @@ function loadFonts(): void {
   for (const f of UI_FONTS) fonts.load(f).catch(() => {});
 }
 
-function Root({ app, vp }: { app: AppController; vp: Signal<Viewport> }): JSX.Element {
+function Root({ app, vp, build }: { app: AppController; vp: Signal<Viewport>; build: BuildSession | null }): JSX.Element {
   const overlay = app.state.overlay.value;
   const settings = app.state.settings.value;
   // The style-test gallery draws its own frame over a scratch scene: no live HUD or controls under it.
   const inGame = overlay !== 'title' && overlay !== 'upright' && overlay !== 'safemode' && app.state.sheet.value !== 'styletest';
   const chip = app.state.styleTest.value;
+  // Build mode (03 §4.1) swaps the pod HUD and controls for its status bar, dock and tray.
+  const building = build !== null && app.state.mode.value === 'build';
   return (
     <>
       <div class="hf-status-scrim" aria-hidden="true" />
-      {inGame && (
+      {inGame && building && build && (
+        <>
+          <BuildLayer app={app} build={build} vp={vp} />
+          {settings.showPerf && <PerfHud app={app} />}
+          <Toasts app={app} />
+        </>
+      )}
+      {inGame && !building && (
         <>
           <FuelVignette app={app} />
           <Ruler app={app} vp={vp} />
@@ -73,8 +84,8 @@ function Root({ app, vp }: { app: AppController; vp: Signal<Viewport> }): JSX.El
   );
 }
 
-/** Mount the UI into `root` (#ui). Returns an unmount function. */
-export function mountUI(root: HTMLElement, app: AppController): () => void {
+/** Mount the UI into `root` (#ui). Returns an unmount function. `build`: the build-mode session (MVP). */
+export function mountUI(root: HTMLElement, app: AppController, opts: { build?: BuildSession } = {}): () => void {
   root.classList.add('hf-ui');
   loadFonts();
   const viewport = createViewport(root);
@@ -89,7 +100,7 @@ export function mountUI(root: HTMLElement, app: AppController): () => void {
     cl.remove('hf-size-S', 'hf-size-M', 'hf-size-L');
     cl.add(`hf-size-${s.controlSize}`);
   });
-  render(<Root app={app} vp={viewport.vp} />, root);
+  render(<Root app={app} vp={viewport.vp} build={opts.build ?? null} />, root);
   return () => {
     render(null, root);
     stopClasses();

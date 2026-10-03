@@ -1,0 +1,180 @@
+// Build-mode input (03 §3.7, §4.2; 04 §6.2): canvas pointers go through the pure GestureMachine into the build
+// session; a rAF runs only while a finger is down, for the long-press and loupe clocks and edge auto-pan. Mouse:
+// left = touch without the lifted point, right-drag pans, wheel zooms, hover moves the cursor. The dev keyboard
+// covers place / cancel / rotate / bulldoze / overlay, undo / redo, pan, zoom and yaw.
+import type { AppController } from '../../app/types';
+import type { BuildSession } from '../../ui/build/session';
+import { edgePanVelocity } from './edgePan';
+import { GestureMachine, type PointerDown } from './machine';
+
+export interface BuildInput {
+  /** The pointer belongs to a build gesture (it keeps going here even if build mode closed meanwhile). */
+  owns(id: number): boolean;
+  /** Canvas-relative CSS px. */
+  down(e: PointerEvent, x: number, y: number): void;
+  move(e: PointerEvent, x: number, y: number): void;
+  up(e: PointerEvent, x: number, y: number): void;
+  cancel(id: number): void;
+  wheel(e: WheelEvent, x: number, y: number): void;
+  /** Build-mode keys; true when handled (the caller prevents the default). */
+  key(e: KeyboardEvent): boolean;
+  readonly touching: boolean;
+  releaseAll(): void;
+  dispose(): void;
+}
+
+const WHEEL_STEP = 1.1;
+/** Edge auto-pan ignores frame gaps above this (a stalled tab must not fling the view). */
+const MAX_DT_S = 0.05;
+/**
+ * After a frame gap this long the clocks wait one frame: pointer moves queued behind the stall are delivered
+ * first, so a busy frame never turns the start of a drag into a long-press.
+ */
+const STALL_MS = 120;
+
+const PAN_KEYS: Readonly<Record<string, [number, number]>> = {
+  ArrowLeft: [-1, 0],
+  KeyA: [-1, 0],
+  ArrowRight: [1, 0],
+  KeyD: [1, 0],
+  ArrowUp: [0, -1],
+  KeyW: [0, -1],
+  ArrowDown: [0, 1],
+  KeyS: [0, 1],
+};
+
+// Gesture times are taken when a handler runs, never from Event.timeStamp: a touch delivered late (a busy main
+// thread) would otherwise arrive already 450 ms old and become a long-press on the next frame.
+export function createBuildInput(opts: { session: BuildSession; app: AppController; now?: () => number }): BuildInput {
+  const { session, app } = opts;
+  const now = opts.now ?? (() => performance.now());
+  const machine = new GestureMachine(session, {
+    toolArmed: () => session.tool !== null,
+    panLatch: () => session.panLatch,
+  });
+  session.onEnd = () => machine.reset();
+  const vel = { vx: 0, vy: 0 };
+  const sample: PointerDown = { id: 0, x: 0, y: 0, t: 0 };
+  let raf = 0;
+  let lastT = -1;
+
+  const frame = (): void => {
+    raf = 0;
+    if (machine.pointers === 0) return;
+    const t = now();
+    if (lastT >= 0 && t - lastT <= STALL_MS) machine.tick(t);
+    if (machine.state === 'stroke' && session.active) {
+      const f = machine.finger;
+      const dt = lastT < 0 ? 0 : Math.min(MAX_DT_S, (t - lastT) / 1000);
+      if (dt > 0 && edgePanVelocity(f.x, f.y, session.area, vel)) {
+        session.edgePan(vel.vx, vel.vy, dt);
+        const p = machine.lifted;
+        session.strokeMove(p.x, p.y);
+      }
+    }
+    lastT = t;
+    raf = requestAnimationFrame(frame);
+  };
+
+  const ensureFrame = (): void => {
+    if (!raf) {
+      lastT = -1;
+      raf = requestAnimationFrame(frame);
+    }
+  };
+
+  const stopFrame = (): void => {
+    if (raf) cancelAnimationFrame(raf);
+    raf = 0;
+  };
+
+  const kindOf = (e: PointerEvent): PointerDown['kind'] => (e.pointerType === 'mouse' ? 'mouse' : e.pointerType === 'pen' ? 'pen' : 'touch');
+
+  const api: BuildInput = {
+    owns: (id) => machine.owns(id),
+    down(e, x, y) {
+      if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 2) return;
+      sample.id = e.pointerId;
+      sample.x = x;
+      sample.y = y;
+      sample.t = now();
+      sample.kind = kindOf(e);
+      sample.button = e.button;
+      machine.down(sample);
+      if (machine.owns(e.pointerId)) ensureFrame();
+    },
+    move(e, x, y) {
+      if (machine.owns(e.pointerId)) machine.move(e.pointerId, x, y, now());
+      else if (e.pointerType === 'mouse' && machine.pointers === 0 && session.active) session.cursor(x, y);
+    },
+    up(e, x, y) {
+      if (!machine.owns(e.pointerId)) return;
+      machine.up(e.pointerId, x, y, now());
+      if (machine.pointers === 0) stopFrame();
+    },
+    cancel(id) {
+      if (!machine.owns(id)) return;
+      machine.cancel(id);
+      stopFrame();
+    },
+    wheel(e, x, y) {
+      if (!session.active) return;
+      e.preventDefault();
+      session.zoom(e.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP, x, y);
+    },
+    key(e) {
+      if (!session.active) return false;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && (e.code === 'KeyZ' || e.code === 'KeyY')) {
+        if (e.code === 'KeyY' || e.shiftKey) session.redo();
+        else session.undo();
+        return true;
+      }
+      if (mod || e.altKey) return false;
+      const pan = PAN_KEYS[e.code];
+      if (pan) {
+        session.nudgeView(pan[0], pan[1]);
+        return true;
+      }
+      if (e.repeat && e.code !== 'Minus' && e.code !== 'Equal') return e.code in KEYS;
+      const fn = KEYS[e.code];
+      if (!fn) return false;
+      fn(session, app);
+      return true;
+    },
+    get touching() {
+      return machine.pointers > 0;
+    },
+    releaseAll() {
+      machine.reset();
+      stopFrame();
+    },
+    dispose() {
+      machine.reset();
+      stopFrame();
+      if (session.onEnd) session.onEnd = null;
+    },
+  };
+  return api;
+}
+
+/** 03 §3.7 build keys. */
+const KEYS: Readonly<Record<string, (s: BuildSession, app: AppController) => void>> = {
+  Escape: (s, app) => {
+    if (!s.back()) app.exitBuild();
+  },
+  KeyB: (_s, app) => app.exitBuild(),
+  Enter: (s) => void s.confirm(),
+  NumpadEnter: (s) => void s.confirm(),
+  KeyR: (s) => s.rotate(),
+  Delete: (s) => s.arm(s.tool === 'bulldoze' ? null : 'bulldoze'),
+  Backspace: (s) => s.arm(s.tool === 'bulldoze' ? null : 'bulldoze'),
+  KeyO: (s) => s.toggleOverlay(),
+  KeyL: (s) => s.toggleLMode(),
+  Minus: (s) => s.zoomOut(),
+  NumpadSubtract: (s) => s.zoomOut(),
+  Equal: (s) => s.zoomIn(),
+  NumpadAdd: (s) => s.zoomIn(),
+  BracketLeft: (s) => s.yawStep(-1),
+  BracketRight: (s) => s.yawStep(1),
+};

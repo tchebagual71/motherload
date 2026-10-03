@@ -1,4 +1,4 @@
-// Pause / menu sheet (03 §6.3): Resume · Cargo (MVP) · Settings · Saves · How to play · Debug (dev), and the
+// Pause / menu sheet (03 §6.3): Resume · Build, Cargo (MVP) · Settings · Saves · How to play · Debug (dev), and the
 // "Update ready" row while a new version waits (04 §9.2; APP-14).
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
@@ -30,6 +30,7 @@ export function MenuSheet({ app, close, leaving }: { app: AppController; close: 
       ) : (
         <nav class="hf-menu">
           {update && <MenuItem icon="play" label="Update ready: install now" onClick={() => void app.applyUpdate()} />}
+          {mvp && app.world.factory && <MenuItem icon="build" label="Build" onClick={() => app.enterBuild()} />}
           {mvp && <MenuItem icon="cargo" label="Cargo" onClick={go('cargo')} />}
           {mvp && <MenuItem icon="assay" label="Dot's office" onClick={go('office')} />}
           <MenuItem icon="gear" label="Settings" onClick={go('settings')} />

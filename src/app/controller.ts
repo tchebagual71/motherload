@@ -4,6 +4,7 @@
 // and saves are attached by boot.ts.
 import { effect, signal } from '@preact/signals';
 import { inScope } from '../config/scope';
+import { ARENA_ROW, type Plane } from '../factory/api';
 import type { BuildFrame, QualityTier, Renderer } from '../render/api';
 import { applyAssists, classifyDigTarget, forcedFloorRow, type AssistFlags } from '../pod';
 import { NO_INTENT, type DigDir, type PodIntent } from '../pod/types';
@@ -22,6 +23,7 @@ import type { StyleView } from './styleViews';
 import { TimeController, type PodMotion, type SheetReason } from './time';
 import { holdToast, pruneToasts, pushToast, toastsCovered } from './toasts';
 import { StoryFeed } from './storyFeed';
+import { defaultCamera, entryPlane } from '../ui/build/camera';
 import type {
   AppController,
   AppState,
@@ -102,6 +104,14 @@ export interface SavePort {
   setEnabled(on: boolean): void;
 }
 
+/** Build mode's UX session (ui/build/session.ts): it owns the tool state and the build camera. */
+export interface BuildHost {
+  /** Build mode just opened (mode set, pod held): pick the plane and camera. False when it cannot build. */
+  begin(plane?: Plane): boolean;
+  /** Build mode is closing: drop uncommitted ghosts and the overlay. */
+  end(): void;
+}
+
 export interface SafeModeHooks {
   /** Export code of the copy that keeps failing, or null to export the live world. */
   exportCode(): Promise<string | null>;
@@ -164,6 +174,7 @@ export class GameApp implements AppController {
   private input: InputController | null = null;
   private audio: AudioPort | null = null;
   private saves: SavePort | null = null;
+  private build: BuildHost | null = null;
   private toastId = 0;
   private lastHudAt = Number.NEGATIVE_INFINITY;
   private deathLeftMs = 0;
@@ -244,6 +255,9 @@ export class GameApp implements AppController {
     const s = this.state.settings.peek();
     a.setEnabled(s.sound);
     a.setRespectSilent(s.respectSilent);
+  }
+  attachBuild(b: BuildHost): void {
+    this.build = b;
   }
   attachSaves(s: SavePort): void {
     this.saves = s;
@@ -413,7 +427,7 @@ export class GameApp implements AppController {
           this.beginDeath(e.cause);
           break;
         case 'pad-arrive':
-          if (this.state.sheet.peek() === null && this.state.overlay.peek() === null) this.openSheet(e.id);
+          if (this.state.sheet.peek() === null && this.state.overlay.peek() === null && this.state.mode.peek() === 'play') this.openSheet(e.id);
           this.saves?.requestSoon(now);
           break;
         case 'trip-end':
@@ -495,14 +509,43 @@ export class GameApp implements AppController {
     this.perfReporter = async () => fn();
   }
 
-  /** Build mode (canon §4.11): the pod freezes while building; the factory keeps running. Filled in by the MVP build UX. */
+  /**
+   * Build mode (canon §4.11; 03 §4.1): opens anywhere but the arena, from BUILD, ≡ → Build, B or Place drill. The pod
+   * freezes (the 'build' pause reason, canon §4.5) while the factory keeps running; the build camera opens on the
+   * Yard from the surface and on the mine underground (ui/build owns it once attached).
+   */
   enterBuild(): void {
-    if (this.state.mode.value === 'build') return;
-    this.state.mode.value = 'build';
+    const st = this.state;
+    if (st.mode.peek() === 'build' || this.viewRef) return;
+    const w = this.worldRef;
+    if (!w.factory) return; // M0 builds have no factory
+    const o = st.overlay.peek();
+    if (o !== null && o !== 'countdown') return; // title, cards, death: not now
+    if (Math.floor(-w.pod.y) >= ARENA_ROW) {
+      this.toast('Not in the Hollow Heart', 'info');
+      return;
+    }
+    if (st.sheet.peek() !== null) this.closeSheet();
+    this.cancelAutomation();
+    this.input?.releaseAll();
+    st.mode.value = 'build';
+    this.time.setBuild(true, this.motion());
+    if (!(this.build?.begin() ?? false)) {
+      const plane = entryPlane(w.pod.y);
+      this.renderer?.setBuildCamera(defaultCamera(plane, { podX: w.pod.x, podY: w.pod.y, entities: w.factory.entities() }));
+    }
   }
+
+  /** ✕ Done, Esc, B: the camera returns to play and the pod resumes through the gate (canon §4.5: |v_y| > 5.88 → countdown). */
   exitBuild(): void {
-    if (this.state.mode.value === 'play') return;
+    if (this.state.mode.peek() === 'play') return;
+    this.build?.end();
+    this.renderer?.setBuildCamera(null);
+    this.state.buildFrame.value = null;
     this.state.mode.value = 'play';
+    this.time.setBuild(false, this.motion());
+    // A finger still down from build mode never becomes a stick (03 §4.1).
+    this.input?.releaseAll();
   }
 
   dismissRadio(id: number): void {
@@ -644,6 +687,7 @@ export class GameApp implements AppController {
 
   /** Replace the live world (new game, import, Safe Mode recovery). */
   setWorld(w: WorldApi, coldLoad: boolean): void {
+    this.exitBuild();
     this.worldRef = w;
     this.coldLoad = coldLoad;
     this.cancelAutomation();
