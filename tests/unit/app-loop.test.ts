@@ -5,7 +5,7 @@ import type { GameApp } from '../../src/app/controller';
 import { armingRadius, FixedStepper, GameLoop, SHEET_RENDER_MS, STEP_MS } from '../../src/app/loop';
 import { defaultSettings } from '../../src/app/settings';
 import { clipToast, holdToast, MAX_TOASTS, pruneToasts, pushToast, TOAST_MS, toastsCovered } from '../../src/app/toasts';
-import type { InputController, Overlay, SheetId } from '../../src/app/types';
+import type { InputController, Mode, Overlay, SheetId } from '../../src/app/types';
 import { PerfMonitor } from '../../src/debug/perf';
 import { NO_INTENT } from '../../src/pod/types';
 import type { Renderer, ViewportLayout } from '../../src/render/api';
@@ -108,7 +108,7 @@ function loopHarness() {
   vi.stubGlobal('cancelAnimationFrame', () => {
     raf = null;
   });
-  const pod = { thrust: 1, digging: true, tiers: { drill: 2 }, quickSlots: [] };
+  const pod = { thrust: 1, digging: true, tiers: { drill: 2, engine: 3 }, quickSlots: [], y: -10.5, vy: -9 };
   const world = { pod, step: vi.fn(), drainEvents: () => [] };
   let running = true;
   const state = {
@@ -117,6 +117,7 @@ function loopHarness() {
     settings: signal(defaultSettings(393, 852)),
     arming: signal(null),
     perf: signal(null),
+    mode: signal<Mode>('play'),
   };
   const app = { world, state, podRunning: () => running, setContextLost: vi.fn(), tick: vi.fn(), handleEvents: vi.fn() } as unknown as GameApp;
   const audio = { handleEvents: vi.fn(), update: vi.fn() };
@@ -162,6 +163,18 @@ describe('GameLoop', () => {
     h.hold(false);
     h.frame(32);
     expect(h.audio.update).toHaveBeenLastCalledWith(expect.objectContaining({ thrust: 1, digging: true }), 32);
+  });
+
+  it('passes depth, fall speed, engine tier and the sheet/build duck to audio', () => {
+    const h = loopHarness();
+    h.frame(0);
+    expect(h.audio.update).toHaveBeenLastCalledWith(expect.objectContaining({ depth: 10.5, vy: -9, engineTier: 3, ducked: false }), 0);
+    h.state.mode.value = 'build';
+    h.frame(16);
+    expect(h.audio.update).toHaveBeenLastCalledWith(expect.objectContaining({ ducked: true }), 16);
+    h.hold(true);
+    h.frame(32);
+    expect(h.audio.update).toHaveBeenLastCalledWith(expect.objectContaining({ vy: 0, depth: 10.5 }), 32);
   });
 
   it('draws a held scene under "Tap to resume" at the sheet rate, and every frame in play', () => {

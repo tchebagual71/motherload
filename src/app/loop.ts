@@ -83,7 +83,7 @@ export class GameLoop {
   private frozenAt: number | null = null;
   private readonly frameData: RenderFrame;
   private readonly armingData = { radius: 0, progress: 0 };
-  private readonly podAudio: PodAudioState = { thrust: 0, digging: false, drillTier: 1 };
+  private readonly podAudio: PodAudioState = { thrust: 0, digging: false, drillTier: 1, engineTier: 1, vy: 0, depth: 0, ducked: false, arming: -1 };
 
   constructor(private readonly deps: LoopDeps) {
     this.frameData = {
@@ -188,6 +188,11 @@ export class GameLoop {
       this.podAudio.thrust = live ? pod.thrust : 0;
       this.podAudio.digging = live && pod.digging;
       this.podAudio.drillTier = pod.tiers.drill;
+      this.podAudio.engineTier = pod.tiers.engine;
+      this.podAudio.vy = live ? pod.vy : 0;
+      this.podAudio.depth = pod.y < 0 ? -pod.y : 0;
+      this.podAudio.ducked = app.state.sheet.peek() !== null || app.state.mode.peek() === 'build';
+      this.podAudio.arming = app.state.arming.peek()?.progress ?? -1;
       audio.handleEvents(events, pod.tiers.drill);
       audio.update(this.podAudio, t);
     }

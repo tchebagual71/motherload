@@ -288,6 +288,7 @@ function startEngine(d: EngineDeps): { loop: GameLoop; renderer: Renderer } | nu
   });
   loop.start();
   if (cfg.testMode) {
+    Object.assign(window, { __hfAudio: d.audio });
     void import('../debug/testHook').then((m) =>
       m.installTestHook({
         app,
@@ -374,6 +375,8 @@ export async function boot(): Promise<void> {
     enabled: cfg.settings.sound,
     respectSilent: cfg.settings.respectSilent,
     onInterrupted: () => app.interrupt(),
+    music: cfg.settings.music,
+    reducedMotion: cfg.settings.reducedMotion || cfg.osReducedMotion,
   });
   audio.installUnlockListeners();
   app.attachAudio(audio);
@@ -399,6 +402,8 @@ export async function boot(): Promise<void> {
   hooks.onSettings = (next, prev) => {
     if (next.controlSize !== prev.controlSize) viewport.setControlSize(next.controlSize);
     if (next.quality !== prev.quality) reporter.recorder.switchTo(app.state.look.peek(), cfg.resolveQuality(next.quality));
+    if (next.music !== prev.music) audio.setMusic(next.music);
+    if (next.reducedMotion !== prev.reducedMotion) audio.setReducedMotion(next.reducedMotion || cfg.osReducedMotion);
   };
   uiRoot.addEventListener('pointerdown', (e) => {
     reporter.marks.firstInputMs ??= performance.now() - cfg.navStart;

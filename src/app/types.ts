@@ -52,6 +52,8 @@ export interface Settings {
   landingAssist: boolean;
   /** Assist: hold the dig direction steady (01 §6.4). */
   steadyDrill: boolean;
+  /** Music ("Kettle On", 03 §11.2); SFX and ambience follow `sound` alone. */
+  music: boolean;
 }
 
 /** One radio transmission card (canon §2.12 #5: ≤ 90 characters, ≤ 4 cards per beat). */

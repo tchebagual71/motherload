@@ -481,6 +481,7 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     returnTick: 'training',
     landingAssist: false,
     steadyDrill: false,
+    music: true,
   };
   const state: AppState = {
     overlay: signal<Overlay>(opts.overlay ?? null),
