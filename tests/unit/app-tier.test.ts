@@ -46,6 +46,7 @@ describe('settings', () => {
       returnTick: 'training',
       landingAssist: false,
       steadyDrill: false,
+      music: true,
     });
     expect(defaultSettings(375, 667).controlSize).toBe('S');
     expect(defaultSettings(375, 667, true).reducedMotion).toBe(true);
@@ -60,6 +61,8 @@ describe('settings', () => {
     expect(s).not.toHaveProperty('extra');
     expect(sanitizeSettings(null, d)).toEqual(d);
     expect(sanitizeSettings('garbage', d)).toEqual(d);
+    expect(sanitizeSettings({ music: false }, d).music).toBe(false);
+    expect(sanitizeSettings({ music: 'off' }, d).music).toBe(true);
   });
 
   it('round-trips through a channel-prefixed store and survives corrupt JSON', () => {

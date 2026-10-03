@@ -2,7 +2,8 @@
 // Ported because the `zzfx` package creates its own AudioContext at import time, which on iOS would exist
 // before navigator.audioSession is configured and outside the unlock gesture (03 §11.1). Parameters keep the
 // ZzFX order so presets from the ZzFX designer paste in unchanged; the built-in randomness is dropped (variety
-// comes from playback-rate jitter at play time) so buffers are deterministic and cacheable.
+// comes from playback-rate jitter at play time) so buffers are deterministic and cacheable. The cos and noise terms are
+// skipped when their parameter is zero, and the noise is hashed (noiseAt), so a render costs a fraction of ZzFX's.
 
 /** ZzFX parameter list: [volume, randomness, frequency, attack, sustain, release, shape, shapeCurve, slide,
  *  deltaSlide, pitchJump, pitchJumpTime, repeatTime, noise, modulation, bitCrush, delay, sustainVolume, decay,
@@ -12,6 +13,16 @@ export type ZzfxParams = readonly (number | undefined)[];
 export const ZZFX_SAMPLE_RATE = 44_100;
 /** ZzFX's master volume scale (ZZFX.volume). */
 const ZZFX_VOLUME = 0.3;
+
+/**
+ * ZzFX's frequency noise is sin(i⁵): white, arcsine-distributed, but a huge-argument sin costs ≈ 250 ns a sample.
+ * The same distribution from a hashed phase is ≈ 10× cheaper (the render runs on the main thread after unlock).
+ */
+function noiseAt(i: number): number {
+  let h = Math.imul(i ^ 0x5bd1e995, 0x2c1b3c6d);
+  h = Math.imul(h ^ (h >>> 15), 0x297a2d39);
+  return Math.sin(((h ^ (h >>> 16)) >>> 0) * (Math.PI * 2 / 4_294_967_296));
+}
 
 function p(params: ZzfxParams, i: number, d: number): number {
   const v = params[i];
@@ -126,8 +137,9 @@ export function buildSamples(params: ZzfxParams, sampleRate: number = ZZFX_SAMPL
       }
     }
 
-    const f = (frequency += slide += deltaSlide) * Math.cos(modulation * modOffset++);
-    t += f + f * noise * Math.sin(i ** 5);
+    frequency += slide += deltaSlide;
+    const f = modulation ? frequency * Math.cos(modulation * modOffset++) : frequency;
+    t += noise ? f + f * noise * noiseAt(i) : f;
 
     if (jump && ++jump > pitchJumpTime) {
       frequency += pitchJump;

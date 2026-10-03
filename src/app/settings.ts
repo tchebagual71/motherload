@@ -28,6 +28,7 @@ export function defaultSettings(screenWidth: number, screenHeight: number, osRed
     returnTick: 'training',
     landingAssist: false,
     steadyDrill: false,
+    music: true,
   };
 }
 
@@ -58,6 +59,7 @@ export function sanitizeSettings(raw: unknown, d: Settings): Settings {
     landingAssist: pickBool(r.landingAssist, d.landingAssist),
     steadyDrill: pickBool(r.steadyDrill, d.steadyDrill),
     ...(r.batterySaver === true && { batterySaver: true }),
+    music: pickBool(r.music, d.music),
   };
 }
 

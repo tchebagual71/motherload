@@ -97,6 +97,7 @@ export function SettingsSheet({ app, close, leaving }: { app: AppController; clo
 
       <SectionTitle>Audio</SectionTitle>
       <Switch label="Sound" value={s.sound} onChange={(v) => set({ sound: v })} />
+      <Switch label="Music" hint="Kettle On, up on the Rim" value={s.music} onChange={(v) => set({ music: v })} />
       <Switch
         label="Respect silent switch"
         hint="Mute when the iPhone ring switch is off"
