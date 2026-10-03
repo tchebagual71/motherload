@@ -65,6 +65,35 @@ describe('HUD announcements (UI-10)', () => {
   });
 });
 
+describe('UI root in an MVP build', () => {
+  it('mounts the depth ruler next to the HUD (an M0 build has neither ruler nor map: app-m0scope)', async () => {
+    app.state.overlay.value = null;
+    let unmount = () => {};
+    await flush(() => (unmount = mountUI(dom.root as unknown as HTMLElement, app)));
+    try {
+      expect(dom.root.querySelector('.hf-hud')).not.toBeNull();
+      expect(dom.root.querySelector('.hf-ruler')).not.toBeNull();
+    } finally {
+      await flush(() => unmount());
+    }
+  });
+
+  it('shows "Factory resting" while the factory rests (02 §8.1; INT-7), in play and in build mode', async () => {
+    app.state.overlay.value = null;
+    let unmount = () => {};
+    await flush(() => (unmount = mountUI(dom.root as unknown as HTMLElement, app)));
+    try {
+      expect(dom.root.querySelector('.hf-resting-chip')).toBeNull();
+      await flush(() => (app.state.resting.value = true));
+      expect(text(dom.root.querySelector('.hf-resting-chip'))).toBe('Factory resting');
+      await flush(() => (app.state.resting.value = false));
+      expect(dom.root.querySelector('.hf-resting-chip')).toBeNull();
+    } finally {
+      await flush(() => unmount());
+    }
+  });
+});
+
 describe('Reduced motion root class (UI-8)', () => {
   it('follows the setting even when the OS asks for reduced motion', async () => {
     dom.media.add('(prefers-reduced-motion: reduce)');

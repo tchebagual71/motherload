@@ -3,7 +3,7 @@
 // closely enough to look right; physics is a toy.
 import { signal } from '@preact/signals';
 import type { BuildFrame } from '../render/api';
-import type { AppController, AppState, DeathInfo, GoalChip, Overlay, RadioMessage, SafeModeInfo, Settings, SheetId, Toast, TripSummary } from '../app/types';
+import type { AppController, AppState, DeathInfo, GoalChip, KeptSave, Overlay, RadioMessage, SafeModeInfo, Settings, SheetId, Toast, TripSummary } from '../app/types';
 import type { PodIntent, PodState } from '../pod/types';
 import {
   BAY,
@@ -530,6 +530,10 @@ export interface FakeAppOptions {
   standalone?: boolean;
   importOffer?: boolean;
   safeModePreviousMs?: number | null;
+  /** A kept save this build cannot load (04 §4.11): the title card and the Saves sheet offer its export. */
+  keptSave?: KeptSave | null;
+  /** Visible-idle away: the "Factory resting" chip. */
+  resting?: boolean;
 }
 
 export interface FakeApp extends AppController {
@@ -559,6 +563,7 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     landingAssist: false,
     steadyDrill: false,
     music: true,
+    voiceBlips: true,
   };
   const state: AppState = {
     overlay: signal<Overlay>(opts.overlay ?? null),
@@ -583,6 +588,8 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     bayFullAt: signal(Number.NEGATIVE_INFINITY),
     importOffer: signal(opts.importOffer ?? false),
     safeMode: signal<SafeModeInfo>({ previousOlderByMs: opts.safeModePreviousMs ?? null, error: null }),
+    keptSave: signal<KeptSave | null>(opts.keptSave ?? null),
+    resting: signal(opts.resting ?? false),
   };
   let toastId = 0;
   let hudAcc = 0;
@@ -605,6 +612,8 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     dismissRadio(id) {
       state.radio.value = state.radio.value.filter((m) => m.id !== id);
     },
+    speakRadio() {},
+    stopRadioSpeech() {},
     styleBookmark() {},
     previewOverlay(o) {
       state.sheet.value = null;
@@ -645,6 +654,9 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     },
     async exportSave() {
       return EXPORT_PREFIX + base64url(world.serialize());
+    },
+    async exportKeptSave() {
+      return state.keptSave.peek() ? `${EXPORT_PREFIX}kept-test-save` : null;
     },
     async importSave(code) {
       try {

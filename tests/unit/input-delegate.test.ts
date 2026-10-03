@@ -130,6 +130,20 @@ describe('createInput with the HUD (fake DOM)', () => {
     expect(app.state.look.value).toBe('toon');
   });
 
+  it('a button that removes itself on tap does not pass the browser click to what was under it', async () => {
+    const done = dom.document.createElement('button');
+    done.setAttribute('data-tap', '');
+    done.addEventListener('click', () => done.remove());
+    dom.root.appendChild(done);
+    await pointer(done, 'pointerdown', { pointerId: 9, x: 5, y: 5 });
+    await pointer(done, 'pointerup', { pointerId: 9, x: 6, y: 5 });
+    expect(done.isConnected).toBe(false);
+    await nativeClick(menu()); // the click lands on the element that was underneath
+    expect(app.state.sheet.value).toBeNull();
+    await tap(menu(), 10, true); // the next real tap still works
+    expect(app.state.sheet.value).toBe('menu');
+  });
+
   it('a slow single-finger press still works through the browser click', async () => {
     await pointer(chip(), 'pointerdown', { pointerId: 8, t: 0 });
     await pointer(chip(), 'pointerup', { pointerId: 8, t: TOUCH.tapMs + 200 });

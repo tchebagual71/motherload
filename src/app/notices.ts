@@ -2,6 +2,7 @@
 // cap instead of being clipped; 04 §4.10 "Save damaged — restored the previous copy (n min older)").
 import type { DigRefusal } from '../shared/events';
 import type { Scope } from '../shared/types';
+import { TOAST_MAX_CHARS } from './toasts';
 
 export const NOTICE = {
   storageFull: 'Storage full: export in Menu → Saves',
@@ -12,6 +13,14 @@ export const NOTICE = {
   /** …and the store opened later, empty, so this session's world is saved after all. */
   savesBack: 'Saving works again',
   damagedNewClaim: 'Save damaged: started a new claim',
+  /** 04 §4.11: an M0 test save never migrates; it is kept for export (save/legacy.ts). */
+  testSave: "This test save can't be loaded",
+  /** …and a save from a newer version (or scope) is never overwritten. */
+  newerSave: 'This save is from a newer version',
+  testSaveKept: 'Test save kept: export in Menu → Saves',
+  newerSaveKept: 'Newer save kept: export in Menu → Saves',
+  /** A save this build cannot load could not be moved aside: nothing is written over it. */
+  savesReadOnly: 'Saving is off to keep your old save',
   noOlderCopy: 'No older copy: export or start over',
   /** Safe Mode with no older copy: "Try again" boots the failing copy once more. */
   retryingCopy: 'No older copy: trying this save again',
@@ -48,6 +57,25 @@ export function refusalNotice(reason: DigRefusal, scope: Scope): string | null {
     default:
       return null;
   }
+}
+
+/** Co-op Plans rung ids (U0 … U11); the factory's other 'unlock' events name a possession recipe (02 §0.2 F1). */
+const RUNG_ID = /^U\d+$/;
+
+/**
+ * The factory's 'unlock' event as a toast (INT-9): "Unlocked: <label>" for a rung, "New recipe: <item>" for a
+ * possession recipe. A rung label too long for the 40-character cap drops the "Unlocked" prefix to "New: …" (U3:
+ * "New: Assembler, Router, Export Terminal"), then names as many unlocks as fit and counts the rest (U2).
+ */
+export function unlockNotice(rung: string, label: string): string {
+  if (!RUNG_ID.test(rung)) return `New recipe: ${label}`;
+  for (const t of [`Unlocked: ${label}`, `New: ${label}`]) if (t.length <= TOAST_MAX_CHARS) return t;
+  const items = label.split(', ');
+  for (let n = items.length - 1; n > 0; n--) {
+    const t = `Unlocked: ${items.slice(0, n).join(', ')} +${items.length - n} more`;
+    if (t.length <= TOAST_MAX_CHARS) return t;
+  }
+  return `Unlocked: ${label}`;
 }
 
 const MINUTE_MS = 60_000;

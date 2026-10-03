@@ -515,28 +515,6 @@
   pointer-events: none;
   will-change: transform;
 }
-.hf-bubble {
-  position: absolute;
-  left: 0;
-  top: 0;
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border: var(--bw) solid var(--hf-ink);
-  border-radius: 50%;
-  background: var(--hf-cream);
-  color: var(--hf-ink);
-  font: 900 15px/1 var(--hf-font);
-  pointer-events: none;
-}
-.hf-bubble-blocked,
-.hf-bubble-noOutput {
-  background: #ffd0d4;
-}
-.hf-bubble-noRecipe {
-  background: #ffe2a8;
-}
 .hf-loupe {
   position: absolute;
   left: 0;
@@ -650,6 +628,17 @@
 }
 .hf-inspect-foot .hf-btn {
   flex: 1 1 0;
+}
+.hf-inspect-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.hf-inspect-q {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--hf-bad-text);
+  font: 800 calc(15px * var(--hf-ts, 1))/1.25 var(--hf-font);
 }
 
 /* ---------------------------------------------------------------- Pixel Lab skin */

@@ -18,6 +18,7 @@ import {
   type Cell,
   type Dir,
   type EntityView,
+  type ErrCode,
   type FactoryApi,
   type GhostView,
   type LiftBucketsView,
@@ -69,6 +70,7 @@ import {
   BUBBLE_GLYPH,
   GHOST_ALPHA,
   GHOST_EDGE_PX,
+  GHOST_HATCH_PT,
   GHOST_STYLE,
   INVALID_HEX,
   OVERLAY_HEX,
@@ -234,8 +236,11 @@ export interface FactoryFrame {
    */
   viewport?: { width: number; height: number } | null;
   build: BuildFrame | null;
-  /** Underground job the pod is completing now. */
-  ghostProgress: { id: number; progress: number } | null;
+  /**
+   * Underground job the pod is completing now (WorldApi.ghostProgress). `blocked`: the refusal the ring holds on
+   * (PLAYER-6); that job is drawn stalled, striped in its role tint, instead of pulsing as being built.
+   */
+  ghostProgress: { id: number; progress: number; blocked?: ErrCode | null } | null;
   /** Pixel Lab: world units per RT texel (moving pieces snap to it); 0 = no snapping. */
   texel: number;
   /** False with reduced motion or battery mode: machines hold still (03 §7, 04 §5.8). */
@@ -294,6 +299,12 @@ function cellFrameGeometry(inner: number, bar: number): BufferGeometry {
 }
 
 const BRACKET_BARS = 8;
+
+/** Invalid-stripe period in target pixels for GHOST_HATCH_PT CSS px: ≥ 4 so both halves show, whole texels when snapped. */
+export function ghostHatchPx(pxPerPt: number, wholeTexels: boolean): number {
+  const p = GHOST_HATCH_PT * (pxPerPt > 0 && Number.isFinite(pxPerPt) ? pxPerPt : 1);
+  return Math.max(4, wholeTexels ? Math.round(p) : p);
+}
 
 /** Underground ghost highlight cell: a mustard frame with a faint fill (vertex alpha), in the xy plane. */
 function highlightGeometry(): BufferGeometry {
@@ -367,13 +378,14 @@ export class FactoryView {
   private hullsSelected = false;
   private look: Look = 'toon';
   private readonly selKey = { id: -1, x: 0, y: 0, w: 0, h: 0 };
-  private readonly hiKey = { on: false, kind: '' as string, x0: 0, y0: 0, x1: 0, y1: 0, grid: -1, topo: -1 };
+  private readonly hiKey = { on: false, kind: '' as BuildingKind | '', x0: 0, y0: 0, x1: 0, y1: 0, grid: -1, topo: -1 };
   private readonly hover = { id: -1, key: -1 };
   private readonly itemViews: BeltItemsView[];
   /** Ghost job instances per mesh (kept across frames; the preview is appended after them). */
   private readonly jobCounts = new Map<GhostPiece, number>();
   private jobTopo = -1;
   private jobActive = -2;
+  private jobStalled = false;
   private readonly jobTint: GhostTint = { hex: 0, alpha: 0, style: 0 };
   private readonly previewTint: GhostTint = { hex: 0, alpha: 0, style: 0 };
   private readonly entScratch = { kind: 'belt' as BuildingKind, plane: 'mine' as Plane, x: 0, y: 0, w: 1, h: 1, dir: 0 as Dir };
@@ -499,12 +511,14 @@ export class FactoryView {
 
   /**
    * Ghost outline width in target pixels and the target's size: Toon 1.5 CSS px × its render DPR on the canvas,
-   * Pixel Lab one texel of the low-res target (crisp at any zoom; 03 §9.3).
+   * Pixel Lab one texel of the low-res target (crisp at any zoom; 03 §9.3). `pxPerPt` (target pixels per CSS px)
+   * sizes the invalid stripes to GHOST_HATCH_PT on screen, in whole texels in Pixel Lab.
    */
-  setGhostEdge(px: number, width: number, height: number): void {
+  setGhostEdge(px: number, width: number, height: number, pxPerPt = px / GHOST_EDGE_PX): void {
     const u = this.ghostEdgeMat.uniforms;
     u.uPx.value = px;
     (u.uRes.value as { set(x: number, y: number): unknown }).set(Math.max(1, width), Math.max(1, height));
+    this.ghostMat.uniforms.uHatch.value = ghostHatchPx(pxPerPt, this.look === 'pixel');
   }
 
   /** Selected entity whose outline shows under the low-tier scope. */
@@ -1228,17 +1242,20 @@ export class FactoryView {
   }
 
   private placeGhosts(fr: FactoryFrame): void {
-    const active = fr.ghostProgress ? fr.ghostProgress.id : -1;
-    if (this.jobTopo !== this.topo || this.jobActive !== active) {
+    const gp = fr.ghostProgress;
+    const active = gp ? gp.id : -1;
+    const stalled = !!gp?.blocked;
+    if (this.jobTopo !== this.topo || this.jobActive !== active || this.jobStalled !== stalled) {
       // Queued jobs change only with the structure (or the job being built): emit them once and keep them.
       this.jobTopo = this.topo;
       this.jobActive = active;
+      this.jobStalled = stalled;
       for (const p of GHOST_PIECES) this.ghost[p].reset();
       const tint = this.jobTint;
       for (const g of this.ghostJobs) {
         tint.hex = ROLE_HEX[g.kind] ?? ROLE.logistics;
         tint.alpha = GHOST_ALPHA.job;
-        tint.style = g.id === active ? GHOST_STYLE.ACTIVE : GHOST_STYLE.JOB;
+        tint.style = g.id !== active ? GHOST_STYLE.JOB : stalled ? GHOST_STYLE.INVALID : GHOST_STYLE.ACTIVE;
         if (g.kind === 'belt') {
           for (let k = 0; k < g.w; k++) this.emitBelt(this.soloTile(g.x + k, g.y, g.dir), 'mine', this.ghost, false, tint);
         } else {
@@ -1462,8 +1479,10 @@ export class FactoryView {
     const b = fr.build;
     const rect = fr.mineRect;
     const hi = this.highlight;
-    // Only an armed tool has somewhere to go (its preview names it).
-    if (!b || b.plane !== 'mine' || b.bulldoze || !b.preview || !rect) {
+    // Only an armed tool has somewhere to go: the pending ghost names it, else the armed card (before the first
+    // tap, so arming a tool shows where it can go; BUILD-9).
+    const kind = b ? (b.preview?.kind ?? b.tool ?? null) : null;
+    if (!b || b.plane !== 'mine' || b.bulldoze || kind === null || !rect) {
       if (this.hiKey.on) {
         hi.reset();
         hi.commit();
@@ -1471,12 +1490,10 @@ export class FactoryView {
       }
       return;
     }
-    const kind = b.preview?.kind ?? null;
     const k = this.hiKey;
-    const kindKey = kind ?? '';
-    if (k.on && k.kind === kindKey && k.x0 === rect.x0 && k.y0 === rect.y0 && k.x1 === rect.x1 && k.y1 === rect.y1 && k.grid === fr.grid.version && k.topo === this.topo) return;
+    if (k.on && k.kind === kind && k.x0 === rect.x0 && k.y0 === rect.y0 && k.x1 === rect.x1 && k.y1 === rect.y1 && k.grid === fr.grid.version && k.topo === this.topo) return;
     k.on = true;
-    k.kind = kindKey;
+    k.kind = kind;
     k.x0 = rect.x0;
     k.y0 = rect.y0;
     k.x1 = rect.x1;
@@ -1507,7 +1524,7 @@ export class FactoryView {
     hi.commit();
   }
 
-  private toolMayGo(g: TerrainGrid, kind: BuildingKind | null, x: number, r: number): boolean {
+  private toolMayGo(g: TerrainGrid, kind: BuildingKind, x: number, r: number): boolean {
     const i = g.idx(x, r);
     if (g.terrain[i] !== T.AIR || (g.flags[i] & F.SEEN) === 0 || g.occupant[i] !== 0) return false;
     if (kind === 'belt' || kind === 'router') return g.mount[i] === 0 && g.get(x, r + 1) !== T.AIR;

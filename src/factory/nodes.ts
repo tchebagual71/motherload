@@ -215,8 +215,12 @@ function startCraft(s: FactoryState, e: Ent): void {
 function liftP2(s: FactoryState, e: Ent): void {
   const q = queueOf(e);
   if (e.stalled) {
-    e.statusCode = ST_BLOCKED;
-    return;
+    // A rail section that completed after the stall lengthened the transit: the refused head is mid-shaft again.
+    if (q.n > 0 && e.clock - q.headEntry() >= e.transit) {
+      e.statusCode = ST_BLOCKED;
+      return;
+    }
+    e.stalled = false;
   }
   if (q.n === 0 && e.lip === 0) {
     e.statusCode = ST_IDLE;

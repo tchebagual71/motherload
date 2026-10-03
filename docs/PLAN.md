@@ -1,7 +1,24 @@
 # HoleFactory — Master Plan
 
-**Status:** planning complete (design rev 2, 2026-10-01). Next step: **M0 "Style & Feel Test"**.
+**Status** (2026-10-03): **M0 "Style & Feel Test" done and reviewed. MVP vertical slice feature-complete and reviewed** on branch `claude/build-m0`, with review fixes landing. Next step: **v1.0** (§6). Details in [Where we are](#where-we-are).
 **How to read this:** a plain-language summary for your approval. Every number comes from the design documents in [`design/`](design/), which are the detailed spec; if they ever disagree with this page, they win, and [`design/00-canon.md`](design/00-canon.md) wins over all of them.
+
+---
+
+## Where we are
+
+- **M0** is built and reviewed: the dig prototype in both looks (Clean Toon and Pixel Lab), with the A/B chip, gallery, questionnaire, Perf Report and jetsam probe. Your device round and look pick (§6 M0 "Exit") decide the art direction; until then the defaults in §8 apply.
+- **MVP** is feature-complete and reviewed. You can play the pod loop down to the temporary Seal at 4,000 ft, then the factory opening:
+  1. dig to Dot's copper lode;
+  2. collect the Starter Kit;
+  3. press BUILD to place the drill and the lift;
+  4. paint Yard belts to the Smelter;
+  5. get the first ingot;
+  6. build an Assembler for Wire and Hull Plates.
+
+  The economy bot, trip soak and factory bench numbers are in [`design/bot-report.md`](design/bot-report.md). How to run and test the build is in the [README](../README.md#run).
+- **Next: v1.0.** Engineering carried into it:
+  - **Code-split the first load.** Initial JS is ≈ 310 KB brotli of the 350 KB budget (canon §3.14), and `npm run size` gates it in CI. Build mode, the factory renderer and the M0-only style test should load on demand. Out-of-scope code should also stop shipping: scope gating is runtime only today ([`design/04-tech-architecture.md` §12.1](design/04-tech-architecture.md)).
 
 ---
 
@@ -169,6 +186,7 @@ Sizes are **engineer-days of relative size, not commitments** ([`design/04-tech-
 - **You can play:** full depth (≈ 7,300 ft) with Methane, the Static Zone and Shears (ground shifts, rolled only when you're on the surface) with Shoring and Realign; Depots, Chutes, power, Mk II/III, Refinery, Pod Works, Gem Cutter, Magma and Gas Taps; tiers 6–7; Marlow, the Surveyor and the Claimant finale; the Away budget; 3 save slots and Hardcore; landscape and tablets; full accessibility; generative deep music.
 - **Exit (bot unless noted):** income cap holds in every phase; pod-only ≥ 30% slower; away ≤ 25% of pod income for a 3-sessions-a-day player; tension test passes at every depth; boss fight 4–6 min median with ≥ 60% of median players winning by attempt 3; a real 8-hour away test on a device.
 - **Size:** **88 engineer-days** in a 16-week window; the 72-day reserve covers content integration, bot-driven balancing, bug fixing and a 4-day background-thread task if the benchmark failed.
+- **Carried over from the MVP:** load build mode and other heavy parts on demand, since the first load already uses ≈ 310 of its 350 KB ([Where we are](#where-we-are)).
 - **You:** play-test the device rounds; confirm the story and arena defaults before the boss is built; decide the repo rename or domain before any public link.
 
 ### Post-launch (priority order, not yet estimated)

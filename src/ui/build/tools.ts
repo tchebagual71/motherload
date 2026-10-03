@@ -9,14 +9,16 @@ import {
   type BuildingKind,
   type Cell,
   type Dir,
+  type EntityView,
   type GhostView,
   type Plane,
   type Rung,
 } from '../../factory/api';
 import { isJunction, slotTier, wordDirA, wordTierA, wordTierB } from '../../factory/topology';
+import { statusGlyph, type BubbleGlyph } from '../../render/factory/status';
 import type { CargoItem, Lode } from '../../shared/types';
 import { formatCash } from '../format';
-import { shortName, unlockText } from './text';
+import { buildingName, shortName, unlockText } from './text';
 
 export const DX: readonly number[] = [1, 0, -1, 0];
 export const DY: readonly number[] = [0, 1, 0, -1];
@@ -201,6 +203,27 @@ export function yardBeltRefund(cells: readonly Cell[], words: Readonly<Uint16Arr
   return { refund, tiles, crossings };
 }
 
+/**
+ * What removing a building pays back and what putting it back costs, in cash (02 §2.7): a Yard building refunds
+ * its price, except the rusted survey set, which was free (02 §2.2) and so refunds nothing yet costs the list
+ * price to rebuild. Underground pieces return their Kit: nothing is lost.
+ */
+export function removalPrice(e: Pick<EntityView, 'kind' | 'mk' | 'plane' | 'rusted'>): { refund: number; rebuild: number } {
+  if (e.plane !== 'yard') return { refund: 0, rebuild: 0 };
+  const rebuild = BUILDINGS[e.kind].mks[e.mk - 1]?.cash ?? 0;
+  return { refund: e.rusted ? 0 : rebuild, rebuild };
+}
+
+/**
+ * The question a removal that loses money asks before it happens (Inspect → Deconstruct is then two taps):
+ * "Remove survey Headframe? Rebuilding costs $200". Null when the refund covers the rebuild.
+ */
+export function removalAsk(e: Pick<EntityView, 'kind' | 'mk' | 'plane' | 'rusted'>): string | null {
+  const { refund, rebuild } = removalPrice(e);
+  if (refund >= rebuild) return null;
+  return `Remove ${e.rusted ? 'survey ' : ''}${buildingName(e.kind)}? Rebuilding costs ${formatCash(rebuild)}`;
+}
+
 // ---------------------------------------------------------------- underground
 
 export interface MineRun {
@@ -277,6 +300,31 @@ export function snapDrill(at: Cell, sites: readonly { cell: Cell; lode: number }
     }
   }
   return best ? { x: best.x, y: best.y } : null;
+}
+
+/**
+ * The discovered lode a Drill tap aims at (03 §4.9): the cell is on its 3×2 block or on the two rows above it
+ * where the drill stands, so a tap anywhere on the lode reaches its drill site, not only one near the site.
+ */
+export function lodeUnder(c: Cell, lodes: readonly Lode[], visible: (l: Lode) => boolean): Lode | null {
+  for (const l of lodes) {
+    if (!l.discovered || !visible(l)) continue;
+    if (c.x >= l.x0 && c.x <= l.x0 + 2 && c.y >= l.top - 2 && c.y <= l.top + 1) return l;
+  }
+  return null;
+}
+
+/**
+ * The drill site of a lode for a tap at plane x `fx` (02 §2.4: columns {x0, x0+1} or {x0+1, x0+2}): the first one
+ * that `ok` accepts, `first` (the survey plan's site) ahead of the nearer, the nearer ahead of the farther. When
+ * neither is valid it is still the preferred one, so the red ghost names the real reason (a drill already there,
+ * rock to dig out first).
+ */
+export function lodeDrillSite(l: Lode, fx: number, ok: (c: Cell) => boolean, first: Cell | null = null): Cell {
+  const sites = [{ x: l.x0, y: l.top - 2 }, { x: l.x0 + 1, y: l.top - 2 }];
+  sites.sort((a, b) => Math.abs(a.x + 1 - fx) - Math.abs(b.x + 1 - fx));
+  if (first) sites.sort((a, b) => Number(sameCell(b, first)) - Number(sameCell(a, first)));
+  return sites.find(ok) ?? sites[0];
 }
 
 /**
@@ -445,6 +493,33 @@ export function cardsFor(plane: Plane, tab: TrayTab, deps: CardDeps): CardModel[
       highlight: !locked && !firstIngot && FIRST_PIECES.includes(tool),
     };
   });
+}
+
+// ---------------------------------------------------------------- status bubbles (03 §4.10)
+
+/** What a status bubble's glyph says, for screen readers (the glyphs: render/factory/status.ts BUBBLE_TEXT). */
+export const BUBBLE_SAY: Readonly<Record<BubbleGlyph, string>> = { 0: 'no input', 1: 'output full', 2: 'no recipe', 3: 'disconnected', 4: 'jammed' };
+
+export interface BubbleLine {
+  id: number;
+  kind: BuildingKind;
+  glyph: BubbleGlyph;
+}
+
+/**
+ * The buildings on a plane that wear a status bubble, nearest the view centre (cx, cy) first, at most `max`. The
+ * bubbles are drawn by the renderer; this picks them with its own table (statusGlyph) for their text twin.
+ */
+export function bubbleLines(ents: readonly EntityView[], plane: Plane, cx: number, cy: number, max = 10): BubbleLine[] {
+  const out: (BubbleLine & { d: number })[] = [];
+  for (const e of ents) {
+    if (e.plane !== plane) continue;
+    const glyph = statusGlyph(e.kind, e.status);
+    if (glyph === -1) continue;
+    out.push({ id: e.id, kind: e.kind, glyph, d: Math.abs(e.x + e.w / 2 - cx) + Math.abs(e.y + e.h / 2 - cy) });
+  }
+  out.sort((a, b) => a.d - b.d || a.id - b.id);
+  return out.slice(0, max).map(({ id, kind, glyph }) => ({ id, kind, glyph }));
 }
 
 // ---------------------------------------------------------------- layout (03 §2.3–2.4, §1.5)

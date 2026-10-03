@@ -276,7 +276,7 @@ Edge auto-pan only at world-area edges. Two-finger-tap undo: setting, off.
 ### 4.3 Placement
 - **Ghost-and-confirm** (canon §4.11): a card arms the tool, a tap drops a ghost, a drag moves it at the lifted point, ✓ commits, ✗ clears. **Instant build** (setting) commits on lift; painting and Bulldoze still preview.
 - **Rotate** (Yard): ↻ or R, 90° clockwise, remembered per type; underground ghosts never rotate (02 §2.1).
-- **Validity:** valid = role colour 50%; invalid = `#FF4D5E` 45% + hatch + toast (§6.2), from the validator (02 §2.5) on every move.
+- **Validity:** valid = role colour 50%; invalid = magenta-crimson `#E0249A` 45% striped half-and-half with plum ink (8-pt period, whole texels in Pixel Lab) inside a deep-red `#B3263A` outline + toast (§6.2), from the validator (02 §2.5) on every move. No role owns the invalid hue (§8.6), and the stripes and outline carry "invalid" without hue. A ghost job the pod is held on (refused, the build ring stalled) keeps its role tint and takes the stripes and outline.
 - **Nudge:** a selected ghost shows 44-pt arrows (4 Yard, 2 underground).
 
 ### 4.4 Belts
@@ -551,6 +551,7 @@ Hardrock: chamfered boulder `#6A6370` / `#4D4754`, chamfer `#8E8796` (B4+ `#8B84
 | Storage, market | Lilac `#9B7BFF` | Storage Bin, Silo, Export Terminal, Depot |
 | Support | Khaki `#B8A27A`; glow `#FFD9A0` | Shoring Brace, Lamp |
 
+- **Ghost tint:** a valid ghost is its role colour; the invalid tint is magenta-crimson `#E0249A`, a hue no role uses (the old `#FF4D5E` sat 10° of hue from Processing coral `#FF5A4E`, so a valid Smelter ghost read as invalid), and an invalid ghost is always striped with plum ink inside a deep-red outline (§4.3), never told apart by hue alone. Bulldoze marks keep `#FF4D5E`.
 - All 22 buildings: cream body `#EDE3D2`, plum-grey trim `#4A3F55`; Mk II mustard stripe; Mk III heat shield + cyan pilot light; the survey set's "rusted" skin adds rust decals. Rim buildings carry big signs (amber pump totem; gold scale with Dot's lit window; teal roll-up door and crane; lilac crates).
 - **Pip:** white `#F4F1EA`, visor `#46E0D2` (0.3), accent `#FF7A3D`, Sniffer LED `#7CFF6B` at 2 Hz. Per line (canon §2.6): **3 geometry steps** (t1–2, t3–5, t6–7) **+ a per-tier trim band** on the part collar, so every purchase shows: 21 meshes + 7 trims. Geometry cues: bit shape, hull plates, exhaust count, back tank, radiator fins, cargo pod, scanner dish. Trims follow the metal ladder: t1 steel `#8E8796`, t2 copper `#E0782E`, t3 cobalt `#3F6FE0`, t4 gold `#FFC53D`, t5 iridium `#B8B4C8`, t6 thorium `#4FE3FF` (pulse), t7 diamond `#EEFBFF` (sparkle).
 

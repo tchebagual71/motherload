@@ -1,6 +1,7 @@
 // M0 specs (04 §11.3): save → reload state hash, a death across a relaunch, a hidden-page save that survives a
-// kill, the damaged-save fallback and its notice, context loss → same state hash, and the low-tier draw-call and
-// triangle caps (canon §3.14) in both looks. Tests tagged @dom also run in the CI-only WebKit smoke (04 §11.5).
+// kill, the damaged-save fallback and its notice, an M0 test save kept for export (04 §4.11), context loss → same
+// state hash, and the low-tier draw-call and triangle caps (canon §3.14) in both looks. Tests tagged @dom also run in
+// the CI-only WebKit smoke (04 §11.5).
 import { expect, test, type Page } from '@playwright/test';
 import { bootGame, canvasColourCount, digDown, holdAndHash, pressPlay, relaunch, SAVED_QUERY } from './helpers';
 
@@ -121,6 +122,69 @@ test('a torn newest save falls back to the older copy, and the notice shows afte
   await next.waitForTimeout(3_000);
   await next.locator('.hf-title').getByRole('button', { name: /^(Play|Continue)$/ }).click();
   await expect(next.locator('.hf-toast')).toHaveText('Damaged save: loaded copy 1 min older');
+});
+
+test('an M0 test save is refused with its export, and kept: the new claim never writes over it', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Page.crash is a Chromium DevTools command');
+  await bootGame(page);
+  await pressPlay(page);
+  expect(await page.evaluate(() => window.__hf!.saveNow())).toBe(true);
+  expect(await page.evaluate(() => window.__hf!.saveNow())).toBe(true);
+  await page.waitForTimeout(300);
+  await kill(page);
+
+  // Restamp both copies as HFSV version 0 (what the M0 build wrote), fixing the file's and the record's CRC-32.
+  const next = await page.context().newPage();
+  await next.goto('./icon.svg');
+  const restamped = await next.evaluate(async () => {
+    const table = Array.from({ length: 256 }, (_, n) => {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      return c >>> 0;
+    });
+    const crc = (b: Uint8Array, end = b.length): number => {
+      let c = 0xffffffff;
+      for (let i = 0; i < end; i++) c = table[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+      return (c ^ 0xffffffff) >>> 0;
+    };
+    const db = await new Promise<IDBDatabase>((res, rej) => {
+      const req = indexedDB.open('holefactory');
+      req.onsuccess = () => res(req.result);
+      req.onerror = () => rej(req.error);
+    });
+    const tx = db.transaction('test.files', 'readwrite');
+    const files = tx.objectStore('test.files');
+    type Rec = { data: Uint8Array; crc: number; deflated: boolean };
+    const keys: string[] = [];
+    for (const key of ['slot1/a', 'slot1/b']) {
+      const rec = await new Promise<Rec | undefined>((r) => (files.get(key).onsuccess = (e) => r((e.target as IDBRequest<Rec | undefined>).result)));
+      if (!rec || rec.deflated) continue; // critical saves are raw
+      const b = new Uint8Array(rec.data);
+      b[4] = 0;
+      b[5] = 0;
+      new DataView(b.buffer).setUint32(b.length - 4, crc(b, b.length - 4), true);
+      files.put({ ...rec, data: b, crc: crc(b) }, key);
+      keys.push(key);
+    }
+    await new Promise((r) => (tx.oncomplete = r));
+    db.close();
+    return keys;
+  });
+  expect(restamped).toEqual(['slot1/a', 'slot1/b']);
+
+  await next.goto(`./${SAVED_QUERY}`);
+  await next.waitForFunction(() => window.__hf?.ready === true, null, { timeout: 45_000 });
+  const card = next.locator('.hf-kept-save');
+  await expect(card).toContainText("This test save can't be loaded");
+  await expect(card.getByRole('button', { name: 'Copy its save code' })).toBeVisible();
+  await next.locator('.hf-title').getByRole('button', { name: /^(Play|Continue)$/ }).click();
+  await expect(next.locator('.hf-toast')).toHaveText('Test save kept: export in Menu → Saves');
+  // The new claim saves (twice: both rotating copies); the kept copies are untouched and still export.
+  expect(await next.evaluate(() => window.__hf!.saveNow())).toBe(true);
+  expect(await next.evaluate(() => window.__hf!.saveNow())).toBe(true);
+  const code = await next.evaluate(() => window.__hf!.app.exportKeptSave());
+  expect(code).toMatch(/^HF1:SEZTVgAA/); // 'HFSV' + version 0
+  expect(await next.evaluate((c) => window.__hf!.app.importSave(c!), code)).toEqual({ ok: false, reason: "This test save can't be loaded" });
 });
 
 test('reloading twice before the first frame is not a crash: no Safe Mode @dom', async ({ page, context }) => {

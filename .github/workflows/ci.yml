@@ -18,8 +18,8 @@ permissions:
 
 env:
   NODE_VERSION: 22.22.0
-  # Milestone scope baked into the build (canon §5.5 ledger). Bump to mvp when M0 exits.
-  HF_SCOPE: m0
+  # Milestone scope baked into the build (canon §5.5 ledger; 04 §12.1). MVP since M0 closed; v1 when the MVP exits.
+  HF_SCOPE: mvp
   HF_BASE: /motherload/
   VITE_CHANNEL: prod
 
@@ -51,8 +51,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Payload report (canon §3.14 initial JS ≤ 350 KB br / 430 KB gzip)
-        run: node scripts/size-report.mjs dist >> "$GITHUB_STEP_SUMMARY"
+      # Fails over the canon §3.14 budgets (read from the canon); the table also lands in the job summary.
+      - name: Payload gate (scripts/check-size.mjs)
+        shell: bash
+        run: npm run --silent size -- dist | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist

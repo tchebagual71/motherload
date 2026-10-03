@@ -31,11 +31,35 @@ export interface JobRef {
 }
 export const BUILT_TILES = -1;
 
+/**
+ * A Yard building as undo / redo re-creates it (02 §2.7: the exact inverse of its removal, not a new purchase):
+ * the price its removal refunds and its re-creation debits again (the rusted survey set: $0), its skin, its
+ * configuration and what it held. Each removal refreshes `cfg`, `ins` and `outs`; each re-creation restores them.
+ */
+export interface YardPiece {
+  kind: BuildingKind;
+  mk: number;
+  x: number;
+  y: number;
+  /** The entity's own facing (DIR.S for buildings that do not rotate). */
+  dir: Dir;
+  id: number;
+  serial: number;
+  /** Cash paid at placement: what removal refunds and re-creation debits. */
+  paid: number;
+  rusted: boolean;
+  cfg: Config;
+  /** Items the last removal sent to the Stockpile (item nums): storage, input buffers and a running craft's inputs. */
+  ins: number[];
+  /** … and the output buffer, in queue order. */
+  outs: number[];
+}
+
 export type UndoEntry =
   /** Yard crane placement; inverse: deconstruct. */
-  | { t: 'place'; kind: BuildingKind; mk: number; x: number; y: number; dir: Dir; id: number; serial: number }
-  /** Yard deconstruct; inverse: place again with its configuration. */
-  | { t: 'unplace'; kind: BuildingKind; mk: number; x: number; y: number; dir: Dir; id: number; serial: number; cfg: Config }
+  | ({ t: 'place' } & YardPiece)
+  /** Yard deconstruct; inverse: the same building back (price, skin, configuration, contents). */
+  | ({ t: 'unplace' } & YardPiece)
   /** Yard belt paint / removal, Routers on T's included: per-cell before/after states. */
   | { t: 'belts'; cells: number[]; before: number[]; after: number[] }
   /** Underground jobs added (`adds`) or removed (built pieces deconstructed or ghosts dropped). */

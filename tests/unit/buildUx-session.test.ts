@@ -614,3 +614,98 @@ describe('build session: underground (02 §2.3–2.6; 03 §4.4–4.6)', () => {
     expect(r.s.inspectGhost).toBe(r.f.ghosts()[0].id);
   });
 });
+
+describe('build session: review round 2 (PLAYER-8, PLAYER-5)', () => {
+  const POD_AWAY = { minX: 0, maxX: 0.8, minY: -1.9, maxY: -1.1 };
+  const kits = { count: () => 9, take: () => undefined };
+
+  it('a Drill tap on the middle of a discovered lode snaps to its drill site (PLAYER-8)', () => {
+    const r = mineRig();
+    r.app.enterBuild();
+    r.s.setPlane('mine');
+    r.s.arm('autoDrill');
+    const site = r.f.surveyPlan().drill;
+    // Anywhere on the 3×2 block, the far column included (its own site is not dug out: the survey site is valid).
+    for (const [x, y] of [[r.lode.x0 + 1, r.lode.top], [r.lode.x0 + 1, r.lode.top + 1], [r.lode.x0 + 2, r.lode.top + 1], [r.lode.x0, r.lode.top]]) {
+      tapAt(r.s, r.mine(x, y));
+      expect(r.s.pending).toEqual({ t: 'piece', kind: 'autoDrill', x: site.x, y: site.y, dir: DIR.S });
+      expect(r.s.error).toBeNull();
+      expect(r.s.chip()?.text).toBe('Auto-Drill · 1 Auto-Drill Kit');
+    }
+    // A drag over the lode carries the ghost with it, snapped the same way.
+    stroke(r.s, [r.mine(r.lode.x0 - 4, r.lode.top - 4), r.mine(r.lode.x0 + 2, r.lode.top + 1)]);
+    expect(r.s.pending).toMatchObject({ x: site.x, y: site.y });
+    expect(r.s.error).toBeNull();
+  });
+
+  it('when the drill truly cannot go, the lode tap names the real reason, not "Drills sit on a discovered lode"', () => {
+    const r = mineRig();
+    r.app.enterBuild();
+    r.s.setPlane('mine');
+    r.s.arm('autoDrill');
+    const site = r.f.surveyPlan().drill;
+    const mid = r.mine(r.lode.x0 + 1, r.lode.top + 1);
+    // The footprint is not dug out.
+    r.world.terrain.set(site.x + 1, site.y, T.DIRT);
+    tapAt(r.s, mid);
+    expect(r.s.pending).toMatchObject({ x: site.x, y: site.y });
+    expect(r.s.error?.code).toBe('E_SOLID');
+    expect(r.s.chip()?.text).toBe('Dig this out first');
+    r.world.terrain.set(site.x + 1, site.y, T.AIR);
+    // A drill ghost already on the lode.
+    r.s.clear();
+    tapAt(r.s, mid);
+    expect(r.s.confirm()).toBe(true);
+    tapAt(r.s, mid);
+    expect(r.s.pending).toMatchObject({ x: site.x, y: site.y });
+    expect(r.s.chip()).toEqual({ text: 'This lode has a drill', tone: 'bad' });
+    // A built drill.
+    const ghost = r.f.ghosts().find((g) => g.kind === 'autoDrill')!;
+    expect(r.f.completeGhost(ghost.id, POD_AWAY, kits).ok).toBe(true);
+    r.s.clear();
+    tapAt(r.s, mid);
+    expect(r.s.error?.code).toBe('E_LODE');
+    expect(r.s.chip()?.text).toBe('This lode has a drill');
+    // An undiscovered lode still says what a drill needs.
+    const other = r.world.terrain.lodes.find((l) => !l.discovered && l.scope === 'mvp');
+    if (other) {
+      r.s.clear();
+      tapAt(r.s, r.mine(other.x0 + 1, other.top + 1));
+      expect(r.s.chip()?.text).toBe('Drills sit on a discovered lode');
+    }
+  });
+
+  it('Deconstruct of the free rusted survey set asks first, with the rebuild price (PLAYER-5)', () => {
+    const r = rig();
+    r.app.enterBuild();
+    const hf = r.f.entities().find((e) => e.kind === 'headframe' && e.rusted)!;
+    r.s.openInspect(hf.id);
+    const cash = r.world.wallet.cash;
+    expect(r.s.deconstruct(hf.id)).toBe(false); // one tap only asks
+    expect(r.f.entity(hf.id)).not.toBeNull();
+    expect(r.s.askRemove).toBe(hf.id);
+    expect(r.s.inspectId).toBe(hf.id);
+    r.s.keepBuilding();
+    expect(r.s.askRemove).toBeNull();
+    expect(r.s.deconstruct(hf.id)).toBe(false);
+    // Closing the sheet forgets the question: reopening asks again.
+    r.s.closeInspect();
+    r.s.openInspect(hf.id);
+    expect(r.s.askRemove).toBeNull();
+    expect(r.s.deconstruct(hf.id)).toBe(false);
+    expect(r.s.deconstruct(hf.id)).toBe(true); // the second tap removes
+    expect(r.f.entity(hf.id)).toBeNull();
+    expect(r.world.wallet.cash).toBe(cash);
+    expect(r.s.askRemove).toBeNull();
+    expect(r.s.inspectId).toBeNull();
+    // A building bought at full price comes back in one tap: its refund covers the rebuild.
+    r.s.arm('bin');
+    tapAt(r.s, r.yard(20, 5));
+    expect(r.s.confirm()).toBe(true);
+    r.s.arm(null);
+    const bin = r.f.entities().find((e) => e.kind === 'bin' && !e.rusted)!;
+    r.s.openInspect(bin.id);
+    expect(r.s.deconstruct(bin.id)).toBe(true);
+    expect(r.f.entity(bin.id)).toBeNull();
+  });
+});

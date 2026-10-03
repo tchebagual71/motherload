@@ -148,3 +148,30 @@ describe('BottomSheet swipe-close and quick re-open (UI-5)', () => {
     expect(sheet().style.transform).toBe('');
   });
 });
+
+describe('Saves sheet: the kept save (04 §4.11; SIM-4)', () => {
+  it('offers the kept copy for as long as it is kept, and only then', async () => {
+    app.state.sheet.value = 'saves';
+    await mount();
+    expect(text(dom.root.querySelector('.hf-sheet'))).not.toContain('Kept save');
+    await flush(() => render(null, dom.root as unknown as HTMLElement));
+    app = createFakeApp({ scope: 'mvp', look: 'toon', styleTest: false, keptSave: { kind: 'test', fresh: false } });
+    app.state.sheet.value = 'saves';
+    await mount();
+    const body = text(dom.root.querySelector('.hf-sheet'));
+    expect(body).toContain('Kept save');
+    expect(body).toContain("This test save can't be loaded");
+    expect(dom.root.querySelectorAll('button').some((b) => text(b) === 'Copy code')).toBe(true);
+  });
+});
+
+describe('Settings: Voice blips (03 §11.5, §12)', () => {
+  it('is on by default and switches the setting', async () => {
+    app.state.sheet.value = 'settings';
+    await mount();
+    const row = dom.root.querySelectorAll('.hf-switch-row').find((r) => text(r).startsWith('Voice blips'));
+    expect(row?.getAttribute('aria-checked')).toBe('true');
+    await flush(() => row!.click());
+    expect(app.state.settings.value.voiceBlips).toBe(false);
+  });
+});

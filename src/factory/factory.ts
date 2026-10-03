@@ -39,13 +39,14 @@ import { MINE, W, YARD, headframeX0, isRimBuildingCell, opp, planeNum, step } fr
 import { MAX_GHOSTS, PART_RAIL, jobsOf, type Ghost, type JobShape } from './ghost';
 import { hasItem, item, itemByNum } from './items';
 import { slotCell } from './line';
+import { accepts, receive } from './nodes';
 import { checkJob, checkPlace, completionErr, fail, lockErr, yardCellsErr } from './placement';
 import { RECIPES, recipeNum } from './recipes';
 import { readState, serializeState, stateHash } from './serialize';
 import { FactoryState, type Counters } from './state';
 import { runTick } from './tick';
 import { beltWord, isJunction, junctionWord, slotTier, upstream, wordDirA, wordTierA, wordTierB } from './topology';
-import { BUILT_TILES, ROUTER_CELL, UNDO_DEPTH, findRefs, remapId, type Config, type JobRef, type UndoEntry } from './undo';
+import { BUILT_TILES, ROUTER_CELL, UNDO_DEPTH, findRefs, remapId, type Config, type JobRef, type UndoEntry, type YardPiece } from './undo';
 import { fillBeltItems, fillLiftBuckets } from './views';
 
 const ok = <T extends object>(v: T): { ok: true } & T => ({ ok: true, ...v });
@@ -71,6 +72,8 @@ export class Factory implements FactoryApi {
   private ledger: PartsLedger | null = null;
   private entList: Ent[] = [];
   private entListVersion = -1;
+  /** Undo steps recorded by commands (FactoryApi.historyVersion). */
+  private history = 0;
 
   private constructor(ports: FactoryPorts, opts: FactoryOptions) {
     this.s = new FactoryState(ports, opts);
@@ -128,6 +131,9 @@ export class Factory implements FactoryApi {
   get canRedo(): boolean {
     return this.redos.length > 0;
   }
+  get historyVersion(): number {
+    return this.history;
+  }
 
   // ---------------------------------------------------------------- simulation
 
@@ -167,6 +173,7 @@ export class Factory implements FactoryApi {
     this.undos.push(u);
     if (this.undos.length > UNDO_DEPTH) this.undos.shift();
     this.redos.length = 0;
+    this.history++;
   }
 
   undo(): Res {
@@ -196,12 +203,16 @@ export class Factory implements FactoryApi {
         if (!create) {
           // Same rules as Deconstruct (02 §2.7): blocked without Stockpile room, so an undo never scraps contents.
           const e = this.live(u.id, u.serial);
-          return e ? this.yardRemove(e) : fail('E_INVALID');
+          if (!e) return fail('E_INVALID');
+          const kept = keptOf(e);
+          const r = this.yardRemove(e);
+          if (r.ok) Object.assign(u, kept);
+          return r;
         }
-        const r = this.yardPlace(u.kind, u.mk, u.x, u.y, u.dir);
+        // The exact inverse of the removal: no rung check, its own price (survey set $0), skin and contents.
+        const r = this.yardRestore(u);
         if (!r.ok) return r;
         const e = this.s.ent(r.id) as Ent;
-        if (u.t === 'unplace') this.applyConfig(e, u.cfg, true);
         remapId(this.undos, u.serial, e.id, e.serial);
         remapId(this.redos, u.serial, e.id, e.serial);
         remapId([u], u.serial, e.id, e.serial);
@@ -238,7 +249,7 @@ export class Factory implements FactoryApi {
       return r.ok ? ok({ id: 0 }) : r;
     }
     const r = this.yardPlace(kind, mk, x, y, dir);
-    if (r.ok) this.record({ t: 'place', kind, mk, x, y, dir, id: r.id, serial: (this.s.ent(r.id) as Ent).serial });
+    if (r.ok) this.record({ t: 'place', ...pieceOf(this.s.ent(r.id) as Ent) });
     return r;
   }
 
@@ -290,6 +301,50 @@ export class Factory implements FactoryApi {
 
   private freeExcept(e: Ent): number {
     return this.s.stockFree() - (e.inv ? e.inv.cap - e.inv.total : 0);
+  }
+
+  /**
+   * Re-create a removed Yard building (undo of a deconstruct, redo of a placement; 02 §2.7). Undo is the exact
+   * inverse of the removal, not a new purchase: no rung check, the price its removal refunded (the rusted survey
+   * set: $0) and its parts again, the same skin and configuration, and what it held back from the Stockpile as
+   * far as the Stockpile still has it.
+   */
+  private yardRestore(u: YardPiece): Res<{ id: number }> {
+    const s = this.s;
+    const parts = BUILDINGS[u.kind].mks[u.mk - 1].parts;
+    const err = yardCellsErr(s, u.kind, u.x, u.y) ?? payErr(s, u.paid, parts);
+    if (err) return err;
+    const id = s.allocEnt();
+    if (id === 0) return fail('E_LIMIT');
+    if (u.paid > 0 && !s.wallet.debit(u.paid, 'build')) {
+      s.entFree.push(id);
+      return fail('E_FUNDS', { need: u.paid - s.wallet.cash() });
+    }
+    for (const p of parts) this.takeStock(item(p.item).num, p.n);
+    const e = createEnt(s, u.kind, u.mk, 'yard', u.x, u.y, u.dir, BUILDINGS[u.kind].h, id) as Ent;
+    e.paid = u.paid;
+    e.rusted = u.rusted;
+    this.applyConfig(e, u.cfg, true);
+    this.refill(e, u.ins, u.outs);
+    structureChanged(s, false);
+    return ok({ id });
+  }
+
+  /** Move a re-created building's items back from the Stockpile into it, as far as both allow. Not a conservation event. */
+  private refill(e: Ent, ins: readonly number[], outs: readonly number[]): void {
+    const s = this.s;
+    const out = e.out;
+    for (const it of outs) {
+      if (!out || out.n >= out.cap || s.stockTotals[it] === 0) continue;
+      s.stockRemove(it, 1);
+      out.push(it);
+    }
+    for (const it of ins) {
+      // A Bin counts toward the Stockpile itself: only items held elsewhere come back into it.
+      if (s.stockTotals[it] - (e.inv ? e.inv.count(it) : 0) === 0 || !accepts(s, e, it)) continue;
+      s.stockRemove(it, 1, e.id);
+      receive(s, e, it);
+    }
   }
 
   // ---------------------------------------------------------------- Yard belts (02 §2.1)
@@ -528,13 +583,20 @@ export class Factory implements FactoryApi {
     return out;
   }
 
-  completeGhost(id: number, pod: PodBox, cargo: KitSource): Res<{ id: number }> {
+  canCompleteGhost(id: number, pod: PodBox, cargo: KitSource): Err | null {
     const s = this.s;
     const g = s.ghosts[id];
     if (!g) return fail('E_INVALID');
     const job = g.shape();
-    const err = checkJob(s, job, g.id) ?? completionErr(s, job, pod) ?? kitErr(cargo, g.kit, g.kitUnits);
+    return checkJob(s, job, g.id) ?? completionErr(s, job, pod) ?? kitErr(cargo, g.kit, g.kitUnits);
+  }
+
+  completeGhost(id: number, pod: PodBox, cargo: KitSource): Res<{ id: number }> {
+    const s = this.s;
+    const err = this.canCompleteGhost(id, pod, cargo);
     if (err) return err;
+    const g = s.ghosts[id] as Ghost;
+    const job = g.shape();
     cargo.take(g.kit, g.kitUnits);
     dropGhost(s, g);
     const built = this.buildJob(job);
@@ -638,9 +700,9 @@ export class Factory implements FactoryApi {
     const e = this.s.ent(id);
     if (!e) return fail('E_INVALID');
     if (e.plane === 'yard') {
-      const cfg = readConfig(e);
+      const piece = pieceOf(e);
       const r = this.yardRemove(e);
-      if (r.ok) this.record({ t: 'unplace', kind: e.kind, mk: e.mk, x: e.x, y: e.y, dir: e.dir, id, serial: e.serial, cfg });
+      if (r.ok) this.record({ t: 'unplace', ...piece });
       return r;
     }
     const kits: ItemStack[] = [];
@@ -1006,15 +1068,44 @@ function addSpec(p: Price, spec: MkSpec, sign: 1 | -1): void {
 
 /** Items an entity holds (inventory, output, input buffers). A running craft's inputs: craftInputsOf. */
 function contentsOf(e: Ent): number[] {
+  const out = inputsOf(e);
+  if (e.out) for (let i = 0; i < e.out.n; i++) out.push(e.out.at(i));
+  return out;
+}
+
+/** Storage and input buffers (not the output buffer, not a running craft). */
+function inputsOf(e: Ent): number[] {
   const out: number[] = [];
   if (e.inv) for (let i = 0; i < e.inv.runs; i++) for (let k = 0; k < e.inv.counts[i]; k++) out.push(e.inv.items[i]);
-  if (e.out) for (let i = 0; i < e.out.n; i++) out.push(e.out.at(i));
   if (e.kind === 'smelter' && e.inCount[0] > 0) for (let k = 0; k < e.inCount[0]; k++) out.push(e.inItem[0]);
   if (e.kind === 'assembler' && e.recipeNum >= 0) {
     const r = RECIPES[e.recipeNum];
     for (let i = 0; i < r.inputs.length; i++) for (let k = 0; k < e.inCount[i]; k++) out.push(r.inputs[i].num);
   }
   return out;
+}
+
+/** What a Yard building's removal changes and its re-creation restores: configuration and contents (a running craft's inputs back as inputs). */
+function keptOf(e: Ent): Pick<YardPiece, 'cfg' | 'ins' | 'outs'> {
+  const outs: number[] = [];
+  if (e.out) for (let i = 0; i < e.out.n; i++) outs.push(e.out.at(i));
+  return { cfg: readConfig(e), ins: [...inputsOf(e), ...craftInputsOf(e)], outs };
+}
+
+/** The undo record of a Yard building as it stands. */
+function pieceOf(e: Ent): YardPiece {
+  return { kind: e.kind, mk: e.mk, x: e.x, y: e.y, dir: e.dir, id: e.id, serial: e.serial, paid: e.paid, rusted: e.rusted, ...keptOf(e) };
+}
+
+/** Can the wallet and the Stockpile pay `cash` and `parts` (a re-creation at its own price)? */
+function payErr(s: FactoryState, cash: number, parts: readonly ItemStack[]): Err | null {
+  const have = s.wallet.cash();
+  if (cash > have) return fail('E_FUNDS', { need: cash - have });
+  for (const p of parts) {
+    const got = s.stockTotals[item(p.item).num];
+    if (got < p.n) return fail('E_PARTS', { need: p.n - got, item: p.item });
+  }
+  return null;
 }
 
 /** Inputs of the craft in progress (also one done but blocked on a full output buffer), or none. */

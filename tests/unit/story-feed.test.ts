@@ -4,11 +4,13 @@ import { signal } from '@preact/signals';
 import { describe, expect, it, vi } from 'vitest';
 import { GameApp, type ControllerOptions } from '../../src/app/controller';
 import { defaultSettings } from '../../src/app/settings';
-import { GOAL_REFRESH_MS, StoryFeed, surveyColumnOf } from '../../src/app/storyFeed';
+import { GOAL_REFRESH_MS, StoryFeed, WIRE_RECIPE, blockedGoalText, drillSiteOpen, factoryFacts, kitErrand, surveyColumnOf } from '../../src/app/storyFeed';
 import type { GoalChip, RadioMessage, TripSummary } from '../../src/app/types';
+import type { BuildingKind, EntityView, ErrCode, FactoryApi, GhostView } from '../../src/factory/api';
 import { RIM_BUILDINGS } from '../../src/shared/canon';
-import type { Scope } from '../../src/shared/types';
+import { T, type Scope } from '../../src/shared/types';
 import { StoryLedger } from '../../src/story';
+import type { WorldApi } from '../../src/world/api';
 import { World } from '../../src/world/world';
 
 function feedFor(scope: Scope = 'mvp') {
@@ -110,6 +112,105 @@ describe('StoryFeed', () => {
   it('finds Dot’s survey shaft from the SURVEY flags', () => {
     const w = new World({ seed: 7, scope: 'mvp' });
     expect(surveyColumnOf(w)).toBe(w.meta.surveyColumn);
+  });
+});
+
+describe('StoryFeed: what the factory reached (INT-1) and a held ghost job (PLAYER-6)', () => {
+  const ent = (kind: BuildingKind, x: number, y: number, w: number, h: number, extra: Partial<EntityView> = {}): EntityView => ({
+    id: 1,
+    kind,
+    mk: 1,
+    plane: kind === 'autoDrill' || kind === 'lift' ? 'mine' : 'yard',
+    x,
+    y,
+    w,
+    h,
+    dir: 0,
+    status: 'idle',
+    recipe: null,
+    progress: 0,
+    rusted: false,
+    ...extra,
+  });
+  const factory = (ents: EntityView[], wire = 0, ghosts: GhostView[] = []) =>
+    ({ entities: () => ents, ghosts: () => ghosts, stockpileCount: (id: string) => (id === 'wire' ? wire : 0) }) as unknown as FactoryApi;
+  // Dot's shaft at x 20 under its Headframe (x 20–21); the survey drill at x 21–22, rows 44–45; the lift foot at r45.
+  const headframe = ent('headframe', 20, 1, 2, 2);
+  const drill = ent('autoDrill', 21, 44, 2, 2);
+
+  it('the drill beside the lift foot feeds it; a lift reaches its Headframe only once its top is row 0', () => {
+    expect(factoryFacts(null)).toEqual({ drillFeedsLift: false, liftAtHeadframe: false, wireAssembler: false, wireStock: 0 });
+    // The foot section alone (rows 14–45): beside the drill, not up yet.
+    expect(factoryFacts(factory([headframe, drill, ent('lift', 20, 14, 1, 32)]))).toMatchObject({ drillFeedsLift: true, liftAtHeadframe: false });
+    expect(factoryFacts(factory([headframe, drill, ent('lift', 20, 0, 1, 46)]))).toMatchObject({ drillFeedsLift: true, liftAtHeadframe: true });
+    // A lift with its foot above the drill needs a belt; so does one a column off (and no Headframe stands over it).
+    expect(factoryFacts(factory([headframe, drill, ent('lift', 20, 0, 1, 40)]))).toMatchObject({ drillFeedsLift: false, liftAtHeadframe: true });
+    expect(factoryFacts(factory([headframe, drill, ent('lift', 19, 0, 1, 46)]))).toMatchObject({ drillFeedsLift: false, liftAtHeadframe: false });
+    expect(factoryFacts(factory([headframe, drill, ent('lift', 23, 0, 1, 46)]))).toMatchObject({ drillFeedsLift: true, liftAtHeadframe: false });
+  });
+
+  it('an Assembler counts for the Wire step only on the Wire recipe; Wire in the Stockpile is read too', () => {
+    expect(WIRE_RECIPE).toBe('A2');
+    expect(factoryFacts(factory([ent('assembler', 5, 10, 2, 2)])).wireAssembler).toBe(false);
+    expect(factoryFacts(factory([ent('assembler', 5, 10, 2, 2, { recipe: 'A3' })])).wireAssembler).toBe(false);
+    expect(factoryFacts(factory([ent('assembler', 5, 10, 2, 2, { recipe: 'A2' })])).wireAssembler).toBe(true);
+    expect(factoryFacts(factory([], 7)).wireStock).toBe(7);
+  });
+
+  it('names the fix for a held job: Pip in an occupant’s footprint, else the refusal toast', () => {
+    const job = (kind: BuildingKind, x: number, y: number, w: number, h: number, part: GhostView['part'] = null, kit = 'autoDrill'): GhostView =>
+      ({ id: 9, kind, mk: 1, x, y, w, h, dir: 0, part, kit, kitUnits: 1, order: 1 });
+    const world = (blocked: ErrCode | null, ghosts: GhostView[], ents: EntityView[] = [], solid = -1) =>
+      ({
+        ghostProgress: () => ({ id: 9, progress: 0, blocked }),
+        factory: factory(ents, 0, ghosts),
+        terrain: { get: (_x: number, r: number) => (r === solid ? T.DIRT : T.AIR) },
+      }) as unknown as WorldApi;
+    expect(blockedGoalText(world(null, [job('autoDrill', 21, 44, 2, 2)]))).toBeNull();
+    expect(blockedGoalText({ ghostProgress: () => null } as unknown as WorldApi)).toBeNull();
+    expect(blockedGoalText(world('E_POD', [job('autoDrill', 21, 44, 2, 2)]))).toBe('Move Pip off the drill site so it can build');
+    expect(blockedGoalText(world('E_POD', [job('depot', 21, 44, 3, 2, null, 'depot')]))).toBe('Move Pip off the Depot site so it can build');
+    expect(blockedGoalText(world('E_POD', []))).toBe('Move Pip off the build site so it can build');
+    // A Lift Rail with no lift under it yet (02 §2.6), then one whose shaft is blocked.
+    const rail = job('lift', 20, 0, 1, 14, 'rail', 'liftRail');
+    expect(blockedGoalText(world('E_COLUMN', [rail]))).toBe('Build the lift below first');
+    expect(blockedGoalText(world('E_COLUMN', [rail], [ent('lift', 20, 14, 1, 32)], 6))).toBe('Shaft blocked at row 6');
+    expect(blockedGoalText(world('E_FLOOR', [job('belt', 10, 30, 3, 1, null, 'belt')]))).toBe('Needs a floor');
+    expect(blockedGoalText(world('E_KIT', [job('belt', 10, 30, 3, 1, null, 'belt')]))).toMatch(/Belt Kit/);
+  });
+
+  it('names the Shed errand for ghost Kits the bay lacks (a salvage lost them), and reads the drill site', () => {
+    const job = (kit: string, kitUnits: number): GhostView =>
+      ({ id: 9, kind: 'lift', mk: 1, x: 20, y: 0, w: 1, h: 14, dir: 0, part: 'rail', kit, kitUnits, order: 1 });
+    const world = (ghosts: GhostView[], cargo: unknown[], stocked = 0, solid = false) =>
+      ({
+        factory: { ...factory([], 0, ghosts), surveyPlan: () => ({ drill: { x: 21, y: 44 }, lift: { x: 20, foot: 45, top: 0 } }) },
+        pod: { cargo },
+        kitShop: () => [{ id: 'liftRail', inStockpile: stocked }, { id: 'belt', inStockpile: stocked }],
+        terrain: { get: (x: number, r: number) => (solid && x === 22 && r === 45 ? T.DIRT : T.AIR) },
+      }) as unknown as WorldApi;
+    expect(kitErrand(world([], []))).toBeNull();
+    expect(kitErrand(world([job('liftRail', 1)], [{ kind: 'kit', id: 'liftRail' }]))).toBeNull();
+    expect(kitErrand(world([job('liftRail', 1)], []))).toBe('Buy 1 Lift Rail at the Shed');
+    expect(kitErrand(world([job('liftRail', 1)], [], 1))).toBe('Load 1 Lift Rail at the Shed');
+    // Metered Belt Kits: 9 tiles against a part-used Kit of 3 units is 6 short, one whole Kit.
+    expect(kitErrand(world([job('belt', 9)], [{ kind: 'kit', id: 'belt', units: 3 }]))).toBe('Buy 1 Belt Kit at the Shed');
+    expect(kitErrand(world([job('belt', 20)], []))).toBe('Buy 3 Belt Kits at the Shed');
+    expect(drillSiteOpen(world([], []))).toBe(true);
+    expect(drillSiteOpen(world([], [], 0, true))).toBe(false);
+    expect(drillSiteOpen({ factory: null } as unknown as WorldApi)).toBe(true);
+  });
+
+  it('the chip shows the held job’s fix over the script step, and drops it once the ring moves again', () => {
+    const f = feedFor();
+    const w = f.world;
+    w.ghostProgress = () => ({ id: 1, progress: 0, blocked: 'E_POD' });
+    f.feed.tick(0);
+    expect(f.state.goal.value?.text).toBe('Move Pip off the build site so it can build');
+    w.ghostProgress = () => null;
+    f.feed.refresh();
+    f.feed.tick(1);
+    expect(f.state.goal.value?.text).toBe('Fill up at the Pump House');
   });
 });
 

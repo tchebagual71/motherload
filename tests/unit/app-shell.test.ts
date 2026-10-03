@@ -2,7 +2,7 @@
 // (INT-6), Return Tick litres (01 §3.5), sign-tap auto-drive (01 §3.10; SIM-3), bay-full and refusal toasts
 // (INT-3, INT-9), assists as intent shaping (01 §6.4), debug previews through the time model (INT-18).
 import { describe, expect, it, vi } from 'vitest';
-import { GameApp, UPRIGHT_PREVIEW_MS, type ControllerOptions } from '../../src/app/controller';
+import { BAY_FULL_TOAST_MS, GameApp, UPRIGHT_PREVIEW_MS, type ControllerOptions } from '../../src/app/controller';
 import { NOTICE, refusalNotice } from '../../src/app/notices';
 import { defaultSettings } from '../../src/app/settings';
 import type { StyleView } from '../../src/app/styleViews';
@@ -275,6 +275,15 @@ describe('Event feedback (INT-3, INT-9)', () => {
     advance(1_234);
     app.handleEvents([{ t: 'bay-full', item: copper }]);
     expect(app.state.bayFullAt.value).toBe(1_234);
+    expect(toastTexts(app)).toEqual([NOTICE.bayFull]);
+    // More ore lost to the full bay: the callout flashes again, but the toast (which hides the goal chip) waits.
+    app.state.toasts.value = [];
+    advance(3_000);
+    app.handleEvents([{ t: 'bay-full', item: copper }]);
+    expect(app.state.bayFullAt.value).toBe(4_234);
+    expect(toastTexts(app)).toEqual([]);
+    advance(BAY_FULL_TOAST_MS);
+    app.handleEvents([{ t: 'bay-full', item: copper }]);
     expect(toastTexts(app)).toEqual([NOTICE.bayFull]);
   });
 

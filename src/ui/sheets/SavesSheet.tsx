@@ -1,11 +1,13 @@
 // Saves (03 §6.7; canon §3.15): export code (copy / share as .hfsave) and import (paste → pre-check →
-// overwrite confirm → app.importSave, which validates and dry-runs).
+// overwrite confirm → app.importSave, which validates and dry-runs). A kept save this build cannot load (04 §4.11)
+// keeps its own export here.
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
 import type { AppController } from '../../app/types';
 import { BottomSheet } from '../BottomSheet';
 import { canShare, copyText, pasteText, shareSave } from '../clipboard';
 import { checkExportCode, exportFileName } from '../format';
+import { KeptSaveSection } from '../KeptSave';
 import { Button, SectionTitle } from '../widgets';
 
 type ImportState = { step: 'edit'; error: string | null } | { step: 'confirm'; code: string } | { step: 'busy' };
@@ -15,6 +17,7 @@ export function SavesSheet({ app, close, leaving }: { app: AppController; close:
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [imp, setImp] = useState<ImportState>({ step: 'edit', error: null });
+  const kept = app.state.keptSave.value;
 
   const makeCode = async (): Promise<string> => {
     const c = code ?? (await app.exportSave());
@@ -119,6 +122,8 @@ export function SavesSheet({ app, close, leaving }: { app: AppController; close:
         </div>
       )}
       {imp.step === 'edit' && imp.error && <p class="hf-note hf-note-bad">{imp.error}</p>}
+
+      {kept && <KeptSaveSection app={app} kind={kept.kind} />}
     </BottomSheet>
   );
 }

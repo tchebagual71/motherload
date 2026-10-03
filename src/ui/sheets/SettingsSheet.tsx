@@ -108,6 +108,10 @@ export function SettingsSheet({ app, close, leaving }: { app: AppController; clo
       <SectionTitle>Audio</SectionTitle>
       <Switch label="Sound" value={s.sound} onChange={(v) => set({ sound: v })} />
       <Switch label="Music" hint="Kettle On, up on the Rim" value={s.music} onChange={(v) => set({ music: v })} />
+      {mvp && (
+        // 03 §11.5, §12: the radio's blip voices (default on); the cards still type without them.
+        <Switch label="Voice blips" hint="Radio voices chirp as a card types" value={s.voiceBlips} onChange={(v) => set({ voiceBlips: v })} />
+      )}
       <Switch
         label="Respect silent switch"
         hint="Mute when the iPhone ring switch is off"

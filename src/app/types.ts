@@ -58,6 +58,8 @@ export interface Settings {
   instantBuild?: boolean;
   /** Music ("Kettle On", 03 §11.2); SFX and ambience follow `sound` alone. */
   music: boolean;
+  /** Radio voice blips while a card types (03 §11.5, §12: default on). */
+  voiceBlips: boolean;
 }
 
 /** One radio transmission card (canon §2.12 #5: ≤ 90 characters, ≤ 4 cards per beat). */
@@ -136,6 +138,17 @@ export interface AppState {
   importOffer: Signal<boolean>;
   /** Safe Mode card (04 §4.13): age of the previous copy (null = none) and the last failed recovery. */
   safeMode: Signal<SafeModeInfo>;
+  /** A stored save this build cannot load, kept for export (04 §4.11), or null. */
+  keptSave: Signal<KeptSave | null>;
+  /** Visible-idle away (02 §8.1; 04 §3.7): 5 min without input, the factory sleeps ("Factory resting" chip). */
+  resting: Signal<boolean>;
+}
+
+/** 04 §4.11: an M0 test save ('test') or a newer version's save, kept out of the rotation. */
+export interface KeptSave {
+  kind: 'test' | 'newer';
+  /** Refused by this boot (the title says so); else kept by an earlier boot (the Saves sheet still offers it). */
+  fresh: boolean;
 }
 
 export interface SafeModeInfo {
@@ -161,6 +174,8 @@ export interface AppController {
   updateSettings(patch: Partial<Settings>): void;
   toast(text: string, tone?: Toast['tone']): void;
   exportSave(): Promise<string>;
+  /** Export code of the kept save this build cannot load (04 §4.11), or null when there is none or it is unreadable. */
+  exportKeptSave(): Promise<string | null>;
   importSave(code: string): Promise<Result>;
   /** Apply a world action result: toasts on failure, save soon on success. */
   afterAction(r: Result): void;
@@ -175,6 +190,10 @@ export interface AppController {
   perfReport(): Promise<string>;
   /** Remove the head radio message (the UI calls this when the player dismisses or it auto-advances). */
   dismissRadio(id: number): void;
+  /** A radio card opened or advanced (03 §6.5): speak it as voice blips (03 §11.5) unless Voice blips is off. */
+  speakRadio(sender: RadioMessage['sender'], text: string): void;
+  /** The card is gone (dismissed, covered, collapsed to the ticker, build mode): stop its blips. */
+  stopRadioSpeech(): void;
   /** Style-test gallery (03 §9.4): show time-frozen bookmark `i` (0–5) instead of play, or null to return. */
   styleBookmark(i: number | null): void;
   /** Debug overlay preview through the time model (INT-18). */

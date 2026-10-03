@@ -79,18 +79,18 @@ const beltTiles = (page: Page): Promise<number> => page.evaluate(() => Array.fro
 const bins = (page: Page): Promise<number> => page.evaluate(() => window.__hf!.world.factory!.entities().filter((e) => e.kind === 'bin').length);
 
 /**
- * Pan the build view with one-finger drags (no tool armed: a drag pans, 03 §4.2) until Yard cell (x, y) sits near
- * the middle of the world area.
+ * Pan the build view with one-finger drags (no tool armed: a drag pans, 03 §4.2) until cell (x, y) of `plane`
+ * sits near the middle of the world area.
  */
-async function panToCell(page: Page, cdp: CDPSession, x: number, y: number): Promise<void> {
+async function panToCell(page: Page, cdp: CDPSession, x: number, y: number, plane: 'yard' | 'mine' = 'yard'): Promise<void> {
   for (let i = 0; i < 16; i++) {
     const g = await page.evaluate(
-      ([x, y]) => {
+      ([x, y, plane]) => {
         const hf = window.__hf!;
         const a = hf.build!.area;
-        return { s: hf.cellToScreen('yard', x, y), c: { x: (a.x0 + a.x1) / 2, y: (a.y0 + a.y1) / 2 } };
+        return { s: hf.cellToScreen(plane, x, y), c: { x: (a.x0 + a.x1) / 2, y: (a.y0 + a.y1) / 2 } };
       },
-      [x, y] as const,
+      [x, y, plane] as const,
     );
     const dx = g.c.x - g.s.x;
     const dy = g.c.y - g.s.y;
@@ -99,7 +99,7 @@ async function panToCell(page: Page, cdp: CDPSession, x: number, y: number): Pro
     const from = { x: g.c.x - (dx * k) / 2, y: g.c.y - (dy * k) / 2 };
     await drag(cdp, page, [from, { x: from.x + dx * k, y: from.y + dy * k }]);
   }
-  throw new Error(`could not pan Yard cell ${x},${y} into view`);
+  throw new Error(`could not pan ${plane} cell ${x},${y} into view`);
 }
 
 /** A fresh claim with Belts and Bins unlocked (U2 stands in for the first lode), $2,020, in build mode where it starts. */
@@ -297,5 +297,98 @@ test('a finger resting before it paints still paints; a pinch with one finger on
   expect(await bins(page)).toBe(1);
   expect(await page.evaluate(() => window.__hf!.cash())).toBe(cash);
   expect(await page.evaluate(() => window.__hf!.mode())).toBe('build');
+  expect(errors).toEqual([]);
+});
+
+const SHOTS = process.env.HF_SHOTS ?? '';
+async function shot(page: Page, name: string, info: { project: { name: string } }): Promise<void> {
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/${info.project.name}-${name}.png` });
+}
+
+test('◫ draws no DOM bubbles over the 3D ones; Deconstruct of the free survey Headframe asks first (RENDER-4, PLAYER-5)', async ({ page, context }, info) => {
+  const { errors } = await bootGame(page);
+  const cdp = await context.newCDPSession(page);
+  const x0 = await enterBuild(page, cdp);
+
+  // ---- ◫ Logistics overlay: the renderer draws the status bubbles; the DOM keeps only their screen-reader text.
+  await tapSelector(cdp, page, '[aria-label="Logistics overlay (O)"]');
+  expect(await page.evaluate(() => window.__hf!.buildFrame()?.overlay)).toBe('logistics');
+  await expect(page.locator('.hf-bubble')).toHaveCount(0);
+  await expect(page.locator('.hf-status-list li')).toContainText(['Smelter: no input']);
+  await shot(page, 'overlay', info);
+  await tapSelector(cdp, page, '[aria-label="Logistics overlay (O)"]');
+
+  // ---- Tap the rusted Headframe with no tool: its sheet. One tap on Deconstruct only asks, with the rebuild price.
+  const cell = await fingersFor(page, [[[x0, 1]], [[x0 + 1, 1]], [[x0, 2]], [[x0 + 1, 2]]], NO_EDGE_PAN);
+  expect(cell, 'the survey Headframe on screen').not.toBeNull();
+  await tap(cdp, page, cell!.pts[0]);
+  await expect(page.locator('.hf-inspect')).toBeVisible();
+  await expect(page.locator('.hf-inspect')).toHaveAttribute('aria-label', 'Headframe (rusted)');
+  const hfId = await page.evaluate(() => window.__hf!.build!.inspectId);
+  const cash = await page.evaluate(() => window.__hf!.cash());
+  await page.waitForTimeout(450);
+  await tapSelector(cdp, page, '.hf-inspect button:has-text("Deconstruct")');
+  await expect(page.locator('.hf-inspect-q')).toHaveText('Remove survey Headframe? Rebuilding costs $200');
+  expect(await page.evaluate((id) => window.__hf!.world.factory!.entity(id!) !== null, hfId)).toBe(true);
+  await shot(page, 'deconstruct-ask', info);
+  await tapSelector(cdp, page, '.hf-inspect button:has-text("Keep it")');
+  await expect(page.locator('.hf-inspect-q')).toHaveCount(0);
+  await tapSelector(cdp, page, '.hf-inspect button:has-text("Deconstruct")');
+  await page.waitForTimeout(450);
+  await tapSelector(cdp, page, '.hf-inspect button:has-text("Remove")');
+  expect(await page.evaluate((id) => window.__hf!.world.factory!.entity(id!), hfId)).toBeNull();
+  expect(await page.evaluate(() => window.__hf!.cash())).toBe(cash);
+  await expect(page.locator('.hf-inspect')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('a Drill tap on the middle of a discovered lode snaps to its drill site (PLAYER-8)', async ({ page, context }, info) => {
+  const { errors } = await bootGame(page);
+  const cdp = await context.newCDPSession(page);
+  await pressPlay(page);
+  // Dot's shaft and the drill site above the scripted lode dug out and seen, the lode discovered, Pip in the shaft.
+  const lode = await page.evaluate(() => {
+    const hf = window.__hf!;
+    const w = hf.world;
+    const g = w.terrain;
+    const l = g.lodes[w.meta.scriptedLodeId];
+    const c = w.meta.surveyColumn;
+    const open = (x: number, y: number): void => {
+      g.set(x, y, 0);
+      g.markDug(x, y);
+      g.setFlag(x, y, 1);
+    };
+    for (let y = 1; y <= l.top - 1; y++) open(c, y);
+    for (let y = l.top - 2; y <= l.top - 1; y++) for (let x = l.x0; x <= l.x0 + 1; x++) open(x, y);
+    for (let y = l.top - 3; y <= l.top + 2; y++) for (let x = l.x0 - 1; x <= l.x0 + 3; x++) g.setFlag(x, y, 1);
+    w.factory!.discoverLode(l.id, true);
+    (w.story as { deepestRow: number }).deepestRow = l.top; // the build camera reaches the seen rows + 4
+    hf.teleport(l.top - 1);
+    (w.pod as { x: number }).x = c + 0.5;
+    hf.app.enterBuild();
+    return { x0: l.x0, top: l.top, site: w.factory!.surveyPlan().drill };
+  });
+  await expect.poll(() => page.evaluate(() => window.__hf!.mode())).toBe('build');
+  await page.waitForTimeout(450);
+  expect(await page.evaluate(() => window.__hf!.build!.plane)).toBe('mine');
+  // The SE (1st gen) frames Pip near the dock band: bring the lode up the way a player would, before arming.
+  await panToCell(page, cdp, lode.x0 + 1, lode.top + 1, 'mine');
+  await tapSelector(cdp, page, '.hf-tab:has-text("Extract")');
+  await tapSelector(cdp, page, '[data-tool="autoDrill"]');
+  // The lifted point on the middle of the lode block (2 rows under the drill site).
+  const finger = await page.evaluate(
+    ([x, y, lift]) => {
+      const s = window.__hf!.cellToScreen('mine', x, y);
+      return { x: s.x, y: s.y + lift };
+    },
+    [lode.x0 + 1, lode.top + 1, LIFT] as const,
+  );
+  const area = await page.evaluate(() => window.__hf!.build!.area);
+  expect(finger.y, 'the lode on screen').toBeLessThan(area.y1);
+  await tap(cdp, page, finger);
+  expect(await page.evaluate(() => window.__hf!.build!.pending)).toEqual({ t: 'piece', kind: 'autoDrill', x: lode.site.x, y: lode.site.y, dir: 1 });
+  expect(await page.evaluate(() => window.__hf!.build!.error)).toBeNull();
+  await expect(page.locator('.hf-pending')).toHaveText('Auto-Drill · 1 Auto-Drill Kit');
+  await shot(page, 'drill-on-lode', info);
   expect(errors).toEqual([]);
 });

@@ -1,7 +1,7 @@
 // INT-16: the M0 build's own features, with the build scope forced to 'm0' (the suite otherwise runs the default
 // mvp scope, vite.config.ts). Covers the sim (r128 floor, Hardrock/Magma strip, no Co-op Credit), the app (fresh
-// and loaded claims play M0; no sign tap) and the UI gates (no Cargo item, MVP settings rows hidden, the look test
-// kept, no Return Tick, no Cargo context).
+// and loaded claims play M0; no sign tap; no map sheet) and the UI gates (no Cargo item, MVP settings rows hidden, the
+// look test kept, no Return Tick, no Cargo context, no depth ruler or map: INT-8).
 import { h, render } from 'preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -24,6 +24,7 @@ import { T } from '../../src/shared/types';
 import { M0_DEBUG_STRIP } from '../../src/terrain/scope';
 import { cargoContext } from '../../src/ui/context';
 import { createFakeApp, type FakeApp } from '../../src/ui/fakes';
+import { mountUI } from '../../src/ui/index';
 import { SheetHost } from '../../src/ui/SheetHost';
 import { World } from '../../src/world/world';
 import { flush, installFakeDom, text, type FakeDom } from './ui-dom.helpers';
@@ -65,10 +66,8 @@ describe('M0 scope in the sim', () => {
 });
 
 describe('M0 scope in the app', () => {
-  it('a sign tap does nothing (MVP row), even grounded on the Rim', () => {
-    const world = worlds.create(7);
-    const input = { releaseAll: vi.fn(), sampleIntent: vi.fn(), touching: false, active: false, dispose: vi.fn() } as unknown as InputController;
-    const app = new GameApp({
+  const m0App = (world = worlds.create(7)) =>
+    new GameApp({
       world,
       worlds,
       codes: { encode: () => 'HF1:x', decode: () => ({ ok: false, reason: 'nope' }) },
@@ -83,6 +82,20 @@ describe('M0 scope in the app', () => {
       now: () => 0,
       randomSeed: () => 1,
     });
+
+  it('the map sheet never opens (an MVP row; INT-8)', () => {
+    const app = m0App();
+    app.start();
+    app.openSheet('map');
+    expect(app.state.sheet.value).toBeNull();
+    app.openSheet('settings');
+    expect(app.state.sheet.value).toBe('settings');
+  });
+
+  it('a sign tap does nothing (MVP row), even grounded on the Rim', () => {
+    const world = worlds.create(7);
+    const input = { releaseAll: vi.fn(), sampleIntent: vi.fn(), touching: false, active: false, dispose: vi.fn() } as unknown as InputController;
+    const app = m0App(world);
     app.attachInput(input);
     app.start();
     expect(world.onRim()).toBe(true);
@@ -122,6 +135,20 @@ describe('M0 scope in the UI', () => {
     const body = text(dom.root.querySelector('.hf-sheet'));
     for (const mvpRow of ['Text size', 'One-handed', 'THRUST works by', 'Landing Assist', 'Steady Drill', 'Return Tick']) expect(body).not.toContain(mvpRow);
     for (const kept of ['Left-handed', 'THRUST button', 'Copy Perf Report', 'Jetsam probe', 'Look test']) expect(body).toContain(kept);
+  });
+
+  it('no depth ruler and no map, even with the map sheet set straight on the signal (INT-8)', async () => {
+    app.state.overlay.value = null;
+    let unmount = () => {};
+    await flush(() => (unmount = mountUI(dom.root as unknown as HTMLElement, app)));
+    try {
+      expect(dom.root.querySelector('.hf-hud')).not.toBeNull();
+      expect(dom.root.querySelector('.hf-ruler')).toBeNull();
+      await flush(() => (app.state.sheet.value = 'map'));
+      expect(dom.root.querySelector('.hf-map-sheet')).toBeNull();
+    } finally {
+      await flush(() => unmount());
+    }
   });
 
   it('no Cargo context: the cargo panel is MVP', () => {

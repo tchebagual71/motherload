@@ -3,7 +3,7 @@
 // never the clear rows below it). Only the "›" button takes pointers, so the stick is never intercepted; it
 // carries [data-tap] so a second finger can press it while the other thumb holds the stick (input/taps.ts).
 import type { JSX } from 'preact';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import type { AppController } from '../../app/types';
 import { controls } from '../../input/controlsState';
 import { Avatar, senderClass } from './Avatar';
@@ -19,23 +19,68 @@ function podMoving(app: AppController): boolean {
 }
 
 /**
+ * One app's radio: the player (card index, clocks) and the card whose blips are speaking. Kept outside the
+ * StoryLayer, which unmounts in build mode, so a message resumes at its card instead of restarting at card 1.
+ */
+interface RadioSession {
+  player: RadioPlayer;
+  /** `${message id}:${card index}` of the full card being spoken, or null. */
+  spoken: string | null;
+}
+
+const sessions = new WeakMap<AppController, RadioSession>();
+
+function radioSession(app: AppController): RadioSession {
+  let s = sessions.get(app);
+  if (!s) {
+    s = { player: new RadioPlayer(), spoken: null };
+    sessions.set(app, s);
+  }
+  return s;
+}
+
+/** Which full card should be speaking for a view: its key, or null (ticker, hidden). */
+export function spokenKey(view: RadioView): string | null {
+  return view.mode === 'card' && view.msg ? `${view.msg.id}:${view.index}` : null;
+}
+
+/**
  * The radio's current view, sampled on every render of the caller (which re-renders with hudTick, ≤ 10 Hz).
- * A message that finished its last card leaves the queue through app.dismissRadio.
+ * A message that finished its last card leaves the queue through app.dismissRadio. Voice blips (03 §11.5, INT-4)
+ * follow the full card: each card speaks as it opens or advances; collapsing to the ticker, a covering sheet or
+ * overlay, the last card's end and build mode (unmount) stop them.
  */
 export function useRadio(app: AppController, covered: boolean): { view: RadioView; tap: () => void } {
-  const player = useRef<RadioPlayer | null>(null);
-  player.current ??= new RadioPlayer();
+  const session = radioSession(app);
   const [, rerender] = useState(0);
   const head = app.state.radio.value[0] ?? null;
-  const view = player.current.update({ now: performance.now(), head, grounded: app.world.pod.grounded, moving: podMoving(app), covered });
-  const done = player.current.done;
+  const view = session.player.update({ now: performance.now(), head, grounded: app.world.pod.grounded, moving: podMoving(app), covered });
+  const done = session.player.done;
+  const key = spokenKey(view);
 
   useEffect(() => {
     if (done >= 0 && app.state.radio.peek().some((m) => m.id === done)) app.dismissRadio(done);
   }, [done]);
 
+  useEffect(() => {
+    if (key === session.spoken) return;
+    session.spoken = key;
+    if (key !== null && view.msg) app.speakRadio(view.msg.sender, view.text);
+    else app.stopRadioSpeech();
+  }, [key]);
+
+  // Unmounted (build mode, the title): the card is no longer on show.
+  useEffect(
+    () => () => {
+      if (session.spoken === null) return;
+      session.spoken = null;
+      app.stopRadioSpeech();
+    },
+    [],
+  );
+
   const tap = (): void => {
-    player.current?.tap(head);
+    session.player.tap(head);
     rerender((n) => n + 1);
   };
   return { view, tap };

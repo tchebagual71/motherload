@@ -31,6 +31,7 @@ import {
   adoptLateStore,
   codes,
   LateSink,
+  keptSaveHooks,
   loadInitialWorld,
   nullSink,
   openStore,
@@ -206,12 +207,12 @@ function wireLifecycle(app: GameApp, saves: SaveScheduler, audio: AudioEngine, l
   onLifecycle({
     hidden: () => {
       criticalSave();
-      app.world.setAway(true); // after the save: a fresh session is never away (MVP: the factory sleeps, 02 §8)
+      app.setHidden(true); // after the save: a fresh session is never away (MVP: the factory sleeps, 02 §8)
       audio.suspend();
     },
     pagehide: criticalSave,
     visible: () => {
-      app.world.setAway(false);
+      app.setHidden(false);
       loop()?.resetClock();
       audio.resume();
       app.interrupt();
@@ -219,6 +220,10 @@ function wireLifecycle(app: GameApp, saves: SaveScheduler, audio: AudioEngine, l
     blur: () => app.interrupt(),
     orientation: () => app.interrupt(),
   });
+  // Any touch, pointer move, key or wheel is input for the visible-idle away (02 §8.1): it wakes a resting factory.
+  // Capture on the window, so the UI and the game canvas alike count (and nothing can stop it on the way).
+  const onInput = (): void => app.noteInput();
+  for (const t of ['pointerdown', 'pointermove', 'keydown', 'wheel'] as const) window.addEventListener(t, onInput, { capture: true, passive: true });
   window.addEventListener('vite:preloadError', (ev) => {
     // 04 §4.12: a lazy chunk vanished after a deploy — save, then reload once (sessionStorage-guarded).
     const key = lsKey(PRELOAD_RELOAD_KEY);
@@ -426,6 +431,7 @@ export async function boot(): Promise<void> {
     randomSeed,
     yieldSlice: () => new Promise((r) => setTimeout(r, 0)),
     safeMode,
+    keptSave: store && initial.kept ? keptSaveHooks(store, initial.kept) : null,
     hooks,
     importOffer: cfg.device.standalone && initial.noSave,
     styleView: createStyleViews(),
@@ -460,7 +466,8 @@ export async function boot(): Promise<void> {
   app.attachAudio(audio);
 
   const lateSink = opened.late ? new LateSink() : null;
-  const saves = createSaves(app, store ?? lateSink ?? nullSink);
+  // A save this build cannot load that could not be moved aside stays in the rotation: write nothing over it (04 §4.11).
+  const saves = createSaves(app, initial.readOnly ? nullSink : (store ?? lateSink ?? nullSink));
   if (opened.late && lateSink) {
     void adoptLateStore(opened.late).then((s) => {
       if (!s) return;

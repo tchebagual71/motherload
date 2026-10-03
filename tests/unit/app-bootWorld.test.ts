@@ -5,6 +5,7 @@ import { IDBFactory } from 'fake-indexeddb';
 import { describe, expect, it, vi } from 'vitest';
 import {
   adoptLateStore,
+  keptSaveHooks,
   LateSink,
   loadInitialWorld,
   openStore,
@@ -12,6 +13,9 @@ import {
   seedOverride,
   worlds,
 } from '../../src/app/bootWorld';
+import { crc32 } from '../../src/save/codec';
+import { decodeSaveCode } from '../../src/save/exportCode';
+import { saveVersion, unloadable } from '../../src/save/legacy';
 import { damagedFallbackNotice, NOTICE, previousCopyNotice } from '../../src/app/notices';
 import { memoryKeyValue, type KeyValue } from '../../src/platform/storage';
 import { BootTracker } from '../../src/save/bootTrack';
@@ -264,5 +268,113 @@ describe('a stuck IndexedDB open (WebKit, or an upgrade blocked by another tab)'
     const s = await open(new IDBFactory());
     sink.attach(s);
     expect(await sink.writeCritical(new Uint8Array([1]))).toMatchObject({ ok: true });
+  });
+});
+
+/** World bytes restamped to HFSV `version` (0 = an M0 test-build save), with the CRC trailer fixed up. */
+function withVersion(bytes: Uint8Array, version: number): Uint8Array {
+  const b = bytes.slice();
+  b[4] = version & 0xff;
+  b[5] = version >> 8;
+  const end = b.length - 4;
+  new DataView(b.buffer).setUint32(end, crc32(b, 0, end), true);
+  return b;
+}
+
+describe('saves this build cannot load (04 §4.11; SIM-4)', () => {
+  /** What an M0 build left behind: two version-0 copies, the newer one 5 min later. */
+  async function m0Copies(idb: IDBFactory): Promise<Uint8Array[]> {
+    const clock = { t: 0 };
+    const s = await open(idb, clock);
+    const older = withVersion(worldBytes(1), 0);
+    const newer = withVersion(worldBytes(2), 0);
+    await s.writeCritical(older);
+    clock.t = 5 * MIN;
+    await s.writeCritical(newer);
+    s.close();
+    return [older, newer];
+  }
+
+  it('tells a test save and a newer save from a damaged one', () => {
+    const bytes = worldBytes(3);
+    expect(saveVersion(bytes)).toBe(1);
+    const err = (b: Uint8Array) => {
+      try {
+        worlds.deserialize(b);
+      } catch (e) {
+        return e;
+      }
+      return null;
+    };
+    expect(unloadable(err(withVersion(bytes, 0)), withVersion(bytes, 0))).toBe('test');
+    expect(unloadable(err(withVersion(bytes, 9)), withVersion(bytes, 9))).toBe('newer');
+    const torn = bytes.slice(0, 40);
+    expect(unloadable(err(torn), torn)).toBeNull();
+  });
+
+  it('M0 copies: a new claim without "damaged", the copies kept out of the rotation and offered for export', async () => {
+    const idb = new IDBFactory();
+    const [, newest] = await m0Copies(idb);
+    const { initial, store } = await boot(idb, memoryKeyValue());
+    expect(initial).toMatchObject({ coldLoad: false, loaded: null, readOnly: false, kept: { kind: 'test', fresh: true } });
+    expect(initial.notice).toEqual({ text: NOTICE.testSaveKept, tone: 'warn', aboutWorld: false });
+    // Moved aside before anything is written: the rotation is empty, both copies are kept.
+    expect(await store.listCopies()).toEqual([]);
+    expect((await store.keptCopies()).length).toBe(2);
+    // The new claim's autosaves never touch them.
+    for (let i = 0; i < 4; i++) await store.writeCritical(worldBytes(10 + i));
+    const kept = await store.keptCopies();
+    expect(kept).toHaveLength(2);
+    expect(await store.readKept(kept[0].key)).toEqual(newest);
+    // Export gives the newest kept copy's code, byte for byte.
+    const code = await keptSaveHooks(store, initial.kept!).exportCode();
+    expect(code).toMatch(/^HF1:/);
+    const decoded = decodeSaveCode(code!);
+    expect(decoded.ok && decoded.bytes).toEqual(newest);
+  });
+
+  it('a later boot loads the new claim and still offers the kept copy (not fresh: no notice)', async () => {
+    const idb = new IDBFactory();
+    await m0Copies(idb);
+    const first = await boot(idb, memoryKeyValue());
+    await first.store.writeCritical(first.initial.world.serialize());
+    first.store.close();
+    const { initial } = await boot(idb, memoryKeyValue());
+    expect(initial.world.seed).toBe(first.initial.world.seed);
+    expect(initial).toMatchObject({ coldLoad: true, notice: null, kept: { kind: 'test', fresh: false } });
+  });
+
+  it('an M0 copy older than the claim that loads is kept too: the rotation would write over it next', async () => {
+    const idb = new IDBFactory();
+    const clock = { t: 0 };
+    const s = await open(idb, clock);
+    const m0 = withVersion(worldBytes(1), 0);
+    await s.writeCritical(m0);
+    clock.t = 5 * MIN;
+    await s.writeCritical(worldBytes(2)); // the MVP claim, newest
+    s.close();
+    const { initial, store } = await boot(idb, memoryKeyValue());
+    expect(initial.world.seed).toBe(2);
+    expect(initial).toMatchObject({ coldLoad: true, loaded: { copy: 'b' }, kept: { kind: 'test', fresh: true } });
+    expect((await store.listCopies()).map((c) => c.copy)).toEqual(['b']);
+    for (let i = 0; i < 3; i++) await store.writeCritical(worldBytes(30 + i));
+    expect(await store.readKept((await store.keptCopies())[0].key)).toEqual(m0);
+  });
+
+  it('a newer save is never overwritten: kept, while the older copy that loads is played', async () => {
+    const idb = new IDBFactory();
+    const clock = { t: 0 };
+    const s = await open(idb, clock);
+    await s.writeCritical(worldBytes(1));
+    clock.t = 5 * MIN;
+    const newer = withVersion(worldBytes(2), 7);
+    await s.writeCritical(newer);
+    s.close();
+    const { initial, store } = await boot(idb, memoryKeyValue());
+    expect(initial.world.seed).toBe(1);
+    expect(initial).toMatchObject({ coldLoad: true, kept: { kind: 'newer', fresh: true } });
+    expect(initial.notice?.text).toBe(NOTICE.newerSaveKept);
+    for (let i = 0; i < 3; i++) await store.writeCritical(worldBytes(20 + i));
+    expect(await store.readKept((await store.keptCopies())[0].key)).toEqual(newer);
   });
 });

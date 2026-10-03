@@ -12,13 +12,15 @@ import { LINES, MINE_H, MINE_W, RIM_BUILDINGS, SALVAGE_MIN, SALVAGE_RATE, SKY_RO
 import type { GameEvent } from '../shared/events';
 import type { Look, RimBuildingId } from '../shared/types';
 import type { DecodedCode } from '../save/exportCode';
+import { unloadable } from '../save/legacy';
 import type { WriteOutcome } from '../save/store';
 import { scopeFloorRow } from '../terrain/scope';
 import type { Result, WorldApi } from '../world/api';
 import { isNeutral } from '../world/pads';
 import { AutoDrive } from './autoDrive';
+import { AwayTracker } from './away';
 import type { SettingsStore } from './settings';
-import { NOTICE, refusalNotice } from './notices';
+import { NOTICE, refusalNotice, unlockNotice } from './notices';
 import type { StyleView } from './styleViews';
 import { TimeController, type PodMotion, type SheetReason } from './time';
 import { holdToast, pruneToasts, pushToast, toastsCovered } from './toasts';
@@ -30,6 +32,7 @@ import type {
   DeathInfo,
   GoalChip,
   InputController,
+  KeptSave,
   Mode,
   Overlay,
   OverlayPreview,
@@ -47,6 +50,8 @@ export const HUD_TICK_MS = 100;
 export const UPRIGHT_PREVIEW_MS = 3_000;
 /** A one-handed dig tap pushes for at most this many steps: the engage gate plus the drive to the wall (03 §3.6). */
 export const DIG_TAP_MAX_STEPS = 45;
+/** The 'Bay full' toast repeats at most this often (the pill callout still flashes for every lost ore). */
+export const BAY_FULL_TOAST_MS = 20_000;
 const DIG_PUSH: Record<DigDir, { sx: number; sy: number }> = { down: { sx: 0, sy: -1 }, left: { sx: -1, sy: 0 }, right: { sx: 1, sy: 0 } };
 /** 04 §4.13: an import runs this many headless steps on a scratch World before anything is written. */
 export const IMPORT_DRY_RUN_STEPS = 1_200;
@@ -79,6 +84,12 @@ export function worldLooksSane(w: WorldApi): boolean {
   return finite && p.x >= 0 && p.x <= MINE_W && p.y <= SKY_ROWS && p.y >= -MINE_H && w.wallet.cash >= 0;
 }
 
+/** 04 §4.11: why an import can never load in this build (an M0 test save, a newer version), or null. */
+function refusedSave(e: unknown, bytes: Uint8Array): string | null {
+  const kind = unloadable(e, bytes);
+  return kind === 'test' ? NOTICE.testSave : kind === 'newer' ? NOTICE.newerSave : null;
+}
+
 export interface WorldFactory {
   create(seed: number): WorldApi;
   /** Throws on any bad save (codec bounds, invariants, too-new version). */
@@ -95,6 +106,9 @@ export interface AudioPort {
   play(id: 'error' | 'sheetOpen' | 'sheetClose' | 'uiTap'): void;
   setEnabled(on: boolean): void;
   setRespectSilent(on: boolean): void;
+  /** Radio voice blips for one card (03 §11.5); a new card cuts the old one. */
+  speak?(sender: RadioMessage['sender'], text: string): void;
+  stopSpeech?(): void;
 }
 
 export interface SavePort {
@@ -120,6 +134,11 @@ export interface SafeModeHooks {
    * which one loaded.
    */
   loadPrevious(): Promise<{ ok: true; world: WorldApi; message: string } | { ok: false; reason: string }>;
+}
+
+/** A stored save this build cannot load (04 §4.11), kept out of the rotation: the player can still export it. */
+export interface KeptSaveHooks extends KeptSave {
+  exportCode(): Promise<string | null>;
 }
 
 export interface AppHooks {
@@ -152,6 +171,8 @@ export interface ControllerOptions {
   /** Yield between dry-run slices so "Checking save…" can paint. */
   yieldSlice?(): Promise<void>;
   safeMode?: SafeModeHooks | null;
+  /** The newest kept save this build cannot load (04 §4.11), or null. */
+  keptSave?: KeptSaveHooks | null;
   hooks?: AppHooks;
   /** First standalone launch with no save (canon §3.15): the title offers "Paste save". */
   importOffer?: boolean;
@@ -177,6 +198,7 @@ export class GameApp implements AppController {
   private build: BuildHost | null = null;
   private toastId = 0;
   private lastHudAt = Number.NEGATIVE_INFINITY;
+  private bayFullToastAt = Number.NEGATIVE_INFINITY;
   private deathLeftMs = 0;
   private coldLoad: boolean;
   private countdownShown = -1;
@@ -196,6 +218,8 @@ export class GameApp implements AppController {
   private readonly assists: AssistFlags = { landingAssist: false, steadyDrill: false };
   private digTap: { left: number; intent: PodIntent } | null = null;
   private previewUprightMs = 0;
+  /** Visible-idle away (02 §8.1): 5 min without input rests the factory. */
+  private readonly away = new AwayTracker();
 
   constructor(private readonly opts: ControllerOptions) {
     this.worldRef = opts.world;
@@ -224,6 +248,8 @@ export class GameApp implements AppController {
       bayFullAt: signal(Number.NEGATIVE_INFINITY),
       importOffer: signal(opts.importOffer ?? false),
       safeMode: signal<SafeModeInfo>({ previousOlderByMs: null, error: null }),
+      keptSave: signal<KeptSave | null>(opts.keptSave ? { kind: opts.keptSave.kind, fresh: opts.keptSave.fresh } : null),
+      resting: signal(false),
     };
     this.storyFeed = new StoryFeed({ state: this.state, world: () => this.worldRef, toast: (text, tone) => this.toast(text, tone) });
     this.syncAssists(opts.settings);
@@ -274,7 +300,7 @@ export class GameApp implements AppController {
 
   openSheet(id: SheetId): void {
     if (id === null) this.closeSheet();
-    else this.state.sheet.value = id;
+    else if (id !== 'map' || inScope('mvp')) this.state.sheet.value = id; // the map is an MVP row (canon §5.5)
   }
 
   closeSheet(): void {
@@ -333,6 +359,7 @@ export class GameApp implements AppController {
     if (next.quality !== prev.quality) this.renderer?.setQuality(this.opts.resolveQuality(next.quality));
     if (next.sound !== prev.sound) this.audio?.setEnabled(next.sound);
     if (next.respectSilent !== prev.respectSilent) this.audio?.setRespectSilent(next.respectSilent);
+    if (!next.voiceBlips && prev.voiceBlips) this.audio?.stopSpeech?.();
     if (!next.showPerf) this.state.perf.value = null;
     this.syncAssists(next);
     this.opts.hooks?.onSettings?.(next, prev);
@@ -358,6 +385,14 @@ export class GameApp implements AppController {
     return this.opts.codes.encode(this.worldRef.serialize());
   }
 
+  async exportKeptSave(): Promise<string | null> {
+    try {
+      return (await this.opts.keptSave?.exportCode()) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   async importSave(code: string): Promise<Result> {
     const decoded = this.opts.codes.decode(code);
     if (!decoded.ok) return { ok: false, reason: decoded.reason };
@@ -366,8 +401,8 @@ export class GameApp implements AppController {
     let live: WorldApi;
     try {
       live = this.opts.worlds.deserialize(decoded.bytes);
-    } catch {
-      return { ok: false, reason: 'That save could not be loaded' };
+    } catch (e) {
+      return { ok: false, reason: refusedSave(e, decoded.bytes) ?? 'That save could not be loaded' };
     }
     this.setWorld(live, true);
     this.leaveSafeMode();
@@ -398,6 +433,8 @@ export class GameApp implements AppController {
   /** Per frame, wall-clock driven: countdown, death card, ≤ 10 Hz HUD tick, toast expiry. */
   tick(dtMs: number, now: number): void {
     this.time.tick(dtMs);
+    // M0 builds have no factory to rest.
+    if (this.worldRef.factory && this.away.elapse(dtMs)) this.setResting(true);
     this.publishCountdown();
     if (this.deathLeftMs > 0) {
       this.deathLeftMs -= dtMs;
@@ -436,6 +473,13 @@ export class GameApp implements AppController {
         case 'damage':
         case 'sale':
         case 'purchase':
+        case 'first-lift-delivery':
+        case 'first-ingot':
+          this.saves?.requestSoon(now);
+          break;
+        case 'unlock':
+          // A rung or a possession recipe opened (INT-9): say what, and keep it (a progress milestone).
+          this.toast(unlockNotice(e.rung, e.label), 'good');
           this.saves?.requestSoon(now);
           break;
         case 'toast':
@@ -450,7 +494,11 @@ export class GameApp implements AppController {
         case 'bay-full':
           // Sound alone is not enough (the silent switch mutes it): pill callout, Cargo context, toast (INT-3).
           this.state.bayFullAt.value = now;
-          this.toast(NOTICE.bayFull, 'warn');
+          // Each ore lost to a full bay raises the event; repeating the toast would hide the goal chip for a whole dig.
+          if (now - this.bayFullToastAt >= BAY_FULL_TOAST_MS) {
+            this.bayFullToastAt = now;
+            this.toast(NOTICE.bayFull, 'warn');
+          }
           break;
         case 'dig-refused': {
           const text = refusalNotice(e.reason, this.worldRef.scope);
@@ -521,6 +569,7 @@ export class GameApp implements AppController {
     if (st.mode.peek() === 'build' || this.viewRef) return;
     const w = this.worldRef;
     if (!w.factory) return; // M0 builds have no factory
+    if (w.pod.destroyed) return; // the death card and salvage come first (INT-6)
     const o = st.overlay.peek();
     if (o !== null && o !== 'countdown') return; // title, cards, death: not now
     if (Math.floor(-w.pod.y) >= ARENA_ROW) {
@@ -552,7 +601,35 @@ export class GameApp implements AppController {
 
   dismissRadio(id: number): void {
     const q = this.state.radio.value;
-    if (q.some((m) => m.id === id)) this.state.radio.value = q.filter((m) => m.id !== id);
+    if (!q.some((m) => m.id === id)) return;
+    if (q[0].id === id) this.stopRadioSpeech(); // the card on show
+    this.state.radio.value = q.filter((m) => m.id !== id);
+  }
+
+  speakRadio(sender: RadioMessage['sender'], text: string): void {
+    if (this.state.settings.peek().voiceBlips) this.audio?.speak?.(sender, text);
+  }
+
+  stopRadioSpeech(): void {
+    this.audio?.stopSpeech?.();
+  }
+
+  /**
+   * Player input (any touch or key; boot listens on the window, the test hook on setIntent). Ends a visible-idle
+   * rest: the factory runs again (02 §8.1 step 2).
+   */
+  noteInput(): void {
+    if (this.away.input()) this.setResting(false);
+  }
+
+  /**
+   * Page visibility (canon §4.5): hidden is away (the MVP factory sleeps; called after the critical save), visible
+   * ends it. Either way the visible-idle clock starts over.
+   */
+  setHidden(hidden: boolean): void {
+    this.away.reset();
+    this.state.resting.value = false;
+    this.worldRef.setAway(hidden);
   }
 
   styleBookmark(i: number | null): void {
@@ -703,6 +780,9 @@ export class GameApp implements AppController {
     this.exitBuild();
     this.worldRef = w;
     this.coldLoad = coldLoad;
+    // A new World is never away (it starts its factory awake).
+    this.away.reset();
+    this.state.resting.value = false;
     this.cancelAutomation();
     this.input?.releaseAll();
     this.storyFeed.reset();
@@ -718,6 +798,12 @@ export class GameApp implements AppController {
   private motion(): PodMotion {
     const p = this.worldRef.pod;
     return { grounded: p.grounded, vx: p.vx, vy: p.vy };
+  }
+
+  /** Visible-idle away started or ended: the factory sleeps or wakes, and the "Factory resting" chip follows. */
+  private setResting(on: boolean): void {
+    this.worldRef.setAway(on);
+    this.state.resting.value = on;
   }
 
   private syncOverlay(): void {
@@ -780,8 +866,11 @@ export class GameApp implements AppController {
       lostCount: w.pod.cargo.length,
       lostValue: w.cargoValue(),
     };
-    if (this.state.sheet.peek() !== null) this.closeSheet();
+    // Raised first, so closing a sheet or build mode under the card starts no resume countdown of its own.
     this.time.raise('death');
+    if (this.state.sheet.peek() !== null) this.closeSheet();
+    // The death card and the respawn happen in play (INT-6): build mode closes, dropping its uncommitted ghosts.
+    this.exitBuild();
     this.input?.releaseAll();
     this.deathLeftMs = DEATH_CARD_MS;
     this.saves?.critical(this.opts.now());
@@ -806,8 +895,8 @@ export class GameApp implements AppController {
     let scratch: WorldApi;
     try {
       scratch = this.opts.worlds.deserialize(bytes);
-    } catch {
-      return { ok: false, reason: 'That code is not a valid save' };
+    } catch (e) {
+      return { ok: false, reason: refusedSave(e, bytes) ?? 'That code is not a valid save' };
     }
     try {
       for (let i = 1; i <= IMPORT_DRY_RUN_STEPS; i++) {

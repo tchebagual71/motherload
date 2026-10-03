@@ -1,6 +1,6 @@
 // Player-facing text for factory refusals (03 §6.2 toast table, ≤ 40 characters) and rung triggers (02 §9).
 // PURE MODULE.
-import { RUNGS, type Err, type GhostView, type Rung } from '../factory/api';
+import { RUNGS, kitUnits, type Err, type GhostView, type Rung } from '../factory/api';
 import { hasItem, item, kitItemId } from '../factory/items';
 import { grouped } from '../economy/format';
 
@@ -13,6 +13,18 @@ export function rungTrigger(rung: Rung | undefined): string {
 export function kitName(kitId: string): string {
   const id = kitItemId(kitId);
   return hasItem(id) ? item(id).name : kitId;
+}
+
+/** Whole Kits that hold `units` of a Kit (metered Kits, 02 §2.6: 9 belt tiles → 2 Belt Kits; others 1 unit = 1 Kit). */
+export function kitsForUnits(kitId: string, units: number): number {
+  return Math.ceil(Math.max(0, units) / kitUnits(kitId));
+}
+
+/** "1 Belt Kit" / "2 Belt Kits" / "2 Lift Rails" / "2 Auto-Drill Kits Mk II". */
+export function kitCount(kitId: string, n: number): string {
+  const name = kitName(kitId);
+  if (n === 1) return `1 ${name}`;
+  return `${grouped(n)} ${/\bKit\b/.test(name) ? name.replace(/\bKit\b/, 'Kits') : `${name}s`}`;
 }
 
 function itemName(id: string | undefined): string {
@@ -49,7 +61,8 @@ export function errText(e: Err): string {
     case 'E_PARTS':
       return `Need ${grouped(e.need ?? 0)} ${itemName(e.item)}`;
     case 'E_KIT':
-      return `Need ${grouped(e.need ?? 0)} ${e.item ? kitName(e.item) : 'Kit'} in cargo`;
+      // `need` counts units short (meter units for metered Kits); the player buys and carries whole Kits.
+      return e.item ? `Need ${kitCount(e.item, kitsForUnits(e.item, e.need ?? 1))} in cargo` : 'Need a Kit in cargo';
     case 'E_STOCKPILE_FULL':
       return 'Stockpile full: build a Bin';
     case 'E_LIMIT':

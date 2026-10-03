@@ -3,17 +3,126 @@
 // Goals, and the goal chip refreshes at ≤ 2 Hz. A pending trip summary's Next Goals refresh with the chip: it
 // shows after the pad's sheet closes, so a sale made there must already count. The controller forwards drained
 // events and frame ticks here, and asks for a prompt refresh after a world action or a sheet closing.
-// M0 builds have no story (01 §2.8), so the feed stays silent there.
-import { cargoSlotsUsed } from '../pod';
-import { F } from '../shared/types';
+// The chip's factory steps (01 §2.6) read what the factory reached from its views, and a ghost job the pod holds
+// in vain names its fix. M0 builds have no story (01 §2.8), so the feed stays silent there.
+import { BUILDINGS, kitUnits, type EntityView, type Err, type ErrCode, type FactoryApi, type GhostView } from '../factory/api';
+import { cargoSlotsUsed, itemSlots } from '../pod';
+import { F, T } from '../shared/types';
 import { scopeAtLeast } from '../shared/scope';
 import type { GameEvent } from '../shared/events';
 import { TripTracker, nextGoal, nextGoals, type GoalSnapshot, type TripStats } from '../story';
 import type { WorldApi } from '../world/api';
+import { errText, ghostRefusalText, kitCount, kitsForUnits } from '../world/factoryText';
 import type { AppState, GoalChip, RadioMessage, Toast } from './types';
 
 /** Goal chip refresh period (≤ 2 Hz). */
 export const GOAL_REFRESH_MS = 500;
+
+/** The recipe "Build an Assembler: Wire" asks for (01 §2.6; 02 §4.2 A2: 1 Copper Ingot → 2 Wire). */
+export const WIRE_RECIPE = 'A2';
+
+/** The GoalSnapshot fields read from the factory views. */
+export type FactoryFacts = Pick<GoalSnapshot, 'drillFeedsLift' | 'liftAtHeadframe' | 'wireAssembler' | 'wireStock'>;
+
+/** An Auto-Drill beside a lift's foot cell pushes straight into it (02 §3.4 "an adjacent drill"). */
+function drillBesideFoot(d: EntityView, lift: EntityView): boolean {
+  const foot = lift.y + lift.h - 1;
+  return foot >= d.y && foot < d.y + d.h && (lift.x === d.x - 1 || lift.x === d.x + d.w);
+}
+
+/** What the factory has reached, for the goal chip's beat-6 steps (01 §2.6). Null factory (M0): nothing. */
+export function factoryFacts(f: FactoryApi | null): FactoryFacts {
+  const out: FactoryFacts = { drillFeedsLift: false, liftAtHeadframe: false, wireAssembler: false, wireStock: 0 };
+  if (!f) return out;
+  const drills: EntityView[] = [];
+  const lifts: EntityView[] = [];
+  const headframes: EntityView[] = [];
+  for (const e of f.entities()) {
+    if (e.kind === 'autoDrill') drills.push(e);
+    else if (e.kind === 'lift') lifts.push(e);
+    else if (e.kind === 'headframe') headframes.push(e);
+    else if (e.kind === 'assembler' && e.recipe === WIRE_RECIPE) out.wireAssembler = true;
+  }
+  for (const l of lifts) {
+    // A row-0 top feeds the Headframe standing over its column (02 §3.4).
+    if (l.y === 0 && headframes.some((h) => l.x >= h.x && l.x < h.x + h.w)) out.liftAtHeadframe = true;
+    if (drills.some((d) => drillBesideFoot(d, l))) out.drillFeedsLift = true;
+  }
+  out.wireStock = f.stockpileCount('wire');
+  return out;
+}
+
+/** First row of the job's column that is not open air (a blocked shaft), or undefined. */
+function solidRow(w: WorldApi, g: GhostView): number | undefined {
+  for (let r = g.y; r < g.y + g.h; r++) if (w.terrain.get(g.x, r) !== T.AIR) return r;
+  return undefined;
+}
+
+/**
+ * The refusal as completeGhost reported it, rebuilt from the code WorldApi.ghostProgress() carries plus the job:
+ * the cargo Kit, and for a column the row ghostRefusalText needs (no lift under a rail yet, else the blocked row).
+ */
+function refusalOf(w: WorldApi, g: GhostView, code: ErrCode): Err {
+  const e: Err = { ok: false, code };
+  if (code === 'E_KIT') {
+    e.item = g.kit;
+    e.need = g.kitUnits;
+  } else if (code === 'E_COLUMN') {
+    const below = g.y + g.h;
+    const lifted = w.factory?.entities().some((x) => x.kind === 'lift' && x.x === g.x && x.y === below) ?? false;
+    e.y = g.part === 'rail' && !lifted ? below : solidRow(w, g);
+  }
+  return e;
+}
+
+/**
+ * The goal chip's fix for the ghost job the pod is holding while it keeps being refused (PLAYER-6), or null. Pip
+ * standing in an occupant's footprint (E_POD) is named as such; anything else reads as the refusal toast.
+ */
+export function blockedGoalText(w: WorldApi): string | null {
+  const p = w.ghostProgress();
+  if (!p?.blocked) return null;
+  const g = w.factory?.ghosts().find((j) => j.id === p.id) ?? null;
+  if (p.blocked === 'E_POD') {
+    const site = !g ? 'build site' : g.kind === 'autoDrill' ? 'drill site' : `${BUILDINGS[g.kind].name} site`;
+    return `Move Pip off the ${site} so it can build`;
+  }
+  return g ? ghostRefusalText(g, refusalOf(w, g, p.blocked)) : errText({ ok: false, code: p.blocked });
+}
+
+/** The survey drill's site (factory.surveyPlan, the Auto-Drill's footprint) is open air. No factory: true. */
+export function drillSiteOpen(w: WorldApi): boolean {
+  const f = w.factory;
+  if (!f) return true;
+  const { drill } = f.surveyPlan();
+  const { w: dw, h: dh } = BUILDINGS.autoDrill;
+  for (let y = drill.y; y < drill.y + dh; y++) {
+    for (let x = drill.x; x < drill.x + dw; x++) if (w.terrain.get(x, y) !== T.AIR) return false;
+  }
+  return true;
+}
+
+/**
+ * The Shed errand for the oldest pending ghost whose Kit the bay cannot cover (02 §2.9 shopping list): "Load …"
+ * when the Stockpile holds enough, else "Buy …"; null when the bay covers every ghost.
+ */
+export function kitErrand(w: WorldApi): string | null {
+  const f = w.factory;
+  if (!f) return null;
+  const need = new Map<string, number>();
+  for (const g of f.ghosts()) if (g.kit) need.set(g.kit, (need.get(g.kit) ?? 0) + g.kitUnits);
+  if (need.size === 0) return null;
+  const carried = new Map<string, number>();
+  for (const c of w.pod.cargo) if (c.kind === 'kit') carried.set(c.id, (carried.get(c.id) ?? 0) + (c.units ?? kitUnits(c.id)));
+  for (const [kit, units] of need) {
+    const short = units - (carried.get(kit) ?? 0);
+    if (short <= 0) continue;
+    const n = kitsForUnits(kit, short);
+    const stocked = w.kitShop().find((k) => k.id === kit)?.inStockpile ?? 0;
+    return `${stocked >= n ? 'Load' : 'Buy'} ${kitCount(kit, n)} at the Shed`;
+  }
+  return null;
+}
 
 export interface StoryFeedDeps {
   state: Pick<AppState, 'radio' | 'goal' | 'tripSummary'>;
@@ -118,7 +227,11 @@ export class StoryFeed {
     const pod = w.pod;
     const stats = w.stats();
     let sellable = 0;
-    for (const c of pod.cargo) if (c.kind !== 'kit') sellable++;
+    let kitSlots = 0;
+    for (const c of pod.cargo) {
+      if (c.kind === 'kit') kitSlots += itemSlots(c);
+      else sellable++;
+    }
     const scripted = w.terrain?.lodes.find((l) => l.scripted);
     return {
       scope: w.scope,
@@ -135,6 +248,11 @@ export class StoryFeed {
       tiers: pod.tiers,
       surveyColumn: this.surveyColumn(w),
       scriptedLodeFound: scripted?.discovered ?? false,
+      kitSlots,
+      ...factoryFacts(w.factory),
+      drillSiteOpen: drillSiteOpen(w),
+      kitErrand: kitErrand(w),
+      buildBlocked: blockedGoalText(w),
     };
   }
 }

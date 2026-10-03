@@ -6,7 +6,7 @@ import type { Signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useLayoutEffect, useRef } from 'preact/hooks';
 import type { AppController } from '../../app/types';
-import { BUILDINGS, type EntStatus } from '../../factory/api';
+import { BUILDINGS } from '../../factory/api';
 import { TOUCH } from '../../shared/canon';
 import { formatCash, formatCashHud } from '../format';
 import { GoalChip } from '../story/GoalChip';
@@ -19,10 +19,12 @@ import type { BuildSession } from './session';
 import { buildingName, kitName } from './text';
 import {
   BTN,
+  BUBBLE_SAY,
   DOCK_H,
   LOUPE,
   TABS,
   TRAY_H,
+  bubbleLines,
   cardsFor,
   dockLayout,
   kitsInCargo,
@@ -70,7 +72,7 @@ export function BuildLayer({ app, build, vp }: BuildLayerProps): JSX.Element {
       <TopBar app={app} build={build} guard={guard} />
       <BuildGoal app={app} />
       <GhostAids app={app} build={build} guard={guard} />
-      {build.overlay && <StatusBubbles app={app} build={build} />}
+      {build.overlay && <StatusList app={app} build={build} />}
       <Loupe app={app} build={build} vp={vp} />
       <SideStack build={build} dockTop={dockTop} left={left} pan={!panInDock} guard={guard} />
       <Chips app={app} build={build} dockTop={dockTop} left={left} vh={v.h} guard={guard} />
@@ -378,7 +380,7 @@ function HeadframePip({ build, top, left }: { build: BuildSession; top: number; 
   );
 }
 
-// ---------------------------------------------------------------- ghost label, status bubbles, loupe
+// ---------------------------------------------------------------- ghost label, status list, loupe
 
 /** Plane directions for the nudge arrows: Yard E, N (toward the Rim), W, S; underground E and W only. */
 const NUDGE: readonly { dx: number; dy: number; label: string }[] = [
@@ -498,43 +500,21 @@ function GhostAids({ app, build, guard }: { app: AppController; build: BuildSess
   );
 }
 
-const BUBBLE: Readonly<Record<EntStatus, string>> = { working: '', idle: '○', blocked: '▣', noRecipe: '?', noOutput: '▣' };
-const MAX_BUBBLES = 10;
-
-/** ◫ Logistics overlay, DOM part (03 §4.10): ≤ 10 status bubbles on stalled buildings near the view centre. */
-function StatusBubbles({ app, build }: { app: AppController; build: BuildSession }): JSX.Element | null {
+/**
+ * ◫ Logistics overlay, text part (03 §4.10). The status bubbles are the renderer's, world-anchored in 3D
+ * (render/factory/view.ts); what it cannot give is words for a screen reader. This list is their twin, picked
+ * with the renderer's own glyph table (bubbleLines → statusGlyph), so the two never disagree.
+ */
+function StatusList({ app, build }: { app: AppController; build: BuildSession }): JSX.Element | null {
   app.state.hudTick.value;
   build.cursorVersion.value;
   const f = app.world.factory;
-  const r = build;
   if (!f) return null;
-  const area = r.area;
-  const cx = r.cam.cx;
-  const cy = r.cam.cy;
-  const list = f
-    .entities()
-    .filter((e) => e.plane === build.plane && e.status !== 'working' && e.kind !== 'headframe')
-    .map((e) => ({ e, d: Math.abs(e.x - cx) + Math.abs(e.y - cy) }))
-    .sort((a, b) => a.d - b.d)
-    .slice(0, MAX_BUBBLES);
+  const lines = bubbleLines(f.entities(), build.plane, build.cam.cx, build.cam.cy);
   return (
-    <>
-      {list.map(({ e }) => {
-        const s = build.cellScreen(e.x + (e.w - 1) / 2, build.plane === 'yard' ? e.y + e.h - 1 : e.y);
-        if (!s || s.y < area.y0 || s.y > area.y1) return null;
-        return (
-          <span
-            key={e.id}
-            class={`hf-bubble hf-bubble-${e.status}`}
-            style={{ transform: `translate3d(${Math.round(s.x)}px, ${Math.round(s.y - 34)}px, 0) translate(-50%, -50%)` }}
-            title={`${buildingName(e.kind)}: ${e.status}`}
-            aria-hidden="true"
-          >
-            {BUBBLE[e.status]}
-          </span>
-        );
-      })}
-    </>
+    <ul class="hf-sr hf-status-list" aria-label="Building status">
+      {lines.length === 0 ? <li>Nothing stalled</li> : lines.map((l) => <li key={l.id}>{`${buildingName(l.kind)}: ${BUBBLE_SAY[l.glyph]}`}</li>)}
+    </ul>
   );
 }
 

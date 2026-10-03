@@ -41,6 +41,7 @@ import {
   yardCellOf,
 } from './factory/projection';
 import { GHOST_EDGE_PX } from './factory/overlayMaterials';
+import { AccessChevrons } from './accessChevrons';
 import { createFx } from './fx/fx';
 import { addOutlineHulls, applyLookMaterials, disposeMaterialKit, getMaterialKit, setHullsEnabled, setLayerDeep, syncHull, LAYER_LATE, type MaterialKit } from './materials';
 import type { FxSystem, PodModel, PodVisualState, RimBuildingsModel, YardPropsModel } from './models/api';
@@ -104,6 +105,8 @@ class HfRenderer implements Renderer {
   private readonly chunks: ChunkMeshes;
   private readonly surface: Surface;
   private readonly overlays = new Overlays();
+  /** Access chevrons and post over the scripted lode's dig (03 §4.6; 01 §2.5). */
+  private readonly access = new AccessChevrons();
   private readonly glows: OreGlows;
   private readonly pod: PodModel;
   private readonly rim: RimBuildingsModel;
@@ -220,7 +223,7 @@ class HfRenderer implements Renderer {
     this.hulls.push(...addOutlineHulls(this.pod.root, 'pod', this.kit), ...addOutlineHulls(this.rim.root, 'buildings', this.kit));
     this.factoryView = new FactoryView(this.kit, this.look);
     this.factoryView.root.visible = false;
-    this.scene.add(this.surface.root, this.chunks.root, this.glows.mesh, this.rim.root, this.pod.root, this.fx.root, this.overlays.root, this.factoryView.root);
+    this.scene.add(this.surface.root, this.chunks.root, this.glows.mesh, this.rim.root, this.pod.root, this.fx.root, this.overlays.root, this.factoryView.root, this.access.root);
     // Built now (default column) so its instanced variants precompile; rebuilt if the world differs.
     this.setYard(DEFAULT_SURVEY_COLUMN);
     setLayerDeep(this.overlays.root, LAYER_LATE);
@@ -268,8 +271,12 @@ class HfRenderer implements Renderer {
     this.updateChunks(world.terrain, px, py);
     this.updateUniforms(frame, pose, px, py);
     this.updateModels(frame, px, py, dt);
-    this.updateFactory(frame, pose, dt);
+    // The ghost job the pod is completing or held on (PLAYER-6): the factory's active ghost and the build ring.
+    const job = world.factory ? world.ghostProgress() : null;
+    this.updateFactory(frame, pose, dt, job);
+    this.access.update(world, frame.timeMs, !frame.reducedMotion);
     this.overlays.updateArming(frame.arming, px, py);
+    this.overlays.updateBuildRing(job, px, py);
     this.overlays.updateShadow(world.terrain, px, py - POD_H / 2);
     this.draw(pose);
   }
@@ -298,10 +305,13 @@ class HfRenderer implements Renderer {
     this.syncGhostEdge();
   }
 
-  /** Ghost outlines (03 §4.3): GHOST_EDGE_PX CSS px in Toon, one low-res texel in Pixel Lab (the target drawn into). */
+  /**
+   * Ghost outlines (03 §4.3): GHOST_EDGE_PX CSS px in Toon, one low-res texel in Pixel Lab (the target drawn into);
+   * the invalid stripes keep their CSS size in both (a Pixel Lab texel is k / DPR CSS px).
+   */
   private syncGhostEdge(): void {
-    if (this.look === 'pixel') this.factoryView.setGhostEdge(1, this.pixel.width, this.pixel.height);
-    else this.factoryView.setGhostEdge(GHOST_EDGE_PX * this.toonScale, this.kit.uniforms.uHfResolution.value.x, this.kit.uniforms.uHfResolution.value.y);
+    if (this.look === 'pixel') this.factoryView.setGhostEdge(1, this.pixel.width, this.pixel.height, this.layout.dpr / this.k);
+    else this.factoryView.setGhostEdge(GHOST_EDGE_PX * this.toonScale, this.kit.uniforms.uHfResolution.value.x, this.kit.uniforms.uHfResolution.value.y, this.toonScale);
   }
 
   /** Follow the frame's layout: insets/HUD changes re-anchor the camera; size or render-DPR changes resize. */
@@ -428,6 +438,7 @@ class HfRenderer implements Renderer {
     this.chunks.dispose();
     this.surface.dispose();
     this.overlays.dispose();
+    this.access.dispose();
     this.factoryView.dispose();
     this.glows.dispose();
     this.toon.dispose();
@@ -717,7 +728,7 @@ class HfRenderer implements Renderer {
   }
 
   /** Factory views for the camera rect (04 §3.3): structure on topology changes, motion per frame. */
-  private updateFactory(frame: RenderFrame, pose: CameraPose, dt: number): void {
+  private updateFactory(frame: RenderFrame, pose: CameraPose, dt: number, job: FactoryFrame['ghostProgress']): void {
     const world = frame.world;
     const f = world.factory;
     this.surface.setYardRows(f ? f.yardRows : YARD_D_START);
@@ -742,7 +753,7 @@ class HfRenderer implements Renderer {
     ff.mineRect = mineOn ? this.mineRect : null;
     ff.viewport = this.perspCam ? null : layout;
     ff.build = frame.mode === 'build' || this.buildRig.active ? (frame.build ?? null) : null;
-    ff.ghostProgress = world.ghostProgress();
+    ff.ghostProgress = job;
     ff.texel = this.look === 'pixel' && !this.perspCam ? this.texel : 0;
     ff.animate = !(frame.reducedMotion || frame.battery === true);
     ff.itemCap = ITEM_CAP[this.quality];
@@ -782,6 +793,7 @@ class HfRenderer implements Renderer {
     this.surface.setMaterials(this.kit.terrain(look), this.kit.sky(look));
     for (const root of this.modelRoots()) applyLookMaterials(root, look, this.kit);
     this.factoryView.setLook(look);
+    this.access.setLook(look);
     this.syncGhostEdge();
     this.applyQualityScope();
   }
@@ -813,7 +825,7 @@ class HfRenderer implements Renderer {
   }
 
   private modelRoots(): Object3D[] {
-    const roots: Object3D[] = [this.pod.root, this.rim.root, this.fx.root];
+    const roots: Object3D[] = [this.pod.root, this.rim.root, this.fx.root, this.access.root];
     if (this.yard) roots.push(this.yard.root);
     return roots;
   }
@@ -824,6 +836,8 @@ class HfRenderer implements Renderer {
     const current = this.look;
     // Factory pieces, ghosts (prepass, outline, body), bubbles and overlays too: three compiles visible objects only.
     this.factoryView.setCompileVisible(true);
+    this.overlays.setCompileVisible(true);
+    this.access.setCompileVisible(true);
     for (const look of looks) {
       this.look = look;
       this.applyLook();
@@ -835,6 +849,8 @@ class HfRenderer implements Renderer {
     }
     this.look = current;
     this.factoryView.setCompileVisible(false);
+    this.overlays.setCompileVisible(false);
+    this.access.setCompileVisible(false);
     this.applyLook();
     this.gl.setRenderTarget(null);
   }

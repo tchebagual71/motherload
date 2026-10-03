@@ -116,6 +116,32 @@ describe('factory: Bucket Lift (02 §3.4, §10.6)', () => {
     expect(Math.abs(f.debug.counts.sold - sold0 - 150)).toBeLessThanOrEqual(1);
   });
 
+  it('a lift that stalled at its foot section resumes once a late rail extends it to the Headframe', () => {
+    const g = makeGrid();
+    addLode(g, 'copper', 'normal', 30, 46);
+    const lode = addLode(g, 'copper', 'rich', 17, 46).id;
+    carve(g, 20, 0, 20, 45);
+    carve(g, 18, 44, 22, 45);
+    const { f } = rig({ surveyColumn: 19 }, g);
+    f.discoverLode(lode, true);
+    const cargo = new Cargo({ autoDrill: 1, liftFoot: 1, liftRail: 1 });
+    must(f.completeGhost(must(f.placeGhost({ kind: 'autoDrill', x: 18, y: 44 })).ids[0], POD_AWAY, cargo));
+    const [foot, rail] = must(f.placeGhost({ kind: 'lift', x: 20, foot: 45, top: 0 })).ids;
+    must(f.completeGhost(foot, POD_AWAY, cargo));
+    const lift = f.entities().find((e) => e.kind === 'lift')!.id;
+    const hf = f.entities().find((e) => e.kind === 'headframe')!.id;
+    ticks(f, 3_000); // the head reaches the foot section's top (row 14) with nowhere to go
+    expect(f.entity(lift)?.status).not.toBe('working');
+    must(f.completeGhost(rail, POD_AWAY, cargo));
+    let arrived = false;
+    for (let t = 0; t < 3_000 && !arrived; t++) {
+      f.tick();
+      arrived = (f.inspect(hf)?.output.length ?? 0) > 0;
+    }
+    expect(arrived).toBe(true);
+    expect(f.debug.conservationOk()).toBe(true);
+  });
+
   it('a rail section only completes above a built lift (E_COLUMN), and extends it', () => {
     const g = makeGrid();
     addLode(g, 'copper', 'normal', 30, 46);

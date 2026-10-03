@@ -9,6 +9,7 @@
     "dev": "vite --host",
     "build": "vite build",
     "preview": "vite preview --host --port 4173",
+    "size": "node scripts/check-size.mjs",
     "typecheck": "tsc -p tsconfig.sim.json --noEmit && tsc -p tsconfig.json --noEmit",
     "purity": "node scripts/check-purity.mjs",
     "test": "vitest run",

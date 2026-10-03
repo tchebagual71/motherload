@@ -292,18 +292,16 @@ export class AudioEngine {
   handleEvents(events: readonly GameEvent[], drillTier: number): void {
     if (!this.canPlay()) return;
     this.sfxCtx.drillTier = drillTier;
+    // A 'radio' event is silent here: its blips follow the card on show (speak / stopSpeech from the UI, INT-4), so a
+    // message queued under build mode or a sheet speaks when its card opens, every card speaks, and dismiss stops it.
     for (const e of events) {
-      if (e.t === 'radio') {
-        if (e.cards.length > 0) this.speak(e.sender, e.cards[0]);
-        continue;
-      }
       if (e.t === 'dig-start' || e.t === 'dug') this.setDrillRow(e.r);
       const c = cueForEvent(e, this.sfxCtx);
       if (c) this.playCue(c);
     }
   }
 
-  /** Speak one radio card as blips (the UI calls this for each further card; a new card cuts the old one). */
+  /** Speak one radio card as blips: the UI calls this as each card opens (a new card cuts the old one). */
   speak(sender: Sender, text: string): void {
     const live = this.live;
     if (!live || !this.canPlay()) return;
@@ -311,7 +309,7 @@ export class AudioEngine {
     this.ducks.hit('radio', this.now(), len * 1000 + RADIO_TAIL_MS);
   }
 
-  /** The card was dismissed: stop its blips and lift the radio duck. */
+  /** The card was dismissed, covered or collapsed: stop its blips and lift the radio duck. */
   stopSpeech(): void {
     this.radio.stop();
     this.ducks.clearRadio();

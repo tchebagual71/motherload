@@ -268,7 +268,9 @@ export function cueForEvent(e: GameEvent, ctx: SfxContext): SfxCue | null {
       if (e.kind === 'repair') return cue('use');
       return e.kind === 'upgrade' ? cue('fanfare', 1.25) : cue('purchase');
     case 'starter-kit':
-      return cue('purchase');
+      // The OFFER (the scripted lode was found): its 'lode-discovered' rings the discover cue in the same step and
+      // Dot's radio says the rest. 'purchase' belongs to the claim at the Shed (purchase.kit, INT-2).
+      return null;
     case 'coop-credit':
       return cue('pump');
     case 'ghost-complete':

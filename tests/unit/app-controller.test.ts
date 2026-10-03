@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { VISIBLE_IDLE_MS } from '../../src/app/away';
 import { DEATH_CARD_MS, GameApp, IMPORT_DRY_RUN_STEPS, salvageFee, type ControllerOptions } from '../../src/app/controller';
 import { NOTICE } from '../../src/app/notices';
+import { SaveError } from '../../src/save/codec';
 import { defaultSettings } from '../../src/app/settings';
 import { TOAST_MS } from '../../src/app/toasts';
 import type { InputController } from '../../src/app/types';
@@ -43,7 +45,7 @@ function makeApp(over: Partial<ControllerOptions> = {}) {
   const world = (over.world as (FakeWorld & WorldApi) | undefined) ?? fakeWorld();
   let now = 0;
   const saves = { markDirty: vi.fn(), requestSoon: vi.fn(), critical: vi.fn(() => null), setEnabled: vi.fn() };
-  const audio = { unlock: vi.fn(), play: vi.fn(), setEnabled: vi.fn(), setRespectSilent: vi.fn() };
+  const audio = { unlock: vi.fn(), play: vi.fn(), setEnabled: vi.fn(), setRespectSilent: vi.fn(), speak: vi.fn(), stopSpeech: vi.fn() };
   const input = { releaseAll: vi.fn(), sampleIntent: vi.fn(), touching: false, active: false, dispose: vi.fn() } as unknown as InputController;
   const settingsStore = { loadSettings: vi.fn(), saveSettings: vi.fn(), loadLook: vi.fn(), saveLook: vi.fn() };
   const opts: ControllerOptions = {
@@ -354,5 +356,182 @@ describe('GameApp: Safe Mode', () => {
     expect(app.state.overlay.value).toBeNull();
     expect(onSafeModeResolved).toHaveBeenCalled();
     expect(saves.critical).toHaveBeenCalled();
+  });
+});
+
+/** A fake MVP world: it hosts a factory (build mode, the away rest) and records setAway. */
+function factoryWorld() {
+  const w = fakeWorld();
+  Object.assign(w.pod, { destroyed: false, y: -3.5 });
+  return Object.assign(w, { factory: { entities: () => [] }, setAway: vi.fn() });
+}
+
+describe('GameApp: build mode and death (INT-6)', () => {
+  it('a death while building leaves build mode: the card and the respawn happen in play, with no stale countdown', () => {
+    const world = factoryWorld();
+    const { app } = makeApp({ world });
+    const build = { begin: vi.fn(() => true), end: vi.fn() };
+    app.attachBuild(build);
+    app.start();
+    app.enterBuild();
+    expect(app.state.mode.value).toBe('build');
+    // Destroyed mid-fall (a leaving-build gate alone would ask for the 1.5 s countdown).
+    Object.assign(world.pod, { destroyed: true, grounded: false, vy: -12 });
+    app.handleEvents([{ t: 'destroyed', cause: 'hull' }]);
+    expect(app.state.mode.value).toBe('play');
+    expect(build.end).toHaveBeenCalledTimes(1);
+    expect(app.state.overlay.value).toBe('death');
+    world.respawn.mockImplementation(() => {
+      Object.assign(world.pod, { destroyed: false, grounded: true, vy: 0 });
+      return { fee: 25, debt: 0, lost: [] };
+    });
+    app.tick(DEATH_CARD_MS + 1, DEATH_CARD_MS + 1);
+    expect(world.respawn).toHaveBeenCalledTimes(1);
+    expect(app.state.overlay.value).toBeNull();
+    expect(app.state.mode.value).toBe('play');
+    expect(app.podRunning()).toBe(true);
+  });
+
+  it('build mode will not open over a destroyed pod (before its death event drains, or a wreck save)', () => {
+    const world = factoryWorld();
+    const { app } = makeApp({ world });
+    app.attachBuild({ begin: vi.fn(() => true), end: vi.fn() });
+    app.start();
+    Object.assign(world.pod, { destroyed: true });
+    app.enterBuild();
+    expect(app.state.mode.value).toBe('play');
+    Object.assign(world.pod, { destroyed: false });
+    app.enterBuild();
+    expect(app.state.mode.value).toBe('build');
+  });
+});
+
+describe('GameApp: visible-idle away (02 §8.1 steps 1–2; INT-7)', () => {
+  const idle = (app: GameApp, ms: number) => {
+    for (let left = ms; left > 0; left -= 1_000) app.tick(Math.min(1_000, left), 0);
+  };
+
+  it('5 min on screen without input rests the factory; the first input wakes it', () => {
+    const world = factoryWorld();
+    const { app } = makeApp({ world });
+    app.start();
+    idle(app, VISIBLE_IDLE_MS - 1_000);
+    expect(world.setAway).not.toHaveBeenCalled();
+    expect(app.state.resting.value).toBe(false);
+    idle(app, 1_000);
+    expect(world.setAway).toHaveBeenCalledWith(true);
+    expect(app.state.resting.value).toBe(true);
+    idle(app, 60_000); // still resting, not re-sent
+    expect(world.setAway).toHaveBeenCalledTimes(1);
+    app.noteInput();
+    expect(world.setAway).toHaveBeenLastCalledWith(false);
+    expect(app.state.resting.value).toBe(false);
+    app.noteInput();
+    expect(world.setAway).toHaveBeenCalledTimes(2);
+  });
+
+  it('input restarts the clock, and so does a trip through the background (hidden is its own away)', () => {
+    const world = factoryWorld();
+    const { app } = makeApp({ world });
+    app.start();
+    idle(app, VISIBLE_IDLE_MS - 1_000);
+    app.noteInput();
+    idle(app, VISIBLE_IDLE_MS - 1_000);
+    expect(app.state.resting.value).toBe(false);
+    app.setHidden(true);
+    expect(world.setAway).toHaveBeenLastCalledWith(true);
+    app.setHidden(false);
+    expect(world.setAway).toHaveBeenLastCalledWith(false);
+    idle(app, VISIBLE_IDLE_MS - 1_000);
+    expect(app.state.resting.value).toBe(false);
+    idle(app, 1_000);
+    expect(app.state.resting.value).toBe(true);
+    // Hidden while resting: still away, the chip goes; visible again wakes it.
+    app.setHidden(true);
+    expect(app.state.resting.value).toBe(false);
+    app.setHidden(false);
+    expect(world.setAway).toHaveBeenLastCalledWith(false);
+  });
+
+  it('an M0 world (no factory) never rests', () => {
+    const world = Object.assign(fakeWorld(), { factory: null, setAway: vi.fn() });
+    const { app } = makeApp({ world });
+    idle(app, 2 * VISIBLE_IDLE_MS);
+    expect(app.state.resting.value).toBe(false);
+    expect(world.setAway).not.toHaveBeenCalled();
+  });
+});
+
+describe('GameApp: factory unlocks (INT-9)', () => {
+  it('toasts rung unlocks and possession recipes, and saves soon on progress milestones', () => {
+    const { app, saves } = makeApp();
+    app.start();
+    app.handleEvents([{ t: 'unlock', rung: 'U3', label: 'Assembler, Router, Export Terminal' }]);
+    app.handleEvents([{ t: 'unlock', rung: 'A5', label: 'Circuit' }]);
+    expect(app.state.toasts.value.map((t) => [t.text, t.tone])).toEqual([
+      ['New: Assembler, Router, Export Terminal', 'good'],
+      ['New recipe: Circuit', 'good'],
+    ]);
+    expect(saves.requestSoon).toHaveBeenCalledTimes(2);
+    app.handleEvents([{ t: 'first-ingot', item: 'copperIngot' }, { t: 'first-lift-delivery' }]);
+    expect(saves.requestSoon).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('GameApp: radio voice blips (03 §11.5; INT-4)', () => {
+  const msg = (id: number) => ({ id, beat: 'S1', sender: 'Dot' as const, cards: ['One.', 'Two.'], at: 0 });
+
+  it('speaks the card on show through the audio port, unless Voice blips is off', () => {
+    const { app, audio } = makeApp();
+    app.speakRadio('Dot', 'Hello, Seven.');
+    expect(audio.speak).toHaveBeenCalledWith('Dot', 'Hello, Seven.');
+    app.updateSettings({ voiceBlips: false });
+    expect(audio.stopSpeech).toHaveBeenCalledTimes(1); // turned off mid-card
+    app.speakRadio('Dot', 'Again.');
+    expect(audio.speak).toHaveBeenCalledTimes(1);
+    app.stopRadioSpeech();
+    expect(audio.stopSpeech).toHaveBeenCalledTimes(2);
+  });
+
+  it('dismissing the message on show stops its blips; dismissing a queued one does not', () => {
+    const { app, audio } = makeApp();
+    app.state.radio.value = [msg(1), msg(2), msg(3)];
+    app.dismissRadio(2);
+    expect(audio.stopSpeech).not.toHaveBeenCalled();
+    app.dismissRadio(1);
+    expect(audio.stopSpeech).toHaveBeenCalledTimes(1);
+    expect(app.state.radio.value.map((m) => m.id)).toEqual([3]);
+  });
+});
+
+describe('GameApp: saves this build cannot load (04 §4.11; SIM-4)', () => {
+  /** An HFSV header at `version` (the controller reads only the header to tell the kinds apart). */
+  const header = (version: number) => new Uint8Array([0x48, 0x46, 0x53, 0x56, version, 0, 1, 2, 3, 4]);
+  const refusing = (version: number) =>
+    makeApp({
+      codes: { encode: () => 'HF1:abc', decode: () => ({ ok: true, bytes: header(version) }) },
+      worlds: {
+        create: () => fakeWorld(),
+        deserialize: () => {
+          throw new SaveError('version', 'refused');
+        },
+      },
+    });
+
+  it('an imported M0 test save or newer save says so instead of "not a valid save"', async () => {
+    const m0 = refusing(0);
+    expect(await m0.app.importSave('HF1:m0')).toEqual({ ok: false, reason: NOTICE.testSave });
+    expect(m0.app.world).toBe(m0.world);
+    expect(await refusing(2).app.importSave('HF1:v2')).toEqual({ ok: false, reason: NOTICE.newerSave });
+  });
+
+  it('offers the kept copy for export', async () => {
+    const keptSave = { kind: 'test' as const, fresh: true, exportCode: vi.fn(async () => 'HF1:m0') };
+    const { app } = makeApp({ keptSave });
+    expect(app.state.keptSave.value).toEqual({ kind: 'test', fresh: true });
+    await expect(app.exportKeptSave()).resolves.toBe('HF1:m0');
+    const none = makeApp();
+    expect(none.app.state.keptSave.value).toBeNull();
+    await expect(none.app.exportKeptSave()).resolves.toBeNull();
   });
 });

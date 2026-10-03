@@ -42,7 +42,7 @@ Exact pins, committed lockfile, `npm ci` everywhere, Node 22.22, npm 10.9. three
 | vitest / @vitest/coverage-v8 / fast-check / **fake-indexeddb** | 5.0.3 / 5.0.3 / 4.10.2 / 6.2.5 |
 | @playwright/test | 1.56.1 (chromium-1194; image `v1.56.1-noble`) |
 | eslint / typescript-eslint / eslint-plugin-boundaries / prettier | 10.11.0 / 8.71.0 / 7.2.0 / 3.9.9 |
-| size-limit + @size-limit/file | 14.1.0 |
+| Payload gate | none: `scripts/check-size.mjs` (`npm run size`, node:zlib; §12.1) |
 | @gltf-transform/cli + functions / meshoptimizer | 4.5.1 / 1.3.0 |
 | Capacitor 8.5.2; haptics 8.0.2, status-bar 8.0.3, screen-orientation 8.0.1, filesystem 8.1.3, preferences 8.0.1 | post-launch only |
 
@@ -95,7 +95,7 @@ motherload/  index.html  bench.html  jetsam.html  tsconfig.{json,sim,worker,app,
 │  ├─ input/ ui/ audio/ platform/ pwa/ app/ (loop, TimeController, GameFacade, catchUpHost)
 │  ├─ workers/  v1 only: catchup.worker; flow.worker if ADR-0002 fails
 │  ├─ debug/    menu, overlay, Perf Report, __hf.test (dynamic import)
-│  └─ config/   scope.ts, flags.ts, tiers.ts, channel.ts
+│  └─ config/   scope.ts only (§12.1); tiers: app/tier.ts, channel: platform/channel.ts, flags: §13.1
 ├─ tests/  unit/ golden/ fixtures/saves/ e2e/
 ├─ tools/  bot/ bench/ assets/ ci/ (fixtures, registry ids, canon refs, radio-card lint)
 └─ .github/workflows/  ci.yml deploy.yml nightly.yml update-snapshots.yml
@@ -274,7 +274,7 @@ Storage contents (Bins, Silos, Depot stock, machine buffers) are sorted `(item u
 - **Pod:** position, velocity, fuel, hull (f64); 7 tiers; 6 consumable counts (≤ 9); quick slots; cargo (≤ 120 slots); dig state; armed-pad id. Depot per-trip service flags are factory state (02 §10.10).
 
 ### 4.9 Save file format
-**Header** (32 B): `HFSV` · version u16 (M0 = 0, never migrated; MVP ships 1) · flags u16 (bit 0 deflate-raw, 0 for critical saves; 1 Hardcore; 2 imported) · CRC32 of the uncompressed payload · uncompressed length u32 (≤ 1 MiB) · build id u32 · savedAt f64 · seed u32. The payload is `FourCC u32 · length u32 · bytes` sections.
+**Header** (32 B): `HFSV` · version u16 (the M0 build wrote 0, never migrated; MVP ships 1, which every scope's build writes, §4.11) · flags u16 (bit 0 deflate-raw, 0 for critical saves; 1 Hardcore; 2 imported) · CRC32 of the uncompressed payload · uncompressed length u32 (≤ 1 MiB) · build id u32 · savedAt f64 · seed u32. The payload is `FourCC u32 · length u32 · bytes` sections.
 
 | Section | Contents | Raw size |
 |---|---|---|
@@ -301,7 +301,9 @@ Storage contents (Bins, Silos, Depot stock, machine buffers) are sorted `(item u
 - **Capacitor (post):** the same bytes in Filesystem, written as temp then renamed.
 
 ### 4.11 Migrations and the generation freeze
-- **Migrations:** pure `vN_to_vN+1(sections)`, stepwise from MVP version 1. M0 saves show "This test save can't be loaded", with export.
+- **Migrations:** pure `vN_to_vN+1(sections)`, stepwise from MVP version 1 (`MIN_SAVE_VERSION`).
+- **M0 test saves** are HFSV **version 0**, written by the M0 build before the format froze. They never migrate: boot moves them out of the rotation untouched (`save/legacy.ts`, `SaveStore.keep`) and shows "This test save can't be loaded" with **Export** (title card, then Menu → Saves).
+- **A version-1 save written by an M0-scope build** (`HF_SCOPE=m0`; no FACT section) is not a test save: it loads and migrates forward by scope (below), and the MVP World seeds a fresh factory from what the claim already knows (`World.migrateToFactory`: discovered lodes, U1, the Starter Kit offer).
 - **Fixtures:** CI fails if `SAVE_VERSION` rises without the previous fixture and a migration.
 - **Generation freeze** (canon §3.2): from the MVP tag, `tests/golden/worldgen.json` holds TERR and LODE hashes for 5 seeds; changing them requires a migration.
 - **Newer files** are never overwritten.
@@ -616,7 +618,7 @@ MediaElementSource quirks (fallback: two pre-filtered G1 files, +1.3 MB lazy); s
 | JS heap (Chrome) | `performance.memory` on Android and in CI |
 | iOS memory | 60-min soak, no crash or crash-loop drop; page ≤ 150 MB on low until the jetsam probe, then ≤ 60% of its kill point |
 | Factory tick p95 ≤ 1.5 ms | ADR-0002; CI bench ≤ 2× baseline |
-| Initial JS, first playable | size-limit (§12) |
+| Initial JS, first playable | `npm run size` (`scripts/check-size.mjs`, §12.1) |
 | TTI on 4G | Perf Report marks (navigation → first frame → first input). CI logs a 6× CPU-throttled load as information only |
 
 ### 10.3 Perf Report and device set
@@ -635,7 +637,7 @@ Allocates 10-MB steps (touching every page) of `ArrayBuffer`s or WebGL textures.
 
 | Tier | Work |
 |---|---|
-| M0 | Device probe, Perf Report, jetsam probe, overlay, tier override, count asserts, size-limit |
+| M0 | Device probe, Perf Report, jetsam probe, overlay, tier override, count asserts, payload gate |
 | MVP | Defaults + benchmark, dynamic resolution, battery mode, tier drops, ADR-0002, 60-min soaks |
 | v1.0 | ADR-0002 re-run, stress save, thermal sessions, memory audit, Retro-filter cost |
 | post | Native thermal state; CDP trend job |
@@ -730,12 +732,13 @@ Third-party actions are pinned by SHA.
 
 | Workflow | Trigger | Jobs |
 |---|---|---|
-| `ci.yml` | PR, push to `main` | **lint:** eslint, prettier, radio-card lint, canon refs. **typecheck:** `tsc -b`. **unit:** Vitest, with coverage from the MVP. **build (once):** `HF_BASE=/motherload/ VITE_CHANNEL=prod VITE_HF_SCOPE=<milestone>`; size-limit (≤ 350 KB br and 430 KB gzip; precache ≤ 2.5 MB); fixture and registry checks; upload `dist/`. **e2e:** pinned image, against that `dist/`, 2 shards + `webkit-smoke`. **bench:** fails above 2× baseline |
+| `ci.yml` | PR, push to `main` | **lint:** eslint, prettier, radio-card lint, canon refs. **typecheck:** `tsc -b`. **unit:** Vitest, with coverage from the MVP. **build (once):** `HF_BASE=/motherload/ VITE_CHANNEL=prod HF_SCOPE=<milestone>`; payload gate `npm run size` (canon §3.14: initial JS ≤ 350 KB br and 430 KB gzip; precache ≤ 2.5 MB); fixture and registry checks; upload `dist/`. **e2e:** pinned image, against that `dist/`, 2 shards + `webkit-smoke`. **bench:** fails above 2× baseline |
 | `deploy.yml` | `ci` green on `main` | The **same** `dist/`; asset retention (§9.4); `upload-pages-artifact` + `deploy-pages`; concurrency group `pages` |
 | `nightly.yml` | 03:17 UTC | Bot, trip soak, Pages header check |
 | `update-snapshots.yml` | Manual | §11.4 |
 
-- **Scope:** `vite.config.ts` fails unless `VITE_HF_SCOPE ∈ {m0, mvp, v1}` (an unprefixed variable arrives as `undefined`). `config/scope.ts` maps each ledger row to its tier (`enabled(row)`), and the static value tree-shakes out-of-scope code. `HF_BASE` stays Node-side.
+- **Scope:** the build reads `HF_SCOPE` Node-side (default `mvp` when unset; `vite.config.ts` fails on anything but `m0`, `mvp`, `v1`) and bakes it in as the `__HF_SCOPE__` define. `src/config/scope.ts` exports `SCOPE` and `inScope(tier)`, which the app and UI gate on. The sim never reads the define: every `World` carries its own `scope` (the build's at boot, restamped on load, §4.11), and pure modules gate on it with `shared/scope.ts` `scopeAtLeast`. Gating is at runtime (`inScope()` is a table lookup the minifier cannot fold), so every build ships every scope's code: there is no scope tree-shaking yet. `HF_BASE` stays Node-side too.
+- **Payload gate:** `npm run size` (`scripts/check-size.mjs`) runs after the build. It measures what `dist/index.html` loads up front (the entry script, every modulepreload and the CSS) at brotli q11 and gzip -9, prints a table into the job summary, and fails over the canon §3.14 budgets, which it reads from the canon. The precache in `sw.js` is gated as the first playable. CSS is listed but not counted as JS. The chunk the game shares with `bench.html` (three.js, World, renderer) is named `core-*.js` (`vite.config.ts` `chunkFileNames`).
 - **Targets:** lint + typecheck + unit < 3 min; e2e < 8 min.
 
 ### 12.2 Branches and conventions
@@ -770,7 +773,7 @@ Third-party actions are pinned by SHA.
   - data: hashes, dump/load save, input record/replay, and the bug bundle (build, device, tier, 500 log lines, save code, last 2,000 commands).
 
   Saves after cheats carry `ASSISTED_DEBUG`.
-- **Flags** (`config/flags.ts`, `?ff=a,-b`, persisted): `DEEP_HEAT` (off), `SIM_NO_SLEEP`, `CAMERA_FIXED`, `CAMERA_PERSPECTIVE` (M0 only), `RETURN_TICK_MODE`, `LANDING_ASSIST`, `STEADY_DRILL`. Removed: `WEBGPU`, `HAPTIC_SWITCH_HACK`. `config/scope.ts` is the only scope gate.
+- **Flags:** there is no flags module or `?ff=` parameter; each flag lives with its owner. `DEEP_HEAT` (off) is a `World` option saved in META; `SIM_NO_SLEEP` is the factory's `noSleep` option (tests and the bench); `CAMERA_PERSPECTIVE` (M0 only) is `?persp=1`, also a Debug switch; `RETURN_TICK_MODE`, `LANDING_ASSIST` and `STEADY_DRILL` are player settings (`app/settings.ts`). `CAMERA_FIXED` is not built. Removed: `WEBGPU`, `HAPTIC_SWITCH_HACK`. `config/scope.ts` is the only scope gate.
 - **Logging:** `log(channel, level, msg)` into 500-entry rings; production prints warn+ only with `?debug=1`. No remote telemetry; playtest metrics leave through the bug bundle or the Perf Report.
 
 ### 13.2 Build order
@@ -782,7 +785,7 @@ Third-party actions are pinned by SHA.
 | v1.0 | Shear, away and boss tools |
 
 ### 13.3 Risks
-Debug code leaking into production (dynamic import, size-limit); cheated saves (`ASSISTED_DEBUG`).
+Debug code leaking into production (dynamic import, payload gate); cheated saves (`ASSISTED_DEBUG`).
 
 ---
 

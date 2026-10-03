@@ -4,9 +4,13 @@ import { DIR, type Cell, type Dir, type GhostView } from '../../src/factory/api'
 import { BUILD_ZOOM, clampCamera, clampPpu, defaultCamera, entryPlane, planeBounds } from '../../src/ui/build/camera';
 import { errText, kitBill, kitName, kitsForUnits, rungTrigger, undoText, unlockText } from '../../src/ui/build/text';
 import * as refusals from '../../src/world/factoryText';
+import type { EntityView } from '../../src/factory/api';
+import { BUBBLE_GLYPH, BUBBLE_TEXT, statusGlyph } from '../../src/render/factory/status';
 import {
+  BUBBLE_SAY,
   TABS,
   beltPathUnchanged,
+  bubbleLines,
   cardsFor,
   dockLayout,
   drillSites,
@@ -17,10 +21,14 @@ import {
   liftChip,
   liftEnds,
   liftRails,
+  lodeDrillSite,
+  lodeUnder,
   loupePlace,
   mineRun,
   pathDirs,
   planeTools,
+  removalAsk,
+  removalPrice,
   shoppingList,
   shoppingSummary,
   snapDrill,
@@ -179,7 +187,7 @@ describe('copy (03 §6.2)', () => {
     expect(errText({ ok: false, code: 'E_ARENA' })).toBe('Not in the Hollow Heart');
     expect(errText({ ok: false, code: 'E_FUNDS', need: 1250 })).toBe('Need $1,250 more');
     expect(errText({ ok: false, code: 'E_PARTS', need: 2, item: 'hullPlate' })).toBe('Need 2 Hull Plate');
-    expect(errText({ ok: false, code: 'E_KIT', need: 9, item: 'belt' })).toBe('Need 2 Belt Kit in cargo');
+    expect(errText({ ok: false, code: 'E_KIT', need: 9, item: 'belt' })).toBe('Need 2 Belt Kits in cargo');
     for (const code of ['E_LOCKED', 'E_FUNDS', 'E_KIT', 'E_COLUMN', 'E_STOCKPILE_FULL'] as const) {
       expect(errText({ ok: false, code, need: 99_999, item: 'liftFoot', rung: 'U3', y: 583 }).length).toBeLessThanOrEqual(40);
     }
@@ -188,13 +196,15 @@ describe('copy (03 §6.2)', () => {
   it('has one source for refusal texts, Kit names and rung triggers: world/factoryText.ts (follow-up b)', () => {
     expect(kitName).toBe(refusals.kitName);
     expect(rungTrigger).toBe(refusals.rungTrigger);
+    expect(kitsForUnits).toBe(refusals.kitsForUnits);
     const codes = ['E_LOCKED', 'E_YARD', 'E_OCCUPIED', 'E_SOLID', 'E_UNSEEN', 'E_FLOOR', 'E_LODE', 'E_HEAT', 'E_POD', 'E_COLUMN', 'E_ARENA', 'E_FUNDS', 'E_PARTS', 'E_STOCKPILE_FULL', 'E_LIMIT', 'E_INVALID'] as const;
     for (const code of codes) {
       const e = { ok: false as const, code, need: 1234, item: 'hullPlate', rung: 'U3' as const, y: 41 };
       expect(errText(e)).toBe(refusals.errText(e));
     }
-    // What build mode adds: whole Kits for metered units, the piece in hand, the undo wording.
-    expect(errText({ ok: false, code: 'E_KIT', need: 9, item: 'belt' })).toBe('Need 2 Belt Kit in cargo');
+    // Whole Kits for metered units come from the same source; build mode adds the piece in hand and the undo wording.
+    expect(errText({ ok: false, code: 'E_KIT', need: 9, item: 'belt' })).toBe('Need 2 Belt Kits in cargo');
+    expect(errText({ ok: false as const, code: 'E_KIT', need: 9, item: 'belt' })).toBe(refusals.errText({ ok: false, code: 'E_KIT', need: 9, item: 'belt' }));
     expect(errText({ ok: false, code: 'E_LIMIT' }, { kind: 'belt' })).toBe('Too many ghosts (256 max)');
     expect(errText({ ok: false, code: 'E_EMPTY' })).toBe('Nothing to undo');
   });
@@ -204,6 +214,7 @@ describe('copy (03 §6.2)', () => {
     expect(kitBill('belt', 16)).toBe('16 tiles = 2 Belt Kits');
     expect(kitBill('belt', 1)).toBe('1 tile = 1 Belt Kit');
     expect(kitBill('autoDrill', 1)).toBe('1 Auto-Drill Kit');
+    expect(kitBill('liftRail', 2)).toBe('2 Lift Rails');
     expect(undoText('Undid', 'Belt ×12', 60)).toBe('Undid: Belt ×12 (+$60)');
     expect(undoText('Redid', 'Smelter', -300)).toBe('Redid: Smelter (−$300)');
     expect(undoText('Undid', null, 0)).toBe('Undid: last step');
@@ -361,5 +372,68 @@ describe('tray tabs, no-op belt paths and the Bulldoze refund', () => {
     expect(yardBeltRefund([...cells, { x: 22, y: 3 }, { x: 30, y: 3 }], words, cash)).toEqual({ refund: 25, tiles: 4, crossings: 1 });
     words[5 * 48 + 22] = word(2, DIR.S);
     expect(yardBeltRefund(cells, words, cash).refund).toBe(32);
+  });
+});
+
+describe('review round 2: the lode tap, removals at a loss, the bubbles text (PLAYER-8, PLAYER-5, RENDER-4)', () => {
+  const lode: Lode = { id: 0, metal: 'copper', purity: 'normal', x0: 27, top: 46, scripted: true, scope: 'mvp', discovered: true };
+
+  it('a Drill tap anywhere on a discovered lode, or the rows its drill stands on, finds that lode (PLAYER-8)', () => {
+    const lodes = [lode, { ...lode, id: 1, x0: 5, discovered: false }];
+    // The middle of the 3×2 block: centring a 2×2 there lands 2 rows below the site, out of snapDrill's reach.
+    expect(snapDrill(footprintAt(28.5, 46.9, 2, 2), drillSites(lodes, () => true))).toBeNull();
+    for (const cell of [c(28, 46), c(27, 47), c(29, 47), c(29, 44), c(27, 45)]) expect(lodeUnder(cell, lodes, () => true)?.id).toBe(0);
+    for (const cell of [c(26, 46), c(30, 46), c(28, 43), c(28, 48), c(6, 46)]) expect(lodeUnder(cell, lodes, () => true)).toBeNull();
+    expect(lodeUnder(c(28, 46), lodes, (l) => l.scope === 'v1')).toBeNull(); // an Unknown seam takes no drill
+  });
+
+  it('picks the valid drill site, the survey plan’s first, else the nearer one (whose red ghost names the reason)', () => {
+    const all = () => true;
+    expect(lodeDrillSite(lode, 27.2, all)).toEqual(c(27, 44));
+    expect(lodeDrillSite(lode, 29.8, all)).toEqual(c(28, 44));
+    expect(lodeDrillSite(lode, 29.8, all, c(27, 44))).toEqual(c(27, 44)); // the survey plan's site wins
+    expect(lodeDrillSite(lode, 27.2, (s) => s.x === 28)).toEqual(c(28, 44)); // the only valid one
+    expect(lodeDrillSite(lode, 27.2, (s) => s.x === 28, c(27, 44))).toEqual(c(28, 44));
+    expect(lodeDrillSite(lode, 29.8, () => false)).toEqual(c(28, 44)); // none valid: the nearer
+    expect(lodeDrillSite(lode, 29.8, () => false, c(27, 44))).toEqual(c(27, 44));
+  });
+
+  it('prices a removal: Yard refunds in full, the rusted survey set refunds $0 and asks first (PLAYER-5)', () => {
+    const yard = { kind: 'headframe' as const, mk: 1, plane: 'yard' as const, rusted: false };
+    expect(removalPrice(yard)).toEqual({ refund: 200, rebuild: 200 });
+    expect(removalAsk(yard)).toBeNull();
+    expect(removalPrice({ ...yard, rusted: true })).toEqual({ refund: 0, rebuild: 200 });
+    expect(removalAsk({ ...yard, rusted: true })).toBe('Remove survey Headframe? Rebuilding costs $200');
+    expect(removalAsk({ ...yard, kind: 'smelter', rusted: true })).toBe('Remove survey Smelter? Rebuilding costs $300');
+    expect(removalAsk({ ...yard, kind: 'bin', rusted: true })).toBe('Remove survey Storage Bin? Rebuilding costs $250');
+    // Underground pieces hand their Kit back: nothing to ask.
+    expect(removalAsk({ kind: 'autoDrill', mk: 1, plane: 'mine', rusted: false })).toBeNull();
+  });
+
+  it('words the bubbles from the renderer’s glyph table, so text and 3D bubble never disagree (RENDER-4)', () => {
+    const ent = (id: number, kind: EntityView['kind'], status: EntityView['status'], x = 20, plane: EntityView['plane'] = 'yard'): EntityView =>
+      ({ id, kind, mk: 1, plane, x, y: 3, w: 2, h: 2, dir: DIR.S, status, recipe: null, progress: 0, rusted: false }) as EntityView;
+    const ents = [
+      ent(1, 'smelter', 'noOutput', 30), // nothing takes its output: the broken link, not "output full"
+      ent(2, 'smelter', 'idle', 21),
+      ent(3, 'bin', 'idle', 22), // storage idles by design: no bubble
+      ent(4, 'headframe', 'blocked', 24),
+      ent(5, 'assembler', 'noRecipe', 26),
+      ent(6, 'smelter', 'working', 20),
+      ent(7, 'smelter', 'idle', 20, 'mine'),
+    ];
+    const lines = bubbleLines(ents, 'yard', 21, 4);
+    expect(lines.map((l) => [l.id, BUBBLE_TEXT[l.glyph], BUBBLE_SAY[l.glyph]])).toEqual([
+      [2, '○', 'no input'],
+      [4, '▣', 'output full'],
+      [5, '?', 'no recipe'],
+      [1, '⛓', 'disconnected'],
+    ]);
+    for (const l of lines) {
+      const e = ents.find((k) => k.id === l.id)!;
+      expect(l.glyph).toBe(statusGlyph(e.kind, e.status));
+    }
+    expect(bubbleLines(ents, 'yard', 21, 4, 2).map((l) => l.id)).toEqual([2, 4]);
+    expect(Object.keys(BUBBLE_SAY).map(Number).sort()).toEqual(Object.values(BUBBLE_GLYPH).slice().sort());
   });
 });

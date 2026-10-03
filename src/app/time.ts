@@ -1,6 +1,7 @@
 // TimeController (04 §3.7; canon §4.5): a set of pause reasons. The pod runs only while the set is empty and
-// no resume countdown is pending; the factory runs under every reason (MVP sleeps only while hidden, which the
-// loop handles by not ticking). Pure: no DOM, driven by tick(dtMs).
+// no resume countdown is pending; the factory runs under every reason. Away is not a reason here: the MVP factory
+// sleeps while hidden or after 5 min visible without input (app/away.ts, World.setAway). Pure: no DOM, driven by
+// tick(dtMs).
 import { HARD_LANDING_V, TOUCH } from '../shared/canon';
 import type { Overlay } from './types';
 

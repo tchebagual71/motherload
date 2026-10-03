@@ -16,6 +16,7 @@ import {
   clampView,
   initialView,
   knownLodes,
+  worldPurityKnown,
   mapLayers,
   mapRows,
   paintMap,
@@ -79,7 +80,7 @@ class MapPainter {
       paintMap(w.terrain, w.scope, data.data);
       ctx.putImageData(data, 0, 0);
     }
-    this.lodes = w.terrain ? knownLodes(w.terrain.lodes, w.scope, w.story.deepestRow) : [];
+    this.lodes = w.terrain ? knownLodes(w.terrain.lodes, w.scope, w.story.deepestRow, worldPurityKnown(w)) : [];
   }
 
   get rows(): number {

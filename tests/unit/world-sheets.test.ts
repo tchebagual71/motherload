@@ -95,9 +95,9 @@ describe('Supply Shed (MVP)', () => {
     expect(titles).toEqual(['Belt Kit', 'Router Kit', 'Auto-Drill Kit', 'Lift Foot Kit', 'Lift Rail']);
     const router = dom.root.querySelectorAll('.hf-kit').find((c) => text(c).includes('Router Kit'))!;
     expect(text(router)).toContain('Unlocks: Produce an ingot');
-    await click('Buy a Belt Kit to the bay');
+    await click('Buy 1 Belt Kit to the bay');
     expect(toasts.at(-1)).toBe('1 Belt Kit to the bay');
-    await click('Buy a Lift Rail to the Stockpile');
+    await click('Buy 1 Lift Rail to the Stockpile');
     expect(world.factory!.stockpileCount('kit:liftRail')).toBe(1);
     const rail = () => dom.root.querySelectorAll('.hf-kit').find((c) => text(c).includes('Lift Rail'))!;
     expect(text(rail())).toContain('Bay 0 · Stock 1');

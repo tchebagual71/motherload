@@ -5,11 +5,12 @@ import { SCOPE } from '../config/scope';
 import { channel } from '../platform/channel';
 import { BootTracker } from '../save/bootTrack';
 import { decodeSaveCode, encodeSaveCode } from '../save/exportCode';
+import { headerUnloadable, unloadable, unloadableKind, type Unloadable } from '../save/legacy';
 import type { SaveSink } from '../save/scheduler';
 import { SaveStore, type CopyId, type SaveSummary, type WriteOutcome } from '../save/store';
 import { World } from '../world/world';
 import type { WorldApi } from '../world/api';
-import type { SafeModeHooks, SaveCodes, WorldFactory } from './controller';
+import type { KeptSaveHooks, SafeModeHooks, SaveCodes, WorldFactory } from './controller';
 import { damagedFallbackNotice, NOTICE, previousCopyNotice } from './notices';
 
 /**
@@ -129,6 +130,19 @@ export interface InitialWorld {
   safeModeCopy: CopyId | null;
   /** No stored save was found or consulted: a first standalone launch offers "Paste save" (canon §3.15). */
   noSave: boolean;
+  /**
+   * The newest kept copy this build cannot load (an M0 test save, a newer version; 04 §4.11), offered for export.
+   * `fresh`: it was refused (and moved out of the rotation) by this boot.
+   */
+  kept: KeptCopy | null;
+  /** A save that cannot load is still in the rotation (the move failed): this session must not write. */
+  readOnly: boolean;
+}
+
+export interface KeptCopy {
+  key: string;
+  kind: Unloadable;
+  fresh: boolean;
 }
 
 export async function loadInitialWorld(opened: OpenedStore, tracker: BootTracker, seedParam: number | null): Promise<InitialWorld> {
@@ -139,6 +153,8 @@ export async function loadInitialWorld(opened: OpenedStore, tracker: BootTracker
     notice,
     safeModeCopy,
     noSave,
+    kept: null,
+    readOnly: false,
   });
   if (seedParam !== null) return fresh(null, null, true);
   const store = opened.store;
@@ -146,26 +162,80 @@ export async function loadInitialWorld(opened: OpenedStore, tracker: BootTracker
 
   // The 04 §4.10 read path: the newest copy that verifies and decodes. The tracked copy is always the one about
   // to be decoded and booted, so a copy that keeps killing the boot (in its decode, or later) reaches Safe Mode
-  // on its own count, fallback copies included.
+  // on its own count, fallback copies included. A copy this build can never load (04 §4.11) is skipped like a
+  // damaged one, but kept: moved out of the rotation before anything is written, and offered for export.
+  const refused: CopyId[] = [];
+  const done = (r: InitialWorld): Promise<InitialWorld> => keepRefused(store, refused, r);
   const copies = await store.listCopies();
-  if (copies.length === 0) return fresh(null, null, true);
+  if (copies.length === 0) return done(fresh(null, null, true));
   for (let i = 0; i < copies.length; i++) {
     const info = copies[i];
     const verdict = i === 0 ? tracker.begin(store.slot, info.copy) : tracker.retarget(info.copy);
-    if (verdict.safeMode) return fresh(null, info.copy);
+    if (verdict.safeMode) return done(fresh(null, info.copy));
     const bytes = await store.readVerified(info.copy);
     if (!bytes) continue;
     let world: WorldApi;
     try {
       world = worlds.deserialize(bytes);
-    } catch {
-      continue; // Corrupt content behind a valid CRC: the next older copy.
+    } catch (e) {
+      // Corrupt content behind a valid CRC: the next older copy.
+      if (unloadable(e, bytes)) refused.push(info.copy);
+      continue;
     }
-    const notice = i > 0 ? { text: damagedFallbackNotice(copies[0].savedAt - info.savedAt), tone: 'warn' as const, aboutWorld: true } : null;
-    return { world, coldLoad: true, loaded: { copy: info.copy, seq: info.seq }, notice, safeModeCopy: null, noSave: false };
+    const notice = i > refused.length ? { text: damagedFallbackNotice(copies[0].savedAt - info.savedAt), tone: 'warn' as const, aboutWorld: true } : null;
+    // An older copy this build cannot load (an M0 save under a newer claim) is next in line for the rotation.
+    for (const older of copies.slice(i + 1)) {
+      const b = await store.readVerified(older.copy);
+      if (b && headerUnloadable(b)) refused.push(older.copy);
+    }
+    return done({ world, coldLoad: true, loaded: { copy: info.copy, seq: info.seq }, notice, safeModeCopy: null, noSave: false, kept: null, readOnly: false });
   }
   tracker.clear();
-  return fresh({ text: NOTICE.damagedNewClaim, tone: 'warn', aboutWorld: true });
+  // Only saves this build cannot load: not damaged, so a new claim without the "damaged" notice.
+  if (refused.length > 0 && refused.length === copies.length) return done(fresh());
+  return done(fresh({ text: NOTICE.damagedNewClaim, tone: 'warn', aboutWorld: true }));
+}
+
+/**
+ * 04 §4.11 "never overwritten": move the refused copies to kept keys, then describe the newest kept copy (this
+ * boot's, or one an earlier boot kept). A failed move leaves them in the rotation, so the session goes read-only.
+ */
+async function keepRefused(store: SaveStore, refused: readonly CopyId[], r: InitialWorld): Promise<InitialWorld> {
+  let moved = true;
+  try {
+    moved = await store.keep(refused);
+  } catch {
+    moved = false;
+  }
+  if (!moved) return { ...r, notice: { text: NOTICE.savesReadOnly, tone: 'warn', aboutWorld: false }, readOnly: true };
+  const kept = await newestKept(store, refused.length > 0);
+  if (!kept) return r;
+  // A save that loads still says how it loaded; otherwise the boot notice points at the kept copy's export.
+  const notice = r.notice ?? (kept.fresh ? { text: kept.kind === 'test' ? NOTICE.testSaveKept : NOTICE.newerSaveKept, tone: 'warn' as const, aboutWorld: false } : null);
+  return { ...r, kept, notice };
+}
+
+async function newestKept(store: SaveStore, fresh: boolean): Promise<KeptCopy | null> {
+  try {
+    const [newest] = await store.keptCopies();
+    if (!newest) return null;
+    const bytes = await store.readKept(newest.key);
+    return { key: newest.key, kind: bytes ? unloadableKind(bytes) : 'test', fresh };
+  } catch {
+    return null;
+  }
+}
+
+/** Export of the kept copy (04 §4.11 "with export"): the player keeps the file the build cannot load. */
+export function keptSaveHooks(store: SaveStore, kept: KeptCopy): KeptSaveHooks {
+  return {
+    kind: kept.kind,
+    fresh: kept.fresh,
+    exportCode: async () => {
+      const bytes = await store.readKept(kept.key);
+      return bytes ? encodeSaveCode(bytes) : null;
+    },
+  };
 }
 
 /**

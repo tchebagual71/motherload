@@ -297,10 +297,11 @@ export class FactoryState {
     if (n - left > 0) this.see(itemNum);
     return n - left;
   }
-  /** Take from Bins, lowest id first. Caller checked the count. */
-  stockRemove(itemNum: number, n: number): void {
+  /** Take from Bins, lowest id first (`skip`: not from that Bin). Caller checked the count. */
+  stockRemove(itemNum: number, n: number, skip = 0): void {
     let left = n;
     for (const b of this.bins(this.binScratch)) {
+      if (b.id === skip) continue;
       const k = invOf(b).remove(itemNum, left);
       if (k > 0) {
         this.stockTotals[itemNum] -= k;

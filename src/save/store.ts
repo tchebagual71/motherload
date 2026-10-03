@@ -6,6 +6,10 @@
 // corrupt write. Every record carries its own seq, CRC-32 and length, so "latest" is simply the highest seq that
 // verifies; the `slots` record mirrors {latest, seqA, seqB, lastGood, summary} for slot cards.
 //
+// A copy this build can never load (an M0 test save, a newer version; save/legacy.ts) is moved out of the rotation
+// to a kept key (`slot1/kept/…`) before anything is written, so it is never overwritten and can still be exported
+// (04 §4.11).
+//
 // Compression is recorded on the store record (deflated = deflate-raw of the whole file) rather than by
 // rewriting the HFSV header, so the store never depends on the codec's header layout.
 //
@@ -50,6 +54,14 @@ export interface CopyInfo {
   seq: number;
   savedAt: number;
   deflated: boolean;
+  len: number;
+}
+
+/** A kept copy (moved out of the rotation by keep()), by its store key. */
+export interface KeptInfo {
+  key: string;
+  seq: number;
+  savedAt: number;
   len: number;
 }
 
@@ -231,7 +243,65 @@ export class SaveStore {
     return { kind: 'damaged' };
   }
 
+  /** Kept copies, newest first. */
+  async keptCopies(): Promise<KeptInfo[]> {
+    const db = await this.ready();
+    if (!db) return [];
+    const all = await request(db.transaction(this.names.files, 'readonly').objectStore(this.names.files).getAllKeys());
+    const keys = all.map(String).filter((k) => k.startsWith(this.keptPrefix()));
+    const store = db.transaction(this.names.files, 'readonly').objectStore(this.names.files);
+    const values: unknown[] = await Promise.all(keys.map((k) => request(store.get(k))));
+    const out: KeptInfo[] = [];
+    values.forEach((v, i) => {
+      if (isRecord(v)) out.push({ key: keys[i], seq: v.seq, savedAt: v.savedAt, len: v.len });
+    });
+    return out.sort((x, y) => y.savedAt - x.savedAt || y.seq - x.seq);
+  }
+
+  /** A kept copy's uncompressed bytes if its length and CRC verify, else null. */
+  async readKept(key: string): Promise<Uint8Array | null> {
+    const db = await this.ready();
+    if (!db || !key.startsWith(this.keptPrefix())) return null;
+    const rec: unknown = await request(db.transaction(this.names.files, 'readonly').objectStore(this.names.files).get(key));
+    return isRecord(rec) ? verify(rec) : null;
+  }
+
   // ---------------------------------------------------------------- writing
+
+  /**
+   * Move copies this build cannot load out of the rotation to kept keys, in one transaction (04 §4.11: they are
+   * never overwritten). Call before the first write. False when the move did not commit: the copies are still in
+   * the rotation, so nothing may be written over them.
+   */
+  async keep(copies: readonly CopyId[]): Promise<boolean> {
+    if (copies.length === 0) return true;
+    const db = await this.ready();
+    if (!db) return false;
+    let tx: IDBTransaction;
+    try {
+      tx = db.transaction(this.names.files, 'readwrite');
+      const files = tx.objectStore(this.names.files);
+      for (const copy of copies) {
+        const get = files.get(this.key(copy));
+        // Put and delete from inside the success callback so the transaction is still active.
+        get.onsuccess = () => {
+          const rec: unknown = get.result;
+          if (!isRecord(rec)) return;
+          files.put(rec, `${this.keptPrefix()}${copy}-${rec.seq}-${rec.savedAt}`);
+          files.delete(this.key(copy));
+        };
+      }
+    } catch (e) {
+      if (classify(e).lost) this.lost(db);
+      return false;
+    }
+    if (!(await txDone(tx))) return false;
+    for (const copy of copies) {
+      if (copy === 'good') this.goodSeq = -1;
+      else this.copySeq[copy] = -1;
+    }
+    return true;
+  }
 
   /**
    * Critical path (canon §3.15): call inside the visibilitychange/pagehide/death handler. The CRC, the
@@ -334,6 +404,10 @@ export class SaveStore {
 
   private key(copy: CopyId): string {
     return `slot${this.slot}/${copy}`;
+  }
+
+  private keptPrefix(): string {
+    return `slot${this.slot}/kept/`;
   }
 
   private slotKey(): string {

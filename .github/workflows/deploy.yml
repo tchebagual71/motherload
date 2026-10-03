@@ -21,7 +21,7 @@ concurrency:
 
 env:
   NODE_VERSION: 22.22.0
-  HF_SCOPE: m0
+  HF_SCOPE: mvp # keep in step with ci.yml
   HF_BASE: /motherload/
   VITE_CHANNEL: prod
 

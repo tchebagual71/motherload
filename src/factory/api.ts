@@ -496,6 +496,18 @@ export interface FactoryApi {
   beltFlowAt(plane: Plane, x: number, y: number): number;
   /** Suggested onboarding jobs on the scripted lode (Place drill / Route to surface; 01 §2.5). */
   surveyPlan(): { drill: Cell; lift: { x: number; foot: number; top: number } };
+
+  // ---- appended (MVP review round 2) ----
+  /**
+   * Would `completeGhost(id, pod, cargo)` succeed now? The same checks, nothing changes (the pod's build ring
+   * re-checks a held refusal with it, e.g. E_POD until Pip steps out of the footprint).
+   */
+  canCompleteGhost(id: number, pod: PodBox, cargo: KitSource): Err | null;
+  /**
+   * Bumped whenever a command records an undo step (02 §2.7; not by undo / redo themselves). A command that
+   * returns ok without moving it changed nothing: a no-op stroke, the same recipe again. Session only, from 0.
+   */
+  readonly historyVersion: number;
 }
 
 export type { PartId, PartsLedger };

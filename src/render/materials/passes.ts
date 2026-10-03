@@ -314,7 +314,8 @@ void main() {
   float below = -above;
   vec3 ground = mix(mix(uDust, uGround, shape(smoothstep(0.0, 5.0, below))), uDeep, smoothstep(6.0, 18.0, below));
   c = mix(c, ground, inside(below));
-  outColor = vec4(c, 1.0);
+  // Encoded for the canvas in production Toon (direct); identity into the render targets.
+  outColor = linearToOutputTexel(vec4(c, 1.0));
 #ifdef PIXEL_LAB
   outNormal = vec4(0.5, 0.5, 1.0, 1.0);
 #endif

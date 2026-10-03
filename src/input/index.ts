@@ -301,7 +301,8 @@ export function createInput(opts: CreateInputOptions): InputController {
 
   const onUiClick = (e: MouseEvent): void => {
     const target = e.target;
-    if (swallow.take(e.timeStamp, (el) => target instanceof Element && el.contains(target))) {
+    // A button that removed itself (the radio's last ›) leaves the browser's click to land on whatever was under it.
+    if (swallow.take(e.timeStamp, (el) => !el.isConnected || (target instanceof Element && el.contains(target)))) {
       e.stopPropagation();
       e.preventDefault();
     }

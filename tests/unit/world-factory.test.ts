@@ -8,6 +8,7 @@ import type { GameEvent } from '../../src/shared/events';
 import { F, T, type CargoItem } from '../../src/shared/types';
 import { DIR, type FactoryApi, type GhostView, type KitSource } from '../../src/factory/api';
 import type { PodState } from '../../src/pod/types';
+import { errText, ghostRefusalText, kitCount, kitsForUnits } from '../../src/world/factoryText';
 import { GhostBuilder } from '../../src/world/ghostJob';
 import { World } from '../../src/world/world';
 
@@ -223,24 +224,98 @@ describe('ghost completion from the pod (02 §2.6)', () => {
     expect(kits(w)).toEqual([{ kind: 'kit', id: 'belt', units: 1 }]);
   });
 
-  it('E_POD: refused with nothing consumed, toasted once, the timer restarts; leaving the footprint builds it', () => {
+  it('E_POD: refused with nothing consumed, toasted once, the ring holds (no loop); leaving the footprint builds it', () => {
     const w = newWorld();
     const f = w.factory!;
     const site = drillSite(w);
     const ghost = f.placeGhost({ kind: 'autoDrill', ...site });
     expect(ghost.ok).toBe(true);
+    const id = (ghost as { ids: number[] }).ids[0];
     w.pod.cargo.push({ kind: 'kit', id: 'autoDrill' });
     standAt(w, site.x, site.y + 1); // inside the 2×2
-    const ev = run(w, 200);
+    const ev = run(w, 59);
+    expect(w.ghostProgress()).toEqual({ id, progress: 59 / 60, blocked: null });
+    ev.push(...run(w, 1)); // the 60th step: refused
+    expect(w.ghostProgress()).toEqual({ id, progress: 0, blocked: 'E_POD' });
+    // PLAYER-6: the ring holds at 0 with the reason instead of counting to 60 and failing again, over and over.
+    const spy = vi.spyOn(f, 'completeGhost');
+    for (let i = 0; i < 300; i++) {
+      ev.push(...run(w, 1));
+      expect(w.ghostProgress()).toEqual({ id, progress: 0, blocked: 'E_POD' });
+    }
+    expect(spy).not.toHaveBeenCalled();
     const toasts = ev.filter((e) => e.t === 'toast');
     expect(toasts).toEqual([{ t: 'toast', text: 'Pip is in the way', tone: 'warn' }]);
     expect(f.ghosts()).toHaveLength(1);
     expect(kits(w)).toEqual([{ kind: 'kit', id: 'autoDrill' }]);
-    expect(w.ghostProgress()!.progress).toBeLessThan(1);
-    standAt(w, w.meta.surveyColumn, site.y + 1); // beside it, in Dot's shaft
-    const done = run(w, 60);
+    standAt(w, w.meta.surveyColumn, site.y + 1); // beside it, in Dot's shaft: the count resumes at once
+    run(w, 1);
+    expect(w.ghostProgress()).toEqual({ id, progress: 1 / 60, blocked: null });
+    const done = run(w, 59);
     expect(done).toContainEqual({ t: 'ghost-complete', kind: 'autoDrill' });
     expect(kits(w)).toEqual([]);
+    expect(w.ghostProgress()).toBeNull();
+  });
+
+  it('a held refusal is re-checked every 30 steps: a pod nudged clear within its cell resumes without a cell change', () => {
+    const w = newWorld();
+    const f = w.factory!;
+    const site = drillSite(w);
+    const id = (f.placeGhost({ kind: 'autoDrill', ...site }) as { ids: number[] }).ids[0];
+    w.pod.cargo.push({ kind: 'kit', id: 'autoDrill' });
+    // Centred in the shaft column beside the footprint but nudged right: the box straddles into the drill's column.
+    const c = w.meta.surveyColumn;
+    expect(c).toBe(site.x - 1);
+    const nudge = (dx: number): void => {
+      standAt(w, c, site.y + 1);
+      w.pod.x = w.pod.prevX = c + 0.5 + dx;
+    };
+    nudge(0.3);
+    run(w, 60);
+    expect(w.ghostProgress()).toEqual({ id, progress: 0, blocked: 'E_POD' });
+    nudge(0); // the same cell, now clear of the footprint
+    const spy = vi.spyOn(f, 'canCompleteGhost');
+    let resumed = 0;
+    for (let i = 1; i <= 40 && !resumed; i++) {
+      run(w, 1);
+      if (w.ghostProgress()?.blocked === null) resumed = i;
+    }
+    expect(resumed).toBeGreaterThan(1); // not re-checked on every step …
+    expect(resumed).toBeLessThanOrEqual(30); // … but within GHOST_RECHECK_STEPS
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(run(w, 59)).toContainEqual({ t: 'ghost-complete', kind: 'autoDrill' });
+  });
+
+  it('a held job yields to a newer job in reach that can go, and a structure change re-checks it at once', () => {
+    const w = newWorld();
+    const f = w.factory!;
+    f.discoverLode(w.meta.scriptedLodeId, true);
+    const c = w.meta.surveyColumn;
+    for (let r = 0; r <= 45; r++) w.terrain.flags[w.terrain.idx(c, r)] |= F.SEEN;
+    const ids = (f.placeGhost({ kind: 'lift', x: c, foot: 45, top: 0 }) as { ids: number[] }).ids;
+    const [foot, rail] = ids;
+    w.pod.cargo.push({ kind: 'kit', id: 'liftRail' });
+    const ev: GameEvent[] = [];
+    const stay = (n: number): void => {
+      for (let i = 0; i < n; i++) {
+        standAt(w, c, 13); // beside the rail (rows 0–13) and the foot's top (row 14)
+        ev.push(...run(w, 1));
+      }
+    };
+    stay(60);
+    expect(w.ghostProgress()).toEqual({ id: rail, progress: 0, blocked: 'E_COLUMN' });
+    stay(100);
+    expect(w.ghostProgress()).toEqual({ id: rail, progress: 0, blocked: 'E_COLUMN' });
+    w.pod.cargo.push({ kind: 'kit', id: 'liftFoot' });
+    stay(1);
+    expect(w.ghostProgress()).toEqual({ id: foot, progress: 1 / 60, blocked: null });
+    stay(59); // the foot is built: the rail's cause cleared, it goes on the very next step
+    expect(ev.filter((e) => e.t === 'ghost-complete')).toHaveLength(1);
+    stay(1);
+    expect(w.ghostProgress()).toEqual({ id: rail, progress: 1 / 60, blocked: null });
+    stay(59);
+    expect(ev.filter((e) => e.t === 'ghost-complete')).toHaveLength(2);
+    expect(ev.filter((e) => e.t === 'toast')).toEqual([{ t: 'toast', text: 'Build the lift below first', tone: 'warn' }]);
   });
 
   it('a dig under a planned belt drops that job, so newer jobs in reach still build (tileChanged re-checks support)', () => {
@@ -332,13 +407,17 @@ describe('ghost completion from the pod (02 §2.6)', () => {
 describe('GhostBuilder: one job that cannot complete never holds up the rest (02 §2.6)', () => {
   const view = (id: number, x: number): GhostView => ({ id, order: id, kind: 'belt', mk: 1, x, y: 10, w: 1, h: 1, dir: 0, part: null, kit: 'belt', kitUnits: 1 });
 
-  it('a refused job yields to the next oldest in reach; alone, it is retried; each refusal toasts once', () => {
+  it('a refused job yields to the next oldest in reach; alone, the ring holds on it; each refusal toasts once', () => {
     let jobs = [view(1, 16), view(2, 18)];
     const fake = {
       topologyVersion: 0,
       ghosts: () => jobs,
+      canCompleteGhost(id: number) {
+        return id === 1 ? { ok: false, code: 'E_FLOOR', x: 16, y: 10 } : null;
+      },
       completeGhost(id: number) {
-        if (id === 1) return { ok: false, code: 'E_FLOOR', x: 16, y: 10 };
+        const err = this.canCompleteGhost(id);
+        if (err) return err;
         jobs = jobs.filter((j) => j.id !== id);
         this.topologyVersion++;
         return { ok: true, id: 0 };
@@ -356,7 +435,56 @@ describe('GhostBuilder: one job that cannot complete never holds up the rest (02
     }
     expect(done).toEqual([2]); // job 2 built 60 steps after job 1's refusal
     expect(toasts).toEqual(['Needs a floor']);
-    expect(b.progress()?.id).toBe(1); // alone in reach, job 1 keeps being retried
+    // Alone in reach, job 1 is re-checked (job 2's completion changed the structure) and the ring holds on it.
+    expect(b.progress()).toEqual({ id: 1, progress: 0, blocked: 'E_FLOOR' });
+    // Its cause clears: the next re-check (≤ 30 steps) lets it go, oldest first.
+    fake.canCompleteGhost = () => null;
+    for (let i = 0; i < 30 + 60 && done.length < 2; i++) {
+      const r = b.step(f, pod, cargo, () => {});
+      if (r.done) done.push(r.job.id);
+    }
+    expect(done).toEqual([2, 1]);
+    expect(b.progress()).toBeNull();
+  });
+
+  it('a pod that leaves reach drops the hold; coming back re-checks at once and says why again', () => {
+    const jobs = [view(1, 16)];
+    const fake = { topologyVersion: 0, ghosts: () => jobs, canCompleteGhost: () => ({ ok: false, code: 'E_FLOOR' }), completeGhost: () => ({ ok: false, code: 'E_FLOOR' }) };
+    const f = fake as unknown as FactoryApi;
+    const near = { x: 17.5, y: -10.5 } as PodState;
+    const far = { x: 30.5, y: -10.5 } as PodState;
+    const cargo: KitSource = { count: () => 8, take: () => {} };
+    const toasts: string[] = [];
+    const emit = (e: GameEvent): void => {
+      if (e.t === 'toast') toasts.push(e.text);
+    };
+    const b = new GhostBuilder();
+    for (let i = 0; i < 60; i++) b.step(f, near, cargo, emit);
+    expect(b.progress()).toEqual({ id: 1, progress: 0, blocked: 'E_FLOOR' });
+    b.step(f, far, cargo, emit);
+    expect(b.progress()).toBeNull();
+    b.step(f, near, cargo, emit);
+    expect(b.progress()).toEqual({ id: 1, progress: 0, blocked: 'E_FLOOR' });
+    expect(toasts).toEqual(['Needs a floor', 'Needs a floor']);
+  });
+});
+
+describe('refusal text (03 §6.2)', () => {
+  it('E_KIT names whole Kits: the factory counts metered units short, the player carries Kits (9 belt tiles → 2 Belt Kits)', () => {
+    expect(errText({ ok: false, code: 'E_KIT', need: 9, item: 'belt' })).toBe('Need 2 Belt Kits in cargo');
+    expect(errText({ ok: false, code: 'E_KIT', need: 3, item: 'belt' })).toBe('Need 1 Belt Kit in cargo');
+    expect(errText({ ok: false, code: 'E_KIT', need: 1, item: 'autoDrill' })).toBe('Need 1 Auto-Drill Kit in cargo');
+    expect(errText({ ok: false, code: 'E_KIT', need: 2, item: 'liftRail' })).toBe('Need 2 Lift Rails in cargo');
+    expect(errText({ ok: false, code: 'E_KIT', need: 2, item: 'autoDrill2' })).toBe('Need 2 Auto-Drill Kits Mk II in cargo');
+    // The pod's ghost refusals word it the same way.
+    expect(ghostRefusalText({ part: null, y: 10, h: 1 }, { ok: false, code: 'E_KIT', need: 17, item: 'belt' })).toBe('Need 3 Belt Kits in cargo');
+    for (const item of ['belt', 'router', 'autoDrill', 'liftFoot', 'liftRail']) {
+      expect(errText({ ok: false, code: 'E_KIT', need: 99_999, item }).length).toBeLessThanOrEqual(40);
+    }
+    expect(errText({ ok: false, code: 'E_KIT', need: 1, item: 'autoDrill3' }).length).toBeLessThanOrEqual(40); // v1: one per job
+    expect(kitsForUnits('belt', 16)).toBe(2);
+    expect(kitsForUnits('router', 2)).toBe(2);
+    expect(kitCount('belt', 1_000)).toBe('1,000 Belt Kits');
   });
 });
 

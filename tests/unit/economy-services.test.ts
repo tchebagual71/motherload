@@ -15,6 +15,7 @@ import {
   fuelQuote,
   garageCards,
   grantCoopCredit,
+  litres,
   repairAll,
   repairQuote,
   salvage,
@@ -55,6 +56,16 @@ describe('format', () => {
     expect(dollars(3_887_750)).toBe('$3,887,750');
     expect(dollars(-300)).toBe('-$300');
   });
+
+  it('litres round DOWN to 0.1 L like the gauge, whole amounts without ".0" (03 §6.1)', () => {
+    expect(litres(4)).toBe('4 L');
+    expect(litres(4.67)).toBe('4.6 L');
+    expect(litres(3.27)).toBe('3.2 L');
+    expect(litres(4.6)).toBe('4.6 L'); // float residue (4.6 × 10 = 45.99…) does not drop a tenth
+    expect(litres(0.04)).toBe('0 L');
+    expect(litres(-1)).toBe('0 L');
+    expect(litres(1_250)).toBe('1,250 L');
+  });
 });
 
 describe('Pump House (canon §3.8: $1/L)', () => {
@@ -80,6 +91,18 @@ describe('Pump House (canon §3.8: $1/L)', () => {
     const q = fuelQuote(c, 'fill');
     expect(q.amount).toBeCloseTo(3.27, 9);
     expect(q.cost).toBe(4);
+  });
+
+  it('the receipt names the quoted litres rounded down, as the sheet shows them (PLAYER-11: "Fill 4.6 L", not 4.7)', () => {
+    const c = makeCtx('m0', 100);
+    c.pod.fuel = 10 - 4.67;
+    expect(litres(fuelQuote(c, 'fill').amount)).toBe('4.6 L');
+    expect(buyFuel(c, 'fill')).toMatchObject({ ok: true, message: 'Filled up: 4.6 L for $5' });
+    const d = makeCtx('m0', 100);
+    d.pod.fuel = 2.25;
+    expect(buyFuel(d, 5)).toMatchObject({ ok: true, message: 'Bought 5 L for $5' });
+    d.pod.fuel = 10 - 0.37; // 0.37 L of room
+    expect(buyFuel(d, 'fill')).toMatchObject({ ok: true, message: 'Filled up: 0.3 L for $1' });
   });
 
   it('Fill buys what cash allows', () => {

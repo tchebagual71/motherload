@@ -10,6 +10,7 @@ import { copyTextLater, pasteText } from '../clipboard';
 import { isIOS } from '../env';
 import { checkExportCode } from '../format';
 import { Icon } from '../icons';
+import { KeptSaveCard } from '../KeptSave';
 import { Button } from '../widgets';
 import { UpdateChip } from './UpdateChip';
 
@@ -20,6 +21,8 @@ function hasProgress(app: AppController): boolean {
 
 export function TitleScreen({ app }: { app: AppController }): JSX.Element {
   const install = app.state.canInstall.value && !app.state.standalone.value;
+  // 04 §4.11: the stored save could not load (M0 test save, newer version); it is kept, and its code is offered here.
+  const kept = app.state.keptSave.value;
   // Kept for the title's lifetime once offered, so a successful import can say so (the offer itself ends there).
   const [offerPaste, setOfferPaste] = useState(() => app.state.importOffer.peek() && app.state.standalone.peek());
   // An import replaces app.world, which is not a signal: re-render so "Play" becomes "Continue".
@@ -65,6 +68,7 @@ export function TitleScreen({ app }: { app: AppController }): JSX.Element {
           </h1>
           <p class="hf-tagline">Dig deep. Haul it up. Build the factory.</p>
         </div>
+        {kept?.fresh && <KeptSaveCard app={app} kind={kept.kind} />}
         {offerPaste && <PasteSave app={app} onImported={() => setImports((n) => n + 1)} onSkip={() => setOfferPaste(false)} />}
         {install && (
           <div class="hf-install">

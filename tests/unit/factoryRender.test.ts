@@ -1,5 +1,5 @@
 import { performance } from 'node:perf_hooks';
-import { BackSide, InstancedMesh, ShaderLib, type BufferAttribute, type InstancedBufferAttribute, type Material, type WebGLProgramParametersWithUniforms, type WebGLRenderer } from 'three';
+import { BackSide, Color, InstancedMesh, SRGBColorSpace, ShaderLib, type BufferAttribute, type InstancedBufferAttribute, type Material, type WebGLProgramParametersWithUniforms, type WebGLRenderer } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 import { benchWorld } from '../../src/debug/bench';
 import { NO_INTENT } from '../../src/pod/types';
@@ -9,14 +9,14 @@ import type { BuildingKind, FactoryApi, ViewRect } from '../../src/factory/api';
 import { MaterialKit } from '../../src/render/materials';
 import { PART_FLAG } from '../../src/render/materials/glsl';
 import { createShadedMaterial } from '../../src/render/materials/look';
-import { ORES } from '../../src/render/palette';
+import { ORES, ROLE } from '../../src/render/palette';
 import { SHAPE_CORNER, SHAPE_JUNCTION, SHAPE_STRAIGHT, beltTiles, pathTiles } from '../../src/render/factory/belts';
 import { buildItemTable, itemLook } from '../../src/render/factory/itemLooks';
 import * as Models from '../../src/render/factory/models';
-import { BUBBLE_GLYPH, GHOST_STYLE, createGlyphAtlas } from '../../src/render/factory/overlayMaterials';
+import { BUBBLE_GLYPH, GHOST_HATCH_PT, GHOST_STYLE, INVALID_HEX, createGlyphAtlas } from '../../src/render/factory/overlayMaterials';
 import { buildPose, newPose, planeViewRect, screenRay } from '../../src/render/factory/projection';
 import { BUBBLE_TEXT, statusGlyph } from '../../src/render/factory/status';
-import { BUBBLE_PT, FactoryView, REGION, dirAngle, regionKey, type FactoryFrame } from '../../src/render/factory/view';
+import { BUBBLE_PT, FactoryView, REGION, dirAngle, ghostHatchPx, regionKey, type FactoryFrame } from '../../src/render/factory/view';
 import { INST_HIDDEN } from '../../src/render/materials/glsl';
 import type { BuildFrame } from '../../src/render/api';
 import { ONBOARD, POD_AWAY, Cargo, buildOnboarding, carve, rig, ticks } from './factory.helpers';
@@ -255,6 +255,87 @@ describe('factory render: structure from the views (04 §3.3, §5.3)', () => {
     expect(count(view, 'factory-cell-highlight')).toBe(0);
     // The fresh survey Smelter has nothing to smelt: a "no input" bubble.
     expect(count(view, 'factory-bubbles')).toBeGreaterThanOrEqual(1);
+  });
+
+  it('shows the armed tool’s placement highlight before the first tap (BUILD-9)', () => {
+    const r = onboarded();
+    const { f, grid } = r;
+    carve(grid, ONBOARD.x0 + 2, ONBOARD.top - 1, ONBOARD.x0 + 4, ONBOARD.top - 1);
+    const view = new FactoryView(new MaterialKit(), 'toon');
+    const mineRect: ViewRect = { plane: 'mine', x0: 15, y0: 40, x1: 30, y1: 50 };
+    // A card armed, nothing tapped yet: no cursor, no preview, only the pinned BuildFrame.tool.
+    const armed: BuildFrame = { plane: 'mine', cursor: null, preview: null, bulldoze: false, selectedId: null, tool: 'belt' };
+    view.update(frame(f, { build: armed, mineRect }));
+    expect(count(view, 'factory-cell-highlight')).toBe(3);
+    // The first tap's preview names the same tool: the same cells.
+    view.update(frame(f, { build: { ...armed, preview: { kind: 'belt', mk: 1, x: ONBOARD.x0 + 2, y: ONBOARD.top - 1, w: 1, h: 1, dir: 0, valid: true } }, mineRect }));
+    expect(count(view, 'factory-cell-highlight')).toBe(3);
+    // Disarmed (no tool), Bulldoze (tool null, bulldoze on) or the Yard: nothing to place, no highlight.
+    for (const b of [{ ...armed, tool: null }, { ...armed, tool: null, bulldoze: true }, { ...armed, plane: 'yard' as const }]) {
+      view.update(frame(f, { build: b, mineRect }));
+      expect(count(view, 'factory-cell-highlight')).toBe(0);
+    }
+    // Arming the Auto-Drill marks the discovered lode's drill footprints (the survey drill already holds the lode).
+    view.update(frame(f, { build: { ...armed, tool: 'autoDrill' }, mineRect }));
+    expect(count(view, 'factory-cell-highlight') % 4).toBe(0);
+  });
+
+  it('tints a valid Smelter ghost coral and an invalid one magenta-crimson, striped, never by hue alone (BUILD-10)', () => {
+    // sRGB hue (degrees) of a palette colour, and the circular distance between two.
+    const hue = (hex: number): number => new Color(hex).getHSL({ h: 0, s: 0, l: 0 }, SRGBColorSpace).h * 360;
+    const apart = (a: number, b: number): number => {
+      const d = Math.abs(hue(a) - hue(b)) % 360;
+      return Math.min(d, 360 - d);
+    };
+    // No ghost role tint sits within 30° of the invalid hue (the old #FF4D5E was 10° from Processing coral).
+    for (const role of ['logistics', 'extraction', 'processing', 'furnace', 'assembly', 'power', 'storage', 'support'] as const) {
+      expect(apart(INVALID_HEX, ROLE[role]), role).toBeGreaterThanOrEqual(30);
+    }
+    expect(apart(0xff4d5e, ROLE.processing)).toBeLessThan(30);
+    const { f } = onboarded();
+    const view = new FactoryView(new MaterialKit(), 'toon');
+    const tint = (): number[] => Array.from((mesh(view, 'factory-ghost-smelter').instanceColor?.array as Float32Array).slice(0, 3));
+    const style = (): number => (mesh(view, 'factory-ghost-smelter').geometry.getAttribute('hfGhost') as BufferAttribute).getY(0);
+    const preview = { kind: 'smelter' as const, mk: 1, x: 2, y: 2, w: 2, h: 2, dir: 0 as const, valid: true };
+    const build: BuildFrame = { plane: 'yard', cursor: { x: 2, y: 2 }, preview, bulldoze: false, selectedId: null };
+    view.update(frame(f, { build }));
+    const coral = new Color(ROLE.processing);
+    expect(tint()).toEqual([coral.r, coral.g, coral.b].map((v) => Math.fround(v)));
+    expect(style()).toBe(GHOST_STYLE.VALID);
+    view.update(frame(f, { build: { ...build, preview: { ...preview, valid: false } } }));
+    const bad = new Color(INVALID_HEX);
+    expect(tint()).toEqual([bad.r, bad.g, bad.b].map((v) => Math.fround(v)));
+    expect(style()).toBe(GHOST_STYLE.INVALID);
+    // The invalid style is striped with ink at a CSS-sized period: 8 pt × the Toon DPR, whole texels in Pixel Lab.
+    const body = mesh(view, 'factory-ghost-smelter').material as unknown as { fragmentShader: string; uniforms: Record<string, { value: number }> };
+    expect(body.fragmentShader).toContain('/ uHatch');
+    view.setGhostEdge(3, 750, 1334, 2);
+    expect(body.uniforms.uHatch.value).toBe(GHOST_HATCH_PT * 2);
+    view.setLook('pixel');
+    view.setGhostEdge(1, 190, 336, 1.3);
+    expect(body.uniforms.uHatch.value).toBe(10);
+    expect(ghostHatchPx(0.2, true)).toBe(4);
+  });
+
+  it('draws the job the pod is held on stalled, striped in its role tint, not pulsing as built (PLAYER-6)', () => {
+    const r = onboarded();
+    const { f, grid } = r;
+    carve(grid, ONBOARD.x0 + 2, ONBOARD.top - 1, ONBOARD.x0 + 8, ONBOARD.top - 1);
+    f.tileChanged([]);
+    const job = f.placeGhost({ kind: 'belt', x: ONBOARD.x0 + 3, y: ONBOARD.top - 1, dir: 0, length: 3 });
+    const id = (job as { ids: number[] }).ids[0];
+    const view = new FactoryView(new MaterialKit(), 'toon');
+    const style = (): number => (mesh(view, 'factory-ghost-belt').geometry.getAttribute('hfGhost') as BufferAttribute).getY(0);
+    view.update(frame(f, { ghostProgress: { id, progress: 0.5, blocked: null } }));
+    expect(style()).toBe(GHOST_STYLE.ACTIVE);
+    view.update(frame(f, { ghostProgress: { id, progress: 0, blocked: 'E_POD' } }));
+    expect(style()).toBe(GHOST_STYLE.INVALID);
+    const c = Array.from((mesh(view, 'factory-ghost-belt').instanceColor?.array as Float32Array).slice(0, 3));
+    const logistics = new Color(ROLE.logistics);
+    expect(c).toEqual([logistics.r, logistics.g, logistics.b].map((v) => Math.fround(v)));
+    // The refusal clears (Pip stepped out): the count resumes and the job pulses again.
+    view.update(frame(f, { ghostProgress: { id, progress: 1 / 60, blocked: null } }));
+    expect(style()).toBe(GHOST_STYLE.ACTIVE);
   });
 
   it('marks jam heads under the Logistics overlay once they stay stopped (03 §4.10)', () => {

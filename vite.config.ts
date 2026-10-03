@@ -91,10 +91,21 @@ export default defineConfig({
     chunkSizeWarningLimit: 900,
     rolldownOptions: {
       input: { main: 'index.html', jetsamPage: 'jetsam.html', benchPage: 'bench.html' },
+      output: {
+        // The chunk the game shares with bench.html (three.js, the World sim and the renderer) would be named after
+        // whichever module rolldown picks ('types-*.js'): call it 'core'. Only the file name changes, never what is
+        // in a chunk or which chunks index.html preloads (scripts/check-size.mjs measures that set).
+        chunkFileNames: (chunk) =>
+          !chunk.isDynamicEntry && chunk.moduleIds.some((id) => /[\\/]node_modules[\\/]three[\\/]/.test(id))
+            ? 'assets/core-[hash].js'
+            : 'assets/[name]-[hash].js',
+      },
     },
   },
   test: {
     include: ['tests/unit/**/*.test.ts', 'src/**/*.test.ts'],
+    // In-source tests (`if (import.meta.vitest)`) of the build scripts, which also run directly under Node.
+    includeSource: ['scripts/check-size.mjs'],
     environment: 'node',
   },
 });

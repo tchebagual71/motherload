@@ -22,6 +22,7 @@ import {
   initialView,
   isPinged,
   knownLodes,
+  worldPurityKnown,
   mapLayers,
   mapRows,
   paintMap,
@@ -116,10 +117,13 @@ describe('map image (03 §6.6)', () => {
   });
 });
 
+/** Every lode's purity known (a Dowser scan at discovery). */
+const ALL_KNOWN = (): boolean => true;
+
 describe('known lodes and pings (canon §3.2)', () => {
   it('lists discovered lodes with metal, purity letter and depth, and hides undiscovered ones', () => {
     const lodes = [lode({ id: 1, discovered: true, purity: 'rich', metal: 'gold', top: 148 }), lode({ id: 2 })];
-    const known = knownLodes(lodes, 'mvp', 0);
+    const known = knownLodes(lodes, 'mvp', 0, ALL_KNOWN);
     expect(known.map((l) => l.id)).toEqual([1]);
     expect(known[0]).toMatchObject({ letter: 'R', colour: ORES[3].base, title: 'Gold lode', pinged: false, cr: 149 });
     expect(known[0].detail).toBe(`Rich purity · ${feetText(148)}`);
@@ -127,11 +131,11 @@ describe('known lodes and pings (canon §3.2)', () => {
 
   it("shows Dot's survey ping as '?' once the pod passes the ping row, until the lode is found", () => {
     const survey = lode({ id: 3, scripted: true, top: 46 });
-    expect(knownLodes([survey], 'mvp', SURVEY_PING_ROW - 1)).toEqual([]);
-    const [p] = knownLodes([survey], 'mvp', SURVEY_PING_ROW);
+    expect(knownLodes([survey], 'mvp', SURVEY_PING_ROW - 1, ALL_KNOWN)).toEqual([]);
+    const [p] = knownLodes([survey], 'mvp', SURVEY_PING_ROW, ALL_KNOWN);
     expect(p).toMatchObject({ letter: '?', pinged: true, colour: null, title: 'Survey ping' });
     survey.discovered = true;
-    expect(knownLodes([survey], 'mvp', 400)[0]).toMatchObject({ letter: 'N', pinged: false });
+    expect(knownLodes([survey], 'mvp', 400, ALL_KNOWN)[0]).toMatchObject({ letter: 'N', pinged: false });
     const iridium = lode({ metal: 'iridium', purity: 'poor', top: 197 });
     expect(isPinged(iridium, IRIDIUM_PING_ROW - 1)).toBe(false);
     expect(isPinged(iridium, IRIDIUM_PING_ROW)).toBe(true);
@@ -140,8 +144,25 @@ describe('known lodes and pings (canon §3.2)', () => {
 
   it('never lists Unknown seams before v1 or lodes below the scope floor', () => {
     const lodes = [lode({ id: 4, metal: 'kerogen', scope: 'v1', discovered: true }), lode({ id: 5, discovered: true, top: MVP_SEAL_ROW + 10 })];
-    expect(knownLodes(lodes, 'mvp', 600)).toEqual([]);
-    expect(knownLodes(lodes, 'v1', 600).map((l) => l.id)).toEqual([4, 5]);
+    expect(knownLodes(lodes, 'mvp', 600, ALL_KNOWN)).toEqual([]);
+    expect(knownLodes(lodes, 'v1', 600, ALL_KNOWN).map((l) => l.id)).toEqual([4, 5]);
+  });
+
+  it("a discovered lode keeps '?' and \"Purity unknown\" until the factory knows its purity (02 §3.6; SIM-8)", () => {
+    const gold = lode({ id: 6, discovered: true, purity: 'rich', metal: 'gold', top: 148 });
+    const known = new Set<number>();
+    const [l] = knownLodes([gold], 'mvp', 0, (id) => known.has(id));
+    // The metal shows (its colour and name), the purity does not.
+    expect(l).toMatchObject({ letter: '?', colour: ORES[3].base, title: 'Gold lode', detail: `Purity unknown · ${feetText(148)}` });
+    known.add(6); // the first drilled ore, or a Dowser scan in range
+    expect(knownLodes([gold], 'mvp', 0, (id) => known.has(id))[0]).toMatchObject({ letter: 'R', detail: `Rich purity · ${feetText(148)}` });
+  });
+
+  it('reads purity from the hosted factory; a world without one knows none', () => {
+    const factory = { purityKnown: (id: number) => id === 1 };
+    expect(worldPurityKnown({ factory })(1)).toBe(true);
+    expect(worldPurityKnown({ factory })(2)).toBe(false);
+    expect(worldPurityKnown({ factory: null })(1)).toBe(false);
   });
 });
 

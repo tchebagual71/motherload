@@ -100,7 +100,7 @@ export function drawLoupe(g: CanvasRenderingContext2D, cells: readonly LoupeCell
     if (cell.belt >= 0) drawArrow(g, x, y, s, cell.belt, plane);
     if (cell.preview !== 0) {
       g.globalAlpha = cell.preview > 0 ? 0.5 : 0.45;
-      g.fillStyle = cell.preview > 0 ? '#F6C343' : '#FF4D5E';
+      g.fillStyle = cell.preview > 0 ? '#F6C343' : '#E0249A';
       g.fillRect(x, y, s, s);
       g.globalAlpha = 1;
       if (cell.preview < 0) hatch(g, x, y, s);

@@ -636,8 +636,7 @@ export class World implements WorldApi {
     return { ok: true, message: `Yard expanded to 48 × ${r.rows}`, amount: r.rows };
   }
   ghostProgress(): { id: number; progress: number; blocked: ErrCode | null } | null {
-    const p = this.factory ? this.ghosts.progress() : null;
-    return p ? { ...p, blocked: null } : null;
+    return this.factory ? this.ghosts.progress() : null;
   }
 
   /** The bay takes refunds only when the pod is alive and within 2 tiles of the piece (02 §2.7). */

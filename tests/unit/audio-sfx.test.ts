@@ -43,7 +43,9 @@ describe('GameEvent → SFX (03 §11.4)', () => {
     [{ t: 'lode-pinged', lodeId: 2 }, 'discover'],
     [{ t: 'milestone', id: 'm1', title: 'First haul' }, 'fanfare'],
     [{ t: 'unlock', rung: 'U1', label: 'Smelter' }, 'fanfare'],
-    [{ t: 'starter-kit' }, 'purchase'],
+    // INT-2: 'starter-kit' is the OFFER (the lode was found: 'lode-discovered' rings), the claim is the purchase.
+    [{ t: 'starter-kit' }, null],
+    [{ t: 'purchase', kind: 'kit', amount: 0, kit: 'starter' }, 'purchase'],
     [{ t: 'purchase', kind: 'repair', amount: 40 }, 'use'],
     [{ t: 'consumable-used', id: 'patchKit' }, 'use'],
     [{ t: 'coop-credit', liters: 5 }, 'pump'],

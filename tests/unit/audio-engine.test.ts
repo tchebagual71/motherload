@@ -188,7 +188,7 @@ describe('SFX routing', () => {
           { t: 'dug', x: 1, r: 1, code: 1 },
         ];
         h.engine.handleEvents(events, 1);
-        if (k % 30 === 0) h.engine.handleEvents([{ t: 'radio', sender: 'Dot', beat: 'b', cards: ['Steady now, Pip. Mind the clay.'] }], 1);
+        if (k % 30 === 0) h.engine.speak('Dot', 'Steady now, Pip. Mind the clay.');
         peak = Math.max(peak, h.ctx.sounding().length);
       };
       h.run(6, { ...BASE, thrust: 1, digging: true, vy: -14, depth: 30 }, storm);
@@ -283,7 +283,7 @@ describe('radio voices (03 §11.5)', () => {
     h.engine.unlock();
     h.run(1);
     const text = 'Hi Pip, dig on.';
-    h.engine.handleEvents([{ t: 'radio', sender: 'Dot', beat: 'hello', cards: [text, 'second card'] }], 1);
+    h.engine.speak('Dot', text); // the card opened (the UI drives speech, INT-4)
     h.run(0.2);
     expect(h.engine.debugInfo().musicGain).toBeCloseTo(dbToGain(-6), 3);
     h.run(2);
@@ -297,10 +297,21 @@ describe('radio voices (03 §11.5)', () => {
   it('gives Channel Zero a static burst per word and a tick per number', () => {
     const h = harness();
     h.engine.unlock();
-    h.engine.handleEvents([{ t: 'radio', sender: 'Channel Zero', beat: 'cz', cards: ['Signal at 500 feet'] }], 1);
+    h.engine.speak('Channel Zero', 'Signal at 500 feet');
     h.run(3);
     expect(h.ctx.sources.filter((s) => s.buffer?.length === lengthOf('blipStatic'))).toHaveLength(3);
     expect(h.ctx.sources.filter((s) => s.buffer?.length === lengthOf('tickStatic'))).toHaveLength(1);
+  });
+
+  it('a drained radio event is silent: its card speaks when the UI shows it (INT-4)', () => {
+    const h = harness();
+    h.engine.unlock();
+    h.run(1);
+    h.engine.handleEvents([{ t: 'radio', sender: 'Dot', beat: 'hello', cards: ['Hi Pip, dig on.', 'second card'] }], 1);
+    h.run(2);
+    expect(h.ctx.sources.filter((s) => s.buffer?.length === lengthOf('blipDot'))).toHaveLength(0);
+    expect(h.engine.debugInfo().speaking).toBe(false);
+    expect(h.engine.debugInfo().musicGain).toBeCloseTo(1, 3);
   });
 
   it('stopSpeech cuts the line and lifts the duck', () => {

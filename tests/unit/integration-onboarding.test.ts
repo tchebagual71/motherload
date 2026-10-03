@@ -75,7 +75,7 @@ describe('integration: survey ping → Starter Kit → first automation → firs
 
     // Proximity: oldest first, 60 consecutive steps each (02 §2.6). The pod stands at the shaft floor.
     p.step();
-    expect(w.ghostProgress()).toEqual({ id: drill.ids[0], progress: 1 / 60 });
+    expect(w.ghostProgress()).toEqual({ id: drill.ids[0], progress: 1 / 60, blocked: null });
     const drillSteps = runUntil(p, 'drill built', () => f.ghosts().length === 2, 200);
     expect(drillSteps).toBe(59);
     expect(f.entities().some((e) => e.kind === 'autoDrill' && e.x === plan.drill.x && e.y === plan.drill.y)).toBe(true);
@@ -145,5 +145,55 @@ describe('integration: survey ping → Starter Kit → first automation → firs
     expect(f.stockpileCount('wire')).toBe(wire - 10);
     expect(f.stockpileCount('hullPlate')).toBe(0);
     expect(f.debug.conservationOk()).toBe(true);
+  });
+
+  it('a drill confirmed with Pip in its footprint: the ring holds on E_POD, no loop, and builds once Pip steps out (PLAYER-6)', () => {
+    const w = new World({ seed: SEED, scope: 'mvp' });
+    const f = w.factory!;
+    w.debugGiveCash(10_000);
+    w.debugSetTier('tank', 4);
+    w.pod.fuel = w.stats().maxFuel;
+    const p = new Pilot(w);
+    const c = w.meta.surveyColumn;
+    const lode = w.terrain.lodes[w.meta.scriptedLodeId];
+    p.descendShaft(c, lode.top - 1);
+    p.flyOut(c, 41);
+    must(w.claimStarterKit());
+    const plan = f.surveyPlan();
+    p.driveRimTo(lode.x0 + 1);
+    p.digDownTo(plan.drill.y - 1);
+    excavateDrillSite(p, plan.drill.x, plan.drill.y);
+    // Pip stays in the dug-out site while the ghosts go down.
+    const { x, r } = p.cell();
+    expect(x >= plan.drill.x && x <= plan.drill.x + 1 && r >= plan.drill.y && r <= plan.drill.y + 1).toBe(true);
+    p.run(3, NO_INTENT, false);
+    const drill = must(f.placeGhost({ kind: 'autoDrill', ...plan.drill })).ids[0];
+    const foot = must(f.placeGhost({ kind: 'lift', ...plan.lift })).ids[0];
+    const toasts = (): string[] => p.events.filter((e) => e.t === 'toast').map((e) => (e.t === 'toast' ? e.text : ''));
+    const before = toasts().length;
+
+    // The drill's count reaches 60 and is refused; the lift foot in reach goes next (oldest first, refusals yield).
+    expect(runUntil(p, 'drill refused', () => w.ghostProgress()?.id === foot, 200)).toBe(61);
+    expect(toasts().slice(before)).toEqual(['Pip is in the way']);
+    runUntil(p, 'lift foot built', () => f.ghosts().length === 2, 200);
+    // Then nothing in reach may go: the ring holds on the drill, naming the cause, instead of looping.
+    p.step();
+    expect(w.ghostProgress()).toEqual({ id: drill, progress: 0, blocked: 'E_POD' });
+    for (let i = 0; i < 600; i++) {
+      p.step();
+      expect(w.ghostProgress()).toEqual({ id: drill, progress: 0, blocked: 'E_POD' });
+    }
+    expect(toasts().slice(before)).toEqual(['Pip is in the way']);
+    expect(f.entities().some((e) => e.kind === 'autoDrill')).toBe(false);
+
+    // Pip steps out into Dot's shaft: once the box clears the footprint the count resumes (the next re-check, on a
+    // cell change or within 30 steps) and the drill builds 60 steps later.
+    p.walkTo(c);
+    p.settle();
+    runUntil(p, 'count resumed', () => w.ghostProgress()?.blocked === null, 30);
+    expect(w.ghostProgress()).toMatchObject({ id: drill, blocked: null });
+    runUntil(p, 'drill built', () => f.entities().some((e) => e.kind === 'autoDrill' && e.x === plan.drill.x && e.y === plan.drill.y), 60);
+    expect(f.ghosts().map((g) => g.part)).toEqual(['rail']);
+    expect(toasts().slice(before)).toEqual(['Pip is in the way']);
   });
 });

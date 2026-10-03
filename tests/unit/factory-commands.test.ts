@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { F, T } from '../../src/shared/types';
 import { Factory } from '../../src/factory/factory';
-import { Cargo, ONBOARD, POD_AWAY, Wallet, addLode, carve, cloneGrid, onboardingGrid, rig } from './factory.helpers';
+import { Cargo, ONBOARD, POD_AWAY, Wallet, addLode, buildOnboarding, carve, cloneGrid, onboardingGrid, rig, ticks } from './factory.helpers';
 
 function must<T extends { ok: boolean }>(r: T): Extract<T, { ok: true }> {
   if (!r.ok) throw new Error(JSON.stringify(r));
@@ -96,6 +96,13 @@ describe('factory commands: §2.5 placement codes', () => {
     // Just left of the footprint (touching only column drill.x − 1): fine.
     const beside = { minX: drill.x - 0.95, maxX: drill.x - 0.09, minY: -(drill.y + 0.9), maxY: -(drill.y + 0.1) };
     expect(cargo.count('autoDrill')).toBe(1);
+    // canCompleteGhost answers the same, changing nothing (the pod's held-refusal re-check).
+    const v = r.f.topologyVersion;
+    expect(r.f.canCompleteGhost(id, straddle, cargo)).toMatchObject({ code: 'E_POD' });
+    expect(r.f.canCompleteGhost(id, beside, new Cargo())).toMatchObject({ code: 'E_KIT', need: 1, item: 'autoDrill' });
+    expect(r.f.canCompleteGhost(id, beside, cargo)).toBeNull();
+    expect(r.f.canCompleteGhost(999, beside, cargo)).toMatchObject({ code: 'E_INVALID' });
+    expect([r.f.ghosts().length, cargo.count('autoDrill'), r.f.topologyVersion]).toEqual([1, 1, v]);
     must(r.f.completeGhost(id, beside, cargo));
   });
 
@@ -358,6 +365,91 @@ describe('factory commands: undo / redo (02 §2.7; canon §4.11)', () => {
     expect(f.canRedo).toBe(true);
   });
 
+  it('undo of a survey-set removal is its exact inverse: the same rusted pieces for $0, even at U0 with no cash (02 §2.2, §2.7)', () => {
+    const r = rig({}, onboardingGrid(), 0);
+    const { f, wallet } = r;
+    const set = () => f.entities().map((e) => [e.kind, e.x, e.y, e.dir, e.rusted]);
+    const before = set();
+    for (const e of [...f.entities()].reverse()) expect(must(f.deconstruct(e.id)).refund).toBe(0);
+    expect(f.entities()).toEqual([]);
+    // Re-running the crane would ask U2 (E_LOCKED) and $200 / $300 / $250 (E_FUNDS), and drop the rust.
+    for (let i = 0; i < 3; i++) must(f.undo());
+    expect(set()).toEqual(before);
+    must(f.redo()); // the Bin, removed first, is the first redo
+    expect(f.entities().map((e) => e.kind)).toEqual(['headframe', 'smelter']);
+    must(f.undo());
+    expect(set()).toEqual(before);
+    expect(wallet.log).toEqual([]);
+    expect(f.isUnlocked('U2')).toBe(false);
+
+    // With U2 and cash: the undo debits what the removal refunded ($0), never the list price.
+    const rich = rig();
+    rich.f.discoverLode(0, false);
+    const smelter = rich.f.entities().find((e) => e.kind === 'smelter')!;
+    must(rich.f.deconstruct(smelter.id));
+    must(rich.f.undo());
+    expect(rich.f.entities().find((e) => e.kind === 'smelter')).toMatchObject({ x: smelter.x, y: smelter.y, rusted: true });
+    expect(rich.wallet.cashNow).toBe(100_000);
+    // A crane-built piece goes back at its own price.
+    must(rich.f.deconstruct(must(rich.f.place('smelter', 1, 30, 5, 0)).id));
+    expect(rich.wallet.cashNow).toBe(100_000);
+    must(rich.f.undo());
+    expect(rich.wallet.cashNow).toBe(99_700);
+    expect(rich.f.entities().find((e) => e.x === 30)).toMatchObject({ kind: 'smelter', rusted: false });
+    expect(rich.f.deconstruct(rich.f.entities().find((e) => e.x === 30)!.id)).toEqual({ ok: true, refund: 300 });
+  });
+
+  it("undo of a removal puts back what the building held: a backed-up Smelter's buffers, a Bin's contents and filter", () => {
+    const r = rig({ yardRows: 16 });
+    const { f } = r;
+    buildOnboarding(r);
+    must(f.removeBelts('yard', [{ x: ONBOARD.column, y: 6 }])); // the Smelter's output backs up
+    ticks(f, 3_000);
+    const sm = f.entities().find((e) => e.kind === 'smelter')!.id;
+    // One ore waiting, a finished craft (2 ore) blocked on a full output buffer of 6 ingots.
+    expect(f.inspect(sm)).toMatchObject({ status: 'blocked', contents: [{ item: 'copperOre', n: 1 }], output: [{ item: 'copperIngot', n: 6 }] });
+    must(f.deconstruct(sm));
+    expect(f.stockpileItems()).toEqual([
+      { item: 'copperOre', n: 3 },
+      { item: 'copperIngot', n: 6 },
+    ]);
+    must(f.undo());
+    const back = f.entities().find((e) => e.kind === 'smelter')!;
+    expect(back.rusted).toBe(true);
+    // The craft's inputs come back as inputs (its progress is lost); the output buffer is as it was.
+    expect(f.inspect(back.id)).toMatchObject({ contents: [{ item: 'copperOre', n: 3 }], output: [{ item: 'copperIngot', n: 6 }] });
+    expect(f.stockpileItems()).toEqual([]);
+    expect(f.debug.conservationOk()).toBe(true);
+    must(f.redo());
+    expect(f.stockpileItems()).toEqual([
+      { item: 'copperOre', n: 3 },
+      { item: 'copperIngot', n: 6 },
+    ]);
+    expect(f.debug.conservationOk()).toBe(true);
+
+  });
+
+  it("undo of a Bin's removal puts its own items back (it unloads its own inventory) and its unload filter", () => {
+    const r = rig({ yardRows: 16 });
+    const { f } = r;
+    f.discoverLode(0, false);
+    const bin = must(f.place('bin', 1, 30, 5, 0)).id;
+    must(f.place('bin', 1, 30, 9, 0));
+    must(f.stockpilePut([{ item: 'gear', n: 300 }])); // 200 fill the survey Bin, 100 land in `bin`
+    must(f.setUnloadFilter(bin, 'gear'));
+    expect(f.inspect(bin)).toMatchObject({ contents: [{ item: 'gear', n: 100 }], filter: 'gear' });
+    must(f.deconstruct(bin)); // its 100 gears move to the third Bin
+    must(f.undo());
+    const again = f.entities().find((e) => e.kind === 'bin' && e.x === 30 && e.y === 5)!.id;
+    expect(f.inspect(again)).toMatchObject({ contents: [{ item: 'gear', n: 100 }], filter: 'gear' });
+    expect(f.stockpileCount('gear')).toBe(300);
+    expect(f.debug.conservationOk()).toBe(true);
+    expect(f.debug.counts.scrapped).toBe(0);
+    must(f.redo());
+    expect(f.entity(again)).toBeNull();
+    expect(f.stockpileCount('gear')).toBe(300);
+  });
+
   it('deconstructing a lift takes its pending rail jobs along; one undo brings foot and rails back (02 §2.6)', () => {
     const r = rig();
     const { f } = r;
@@ -397,6 +489,23 @@ describe('factory commands: undo / redo (02 §2.7; canon §4.11)', () => {
     // A rail job alone goes alone; the foot under it stays.
     must(f.removeGhost(f.ghosts().find((g) => g.part === 'rail')!.id));
     expect(f.ghosts().map((g) => g.part)).toEqual(['foot']);
+  });
+
+  it('historyVersion moves with every recorded undo step, not with no-op commands or undo / redo (BUILD-5)', () => {
+    const { f } = rig({ yardRows: 16 });
+    f.discoverLode(0, false);
+    const v = f.historyVersion;
+    must(f.paintBelts([{ x: 30, y: 10 }], 1, 0));
+    expect(f.historyVersion).toBe(v + 1);
+    must(f.paintBelts([{ x: 30, y: 10 }], 1, 0)); // the same tile again: nothing changes
+    must(f.removeBelts('yard', [{ x: 31, y: 10 }])); // nothing there
+    expect(f.place('bin', 1, 30, 10, 0)).toMatchObject({ ok: false, code: 'E_OCCUPIED' });
+    expect(f.historyVersion).toBe(v + 1);
+    must(f.undo());
+    must(f.redo());
+    expect(f.historyVersion).toBe(v + 1);
+    must(f.place('bin', 1, 34, 10, 0));
+    expect(f.historyVersion).toBe(v + 2);
   });
 
   it('keeps at least 50 steps', () => {

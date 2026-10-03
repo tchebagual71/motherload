@@ -172,6 +172,16 @@ describe('system beats', () => {
     expect(isRungUnlocked(r.flags, 'U2')).toBe(true);
   });
 
+  it('possession recipes announced by unlock events (A5–A8) leave no rung flag in the save (INT-9)', () => {
+    const r = rig();
+    r.step([
+      { t: 'unlock', rung: 'A5', label: 'Circuit' },
+      { t: 'unlock', rung: 'A8', label: 'Pressure Vessel' },
+      { t: 'unlock', rung: 'U10', label: 'Mk III' },
+    ]);
+    expect(Object.keys(r.flags).filter((k) => k.startsWith('rung:'))).toEqual(['rung:U10']);
+  });
+
   it('Recorders sold play Deepreach logs 1–6 in order, then nothing (01 §7.5)', () => {
     const r = rig();
     const emit = (e: GameEvent) => r.out.push(e);

@@ -36,8 +36,12 @@ import {
   lPath,
   liftChip,
   liftEnds,
+  lodeDrillSite,
+  lodeUnder,
   mineRun,
   pathDirs,
+  removalAsk,
+  removalPrice,
   sameCell,
   snapDrill,
   snapEndDir,
@@ -117,6 +121,8 @@ export class BuildSession implements GestureSink {
   /** Inspect sheet target. */
   inspectId: number | null = null;
   inspectGhost: number | null = null;
+  /** Inspect → Deconstruct asked first (the removal loses money, removalAsk): a second tap removes this id. */
+  askRemove: number | null = null;
   /** After Place drill: offer "Route to surface" from this drill footprint (03 §4.6). */
   routeFrom: { x: number; y: number; w: number; h: number } | null = null;
 
@@ -183,6 +189,7 @@ export class BuildSession implements GestureSink {
     this.loupeAt = null;
     this.inspectId = null;
     this.inspectGhost = null;
+    this.askRemove = null;
     this.routeFrom = null;
     this.panLatch = false;
     this.pushCamera();
@@ -202,6 +209,7 @@ export class BuildSession implements GestureSink {
     this.loupeAt = null;
     this.inspectId = null;
     this.inspectGhost = null;
+    this.askRemove = null;
     this.shoppingOpen = false;
     this.grab = null;
     this.onEnd?.();
@@ -413,18 +421,21 @@ export class BuildSession implements GestureSink {
   openInspect(id: number): void {
     this.inspectId = id;
     this.inspectGhost = null;
+    this.askRemove = null;
     this.publish();
   }
 
   openGhostInspect(id: number): void {
     this.inspectGhost = id;
     this.inspectId = null;
+    this.askRemove = null;
     this.publish();
   }
 
   closeInspect(): void {
     this.inspectId = null;
     this.inspectGhost = null;
+    this.askRemove = null;
     this.publish();
   }
 
@@ -442,14 +453,31 @@ export class BuildSession implements GestureSink {
     this.run(() => this.factory?.setUnloadFilter(id, item) ?? err('E_INVALID'), 'Unload filter');
   }
 
-  /** Deconstruct (inspect sheet): surface 100% refund; underground Kit to the bay when it can (02 §2.7). */
+  /**
+   * Deconstruct (inspect sheet): surface 100% refund; underground Kit to the bay when it can (02 §2.7). A removal
+   * that loses money (the free rusted survey set refunds $0, 02 §2.2) only asks on the first tap (`askRemove`,
+   * the sheet shows removalAsk's question with the rebuild price); the second tap removes.
+   */
   deconstruct(id: number): boolean {
     const e = this.factory?.entity(id);
     if (!e) return false;
+    if (this.askRemove !== id && removalAsk(e) !== null) {
+      this.askRemove = id;
+      this.publish();
+      return false;
+    }
+    this.askRemove = null;
     const ok = this.run(() => this.removeEntity(e), `Removed ${buildingName(e.kind)}`);
     if (ok && this.inspectId === id) this.inspectId = null;
     this.publish();
     return ok;
+  }
+
+  /** "Keep it": drop the Deconstruct question. */
+  keepBuilding(): void {
+    if (this.askRemove === null) return;
+    this.askRemove = null;
+    this.publish();
   }
 
   removeGhost(id: number): boolean {
@@ -877,7 +905,12 @@ export class BuildSession implements GestureSink {
     return { ia: d / det, ib: -b / det, ic: -c / det, id: a / det };
   }
 
-  /** Where a footprint tool lands for a touch: centred on the lifted point; drills snap to the lode (03 §4.9). */
+  /**
+   * Where a footprint tool lands for a touch: centred on the lifted point. A drill snaps to a lode (03 §4.9): a
+   * touch anywhere on a discovered lode (or the rows above it) takes that lode's drill site, the valid one if
+   * either is (the survey plan's first on the scripted lode), else the nearer, so its red ghost gives the real
+   * reason; elsewhere it snaps to a site within a cell.
+   */
   private pieceAt(kind: BuildingKind, x: number, y: number, c: Cell): Cell {
     const def = BUILDINGS[kind];
     const fp = this.planePoint(x, y);
@@ -885,8 +918,14 @@ export class BuildSession implements GestureSink {
     const at = footprintAt(inCell.x, inCell.y, def.w, def.h);
     if (kind !== 'autoDrill') return at;
     // Unknown seams (v1 lodes in an MVP build) take no drill (canon §5.5).
-    const sites = drillSites(this.world.terrain.lodes, (l: Lode) => l.scope !== 'v1' || this.world.scope === 'v1');
+    const visible = (l: Lode): boolean => l.scope !== 'v1' || this.world.scope === 'v1';
     const f = this.factory;
+    const lode = lodeUnder(c, this.world.terrain.lodes, visible);
+    if (lode) {
+      const first = f && lode.id === this.world.meta.scriptedLodeId ? f.surveyPlan().drill : null;
+      return lodeDrillSite(lode, inCell.x, (s) => !!f && f.canPlaceGhost({ kind: 'autoDrill', x: s.x, y: s.y }) === null, first);
+    }
+    const sites = drillSites(this.world.terrain.lodes, visible);
     return snapDrill(at, sites, (s) => !f || f.canPlaceGhost({ kind: 'autoDrill', x: s.x, y: s.y })?.code !== 'E_LODE') ?? snapDrill(at, sites) ?? at;
   }
 
@@ -1089,9 +1128,13 @@ export class BuildSession implements GestureSink {
     const p = this.pending;
     if (!p) return {};
     if (p.t === 'piece') {
-      if (p.kind !== 'autoDrill' || this.error?.code !== 'E_LODE') return { kind: p.kind };
+      const code = this.error?.code;
+      if (p.kind !== 'autoDrill' || (code !== 'E_LODE' && code !== 'E_OCCUPIED')) return { kind: p.kind };
+      // One drill per lode (02 §2.4): a built one refuses the site (E_LODE), a drill ghost overlaps it (E_OCCUPIED).
       const lode = this.world.terrain.lodes.find((l) => l.top === p.y + 2 && (p.x === l.x0 || p.x === l.x0 + 1));
-      const hasDrill = !!lode && !!this.factory?.entities().some((e) => e.kind === 'autoDrill' && e.y === lode.top - 2 && e.x >= lode.x0 && e.x <= lode.x0 + 1);
+      const f = this.factory;
+      const onLode = (k: { kind: BuildingKind; x: number; y: number }): boolean => !!lode && k.kind === 'autoDrill' && k.y === lode.top - 2 && k.x >= lode.x0 && k.x <= lode.x0 + 1;
+      const hasDrill = !!f && (f.entities().some(onLode) || f.ghosts().some(onLode));
       return { kind: p.kind, lodeHasDrill: hasDrill };
     }
     if (p.t === 'lift') return { kind: 'lift' };
@@ -1108,7 +1151,7 @@ export class BuildSession implements GestureSink {
     const survey = e?.plane === 'yard' && e.rusted ? e : null;
     if (e) {
       parts.push(survey ? `survey ${buildingName(e.kind)}` : buildingName(e.kind));
-      if (e.plane === 'yard' && !e.rusted) refund += BUILDINGS[e.kind].mks[e.mk - 1]?.cash ?? 0;
+      refund += removalPrice(e).refund;
     }
     if (p.ghost !== null) parts.push('ghost');
     if (p.cells.length > 0 && f) {
@@ -1120,7 +1163,7 @@ export class BuildSession implements GestureSink {
       } else parts.push(`${p.cells.length} belt${p.cells.length === 1 ? '' : 's'}`);
     }
     if (parts.length === 0) return { text: 'Tap to mark, drag over belts', tone: 'info' };
-    const back = survey ? `rebuild ${formatCash(BUILDINGS[survey.kind].mks[survey.mk - 1]?.cash ?? 0)}` : this.plane === 'yard' ? `refund ${formatCash(refund)}` : 'Kits back';
+    const back = survey ? `rebuild ${formatCash(removalPrice(survey).rebuild)}` : this.plane === 'yard' ? `refund ${formatCash(refund)}` : 'Kits back';
     return { text: `Remove ${parts.join(' + ')} · ${back}`, tone: 'bad' };
   }
 
@@ -1360,8 +1403,8 @@ export class BuildSession implements GestureSink {
     const p = this.pending;
     const marked = p?.t === 'remove' ? p.id : null;
     // `tool`: the armed building (null for none or Bulldoze), so the underground placement highlight can show
-    // where it may go before the first tap (03 §4.12). The renderer reads it once BuildFrame carries the field.
-    const frame: BuildFrame & { tool: BuildingKind | null } = {
+    // where it may go before the first tap (03 §4.12).
+    const frame: BuildFrame = {
       plane: this.plane,
       cursor: this.cursorCell ? { x: this.cursorCell.x, y: this.cursorCell.y } : null,
       preview: this.preview(),

@@ -1417,6 +1417,27 @@ button.hf-pill {
 .hf-update-title {
   align-self: center;
 }
+/* "Factory resting" (02 §8.1): visible-idle away. Under the story slot, centred; takes no pointers (any input wakes). */
+.hf-resting-chip {
+  position: absolute;
+  top: calc(var(--clear-top) + 40px + var(--hf-story-h, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--r-round);
+  border: var(--bw) solid var(--hf-ink);
+  background: var(--hf-cream);
+  color: var(--hf-ink);
+  box-shadow: 0 2px 0 rgba(43, 30, 47, 0.35);
+  font: 800 calc(13px * var(--hf-ts, 1))/1 var(--hf-font);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 54;
+}
 .hf-restoring {
   z-index: 85;
   display: grid;
@@ -1622,6 +1643,7 @@ a.hf-btn {
 .hf-pixel .hf-card-icon,
 .hf-pixel .hf-grab,
 .hf-pixel .hf-chip,
+.hf-pixel .hf-resting-chip,
 .hf-pixel .hf-callout,
 .hf-pixel .hf-slot-lock {
   border-radius: 0;

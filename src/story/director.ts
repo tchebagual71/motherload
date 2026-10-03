@@ -21,14 +21,21 @@ const INCENTIVE_BEATS: Readonly<Record<number, readonly [BeatId, MilestoneId]>> 
   280: ['S4', 'bigIncentive'],
 };
 
-/** Factory build kinds the goal chip tracks (02 §2.6 onboarding builds), matched loosely on the ghost kind. */
+/**
+ * Underground builds the goal chip tracks (02 §2.6 onboarding builds), matched loosely on the ghost kind. Yard
+ * buildings (Smelter, Assembler) never ghost: the chip reads those from the factory itself (goals.ts).
+ */
 const BUILD_FACTS: readonly [RegExp, string][] = [
   [/drill/i, 'drill'],
   [/lift/i, 'lift'],
   [/belt/i, 'belt'],
-  [/smelter/i, 'smelter'],
-  [/assembler/i, 'assembler'],
 ];
+
+/**
+ * Co-op Plans rung ids (U0, U1 … U11). The factory's 'unlock' event also announces possession recipes by recipe
+ * id ('A5' … 'A8', 02 §0.2 F1): those are not rungs and leave no `rung:` flag (INT-9).
+ */
+const RUNG_ID = /^U\d+$/;
 
 /**
  * `purchase.kit` of the Starter Kit handed over at the Shed (world/kitShop claimStarterKit). The 'starter-kit'
@@ -175,7 +182,7 @@ export class StoryDirector {
         L.set(obFlag('ingot'));
         return;
       case 'unlock':
-        L.set(rungFlag(e.rung));
+        if (RUNG_ID.test(e.rung)) L.set(rungFlag(e.rung));
         return;
       case 'ghost-complete':
         for (const [re, fact] of BUILD_FACTS) if (re.test(e.kind)) L.set(obFlag(fact));

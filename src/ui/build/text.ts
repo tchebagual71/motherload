@@ -1,12 +1,12 @@
 // Build-mode copy (03 §6.2 toast table, ≤ 40 characters; 02 §9 rung triggers; 03 §4 chips). Pure. The refusal
 // texts, Kit names and rung triggers have one source, world/factoryText.ts (the pod's ghost refusals use it too);
 // this module only adds what build mode knows on top: the piece in hand, whole Kits, the undo wording.
-import { BUILDINGS, KIT_METER, kitUnits, type BuildingKind, type Err, type Rung } from '../../factory/api';
+import { BUILDINGS, KIT_METER, type BuildingKind, type Err, type Rung } from '../../factory/api';
 import { hasItem, item } from '../../factory/items';
-import { errText as refusalText, kitName, rungTrigger } from '../../world/factoryText';
-import { formatCash, formatInt } from '../format';
+import { errText as refusalText, kitCount, kitName, kitsForUnits, rungTrigger } from '../../world/factoryText';
+import { formatCash } from '../format';
 
-export { kitName, rungTrigger };
+export { kitCount, kitName, kitsForUnits, rungTrigger };
 
 /** "Unlocks: Discover a lode" (03 §6.2 E_LOCKED). */
 export function unlockText(rung: Rung | undefined): string {
@@ -38,7 +38,7 @@ export function buildingName(kind: BuildingKind): string {
 export interface ErrContext {
   /** The piece the check was for (E_COLUMN wording, E_LODE wording). */
   kind?: BuildingKind;
-  /** E_LODE: the lode under the ghost already has a drill. */
+  /** E_LODE / E_OCCUPIED of a drill: the lode under the ghost already has a drill (built, or a ghost). */
   lodeHasDrill?: boolean;
 }
 
@@ -46,14 +46,12 @@ export interface ErrContext {
 export function errText(e: Err, ctx: ErrContext = {}): string {
   switch (e.code) {
     case 'E_LODE':
+    case 'E_OCCUPIED':
       if (ctx.lodeHasDrill) return 'This lode has a drill';
       break;
     case 'E_COLUMN':
       if (ctx.kind === 'headframe') return 'No Headframe column here';
       break;
-    case 'E_KIT':
-      // The factory counts metered units short; the player buys whole Kits (9 belt tiles → 2 Belt Kits).
-      return `Need ${formatInt(kitsForUnits(e.item ?? '', e.need ?? 0))} ${e.item ? kitName(e.item) : 'Kit'} in cargo`;
     case 'E_LIMIT':
       if (ctx.kind) return 'Too many ghosts (256 max)';
       break;
@@ -65,17 +63,10 @@ export function errText(e: Err, ctx: ErrContext = {}): string {
   return refusalText(e);
 }
 
-/** Whole Kits that hold `units` of a (metered) Kit: 9 belt tiles → 2 Belt Kits. */
-export function kitsForUnits(kitId: string, units: number): number {
-  return Math.ceil(Math.max(0, units) / kitUnits(kitId));
-}
-
-/** "16 tiles = 2 Belt Kits" (03 §4.4) / "1 Router Kit". */
+/** "16 tiles = 2 Belt Kits" (03 §4.4) / "1 Router Kit" / "2 Auto-Drill Kits Mk II". */
 export function kitBill(kitId: string, units: number): string {
-  const kits = kitsForUnits(kitId, units);
-  const name = kitName(kitId);
-  const plural = kits === 1 ? name : `${name}s`;
-  return KIT_METER[kitId] !== undefined ? `${units} tile${units === 1 ? '' : 's'} = ${kits} ${plural}` : `${kits} ${plural}`;
+  const kits = kitCount(kitId, kitsForUnits(kitId, units));
+  return KIT_METER[kitId] !== undefined ? `${units} tile${units === 1 ? '' : 's'} = ${kits}` : kits;
 }
 
 /** Undo toast (03 §4.8): "Undid: Belt ×12 (+$60)". */

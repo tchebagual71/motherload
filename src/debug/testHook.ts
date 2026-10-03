@@ -35,7 +35,7 @@ export interface HfTestApi {
   pod(): PodSnapshot;
   cash(): number;
   stepNo(): number;
-  /** Override player input (merged over a neutral intent); null returns control to touch/keyboard. */
+  /** Override player input (merged over a neutral intent; counts as input); null returns control to touch/keyboard. */
   setIntent(intent: Partial<PodIntent> | null): void;
   /** Run sim steps synchronously (pause reasons still apply). */
   step(n: number): void;
@@ -135,6 +135,8 @@ export function installTestHook(d: TestHookDeps): HfTestApi {
     cash: () => app.world.wallet.cash,
     stepNo: () => app.world.stepNo,
     setIntent: (i) => {
+      // Scripted input is input: it wakes a factory resting after 5 min of visible idle (02 §8.1).
+      app.noteInput();
       loop.intentOverride = i ? { sx: 0, sy: 0, thrust: false, fireSlot: -1, ...i } : null;
     },
     step: (n) => loop.stepNow(n),

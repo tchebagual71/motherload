@@ -8,7 +8,7 @@ import {
 } from '../shared/canon';
 import { maxFuelOf } from '../pod/stats';
 import type { Quote, Result, StoryState } from '../world/api';
-import { amount1, dollars } from './format';
+import { dollars, litres } from './format';
 import { fail, ok, type EconomyCtx } from './types';
 
 /** Below this the tank counts as full (float residue from burn). */
@@ -47,7 +47,8 @@ export function buyFuel(ctx: EconomyCtx, liters: number | 'fill'): Result {
   pod.fuel = q.amount >= room - MIN_LITERS ? max : pod.fuel + q.amount;
   ctx.wallet.cash -= q.cost;
   ctx.emit({ t: 'purchase', kind: 'fuel', amount: q.cost });
-  const what = pod.fuel >= max ? `Filled up: ${amount1(q.amount)} L` : `Bought ${amount1(q.amount)} L`;
+  // The quote's own litres, rounded down like the sheet's tiles and the gauge (every reader sees one number).
+  const what = pod.fuel >= max ? `Filled up: ${litres(q.amount)}` : `Bought ${litres(q.amount)}`;
   return ok(`${what} for ${dollars(q.cost)}`, q.amount);
 }
 

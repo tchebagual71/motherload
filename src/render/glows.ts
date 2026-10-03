@@ -53,6 +53,7 @@ void main() {
   #endif
   if (a <= 0.003) discard;
   gl_FragColor = vec4(vGlow.rgb, a);
+  #include <colorspace_fragment>
 }`,
   });
 }

@@ -12,7 +12,7 @@ import type { BuildSession } from '../build/session';
 import { formatDepth } from '../format';
 import type { Viewport } from '../viewport';
 import { scopeFloorRow } from '../../terrain/scope';
-import { knownLodes, mapLayers } from './mapModel';
+import { knownLodes, mapLayers, worldPurityKnown } from './mapModel';
 import { RULER_RAIL, buildRulerGeometry, railBands, railToRow, rulerGeometry } from './rulerLayout';
 import { scrubBuildCamera } from './rulerScrub';
 
@@ -40,7 +40,7 @@ export function Ruler({ app, vp, build = null }: { app: AppController; vp: Signa
   const floor = scopeFloorRow(world.scope);
   const podRow = Math.max(0, -world.pod.y);
   // The UI harness's fake world has no terrain.
-  const lodes = world.terrain ? knownLodes(world.terrain.lodes, world.scope, world.story.deepestRow) : [];
+  const lodes = world.terrain ? knownLodes(world.terrain.lodes, world.scope, world.story.deepestRow, worldPurityKnown(world)) : [];
   const railLeft = g.side === 'right' ? g.railX0 - g.hitX0 : 0;
   const bands = railBands(floor);
   const view = scrub && scrub.plane === 'mine' ? scrub.cam.cy : null;

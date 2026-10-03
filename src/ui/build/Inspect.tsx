@@ -1,26 +1,36 @@
 // Inspect sheet (03 §6.3: tap a building → 50% sheet): status, recipe picker (Assembler; the Smelter's recipes are
 // automatic and listed), Router mode and filter, Bin unload filter, buffers, lift items in flight, Deconstruct and
-// Route to surface. Underground ghosts show the Kit they wait for.
+// Route to surface. Deconstructing at a loss (the free rusted survey set) asks first, with the rebuild price.
+// Underground ghosts show the Kit they wait for.
 import type { JSX } from 'preact';
 import { useRef } from 'preact/hooks';
 import type { AppController } from '../../app/types';
-import { BUILDINGS, type EntStatus, type InspectView, type ItemStack, type RecipeView, type RouterMode } from '../../factory/api';
+import { BUILDINGS, type BuildingKind, type EntStatus, type InspectView, type ItemStack, type RecipeView, type RouterMode } from '../../factory/api';
 import { hasItem } from '../../factory/items';
+import { statusGlyph } from '../../render/factory/status';
 import { BottomSheet } from '../BottomSheet';
 import { formatInt } from '../format';
 import { Bar, Button } from '../widgets';
 import { Glyph, kindGlyph, roleColour } from './glyphs';
 import type { BuildSession } from './session';
 import { buildingName, itemName, kitBill, kitName, unlockText } from './text';
-import { kitsInCargo } from './tools';
+import { kitsInCargo, removalAsk } from './tools';
 
 const STATUS: Readonly<Record<EntStatus, string>> = {
   working: 'Working',
   idle: 'Idle: waiting for input',
   blocked: 'Blocked: output full',
   noRecipe: 'Pick a recipe',
-  noOutput: 'Output full',
+  noOutput: 'Disconnected: nothing takes its output',
 };
+
+/**
+ * The status line, worded like the building's bubble (render/factory/status.ts): storage, Headframes, lifts,
+ * drills and Routers idle by design, so their idle is not "waiting for input" (they wear no bubble for it).
+ */
+export function statusLine(kind: BuildingKind, status: EntStatus): string {
+  return status === 'idle' && statusGlyph(kind, status) === -1 ? 'Idle' : STATUS[status];
+}
 
 /** Items a Router filter or Bin unload filter may pick (MVP lode ores, ingots and parts). */
 const FILTER_ITEMS = ['copperOre', 'hematiteOre', 'cobaltOre', 'goldOre', 'iridiumOre', 'copperIngot', 'ironIngot', 'cobaltIngot', 'goldIngot', 'gear', 'wire', 'hullPlate'].filter(hasItem);
@@ -41,11 +51,14 @@ function recipeLine(r: RecipeView): string {
 
 /** The world tap that opened the sheet ends with a native click on its scrim: ignore closes this soon after opening. */
 const OPEN_GUARD_MS = 400;
+/** A double tap on Deconstruct must not answer its own question: Remove ignores taps this soon after it asked. */
+const ASK_GUARD_MS = 400;
 
 export function InspectSheet({ app, build }: { app: AppController; build: BuildSession }): JSX.Element | null {
   build.version.value;
   app.state.hudTick.value; // live buffers and status (≤ 10 Hz)
   const opened = useRef(performance.now());
+  const asked = useRef(0);
   const close = (): void => {
     if (performance.now() - opened.current >= OPEN_GUARD_MS) build.closeInspect();
   };
@@ -59,24 +72,47 @@ export function InspectSheet({ app, build }: { app: AppController; build: BuildS
   // Route to surface from a drill (03 §4.6): a straight dug shaft beside it, up to a Headframe column.
   const piece = { x: e.x, y: e.y, w: e.w, h: e.h };
   const showRoute = e.kind === 'autoDrill' && build.routeFromPiece(piece) !== null;
+  const ask = build.askRemove === id ? removalAsk(e) : null;
+  const deconstruct = (): void => {
+    build.deconstruct(id);
+    if (build.askRemove === id) asked.current = performance.now();
+  };
+  const remove = (): void => {
+    if (performance.now() - asked.current >= ASK_GUARD_MS) build.deconstruct(id);
+  };
   return (
     <BottomSheet
       title={`${buildingName(e.kind)}${e.rusted ? ' (rusted)' : ''}`}
       onClose={close}
       class="hf-sheet-half hf-inspect"
       footer={
-        <div class="hf-inspect-foot">
-          {showRoute && (
-            <Button onClick={() => build.routeToSurface(piece)}>
-              <Glyph name="route" size={20} />
-              Route to surface
+        ask ? (
+          <div class="hf-inspect-ask">
+            <p class="hf-inspect-q" role="alert">
+              {ask}
+            </p>
+            <div class="hf-inspect-foot">
+              <Button kind="danger" onClick={remove}>
+                <Glyph name="bulldoze" size={20} />
+                Remove
+              </Button>
+              <Button onClick={() => build.keepBuilding()}>Keep it</Button>
+            </div>
+          </div>
+        ) : (
+          <div class="hf-inspect-foot">
+            {showRoute && (
+              <Button onClick={() => build.routeToSurface(piece)}>
+                <Glyph name="route" size={20} />
+                Route to surface
+              </Button>
+            )}
+            <Button kind="danger" onClick={deconstruct}>
+              <Glyph name="bulldoze" size={20} />
+              Deconstruct
             </Button>
-          )}
-          <Button kind="danger" onClick={() => build.deconstruct(id)}>
-            <Glyph name="bulldoze" size={20} />
-            Deconstruct
-          </Button>
-        </div>
+          </div>
+        )
       }
     >
       <div class="hf-inspect-status">
@@ -84,7 +120,7 @@ export function InspectSheet({ app, build }: { app: AppController; build: BuildS
           <Glyph name={kindGlyph(e.kind)} size={22} />
         </span>
         <span class="hf-inspect-state">
-          <b>{STATUS[e.status]}</b>
+          <b>{statusLine(e.kind, e.status)}</b>
           {e.kind === 'lift' && <span class="hf-row-hint">In flight: {formatInt(iv.inFlight)} · {e.h - 1} rows</span>}
           {e.recipe && <span class="hf-row-hint">Recipe {e.recipe}</span>}
         </span>

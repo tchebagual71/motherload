@@ -294,3 +294,47 @@ describe('SaveStore: a connection the browser closes (WebKit storage process rec
     expect(t.conns).toHaveLength(1);
   });
 });
+
+describe('kept copies (04 §4.11: saves this build cannot load are never overwritten)', () => {
+  it('keep() moves copies out of the rotation; later writes never touch them; they read back verified', async () => {
+    const idb = new IDBFactory();
+    const clock = { t: 1_000 };
+    const s = await open(idb, 'test', clock);
+    const a = bytes(3_000, 1);
+    const b = bytes(3_000, 2);
+    await s.writeCritical(a);
+    clock.t = 2_000;
+    await s.writeRoutine(b); // deflated on the store record
+    await s.promoteGood('b', 2);
+    expect(await s.keep(['a', 'b', 'good'])).toBe(true);
+    expect(await s.listCopies()).toEqual([]);
+    const kept = await s.keptCopies();
+    expect(kept.map((k) => [k.seq, k.savedAt])).toEqual([
+      [2, 2_000],
+      [2, 2_000],
+      [1, 1_000],
+    ]);
+    for (let i = 0; i < 5; i++) await s.writeCritical(bytes(100, 10 + i));
+    expect((await s.listCopies()).map((c) => c.seq)).toEqual([7, 6]);
+    const again = await s.keptCopies();
+    expect(again).toEqual(kept);
+    expect(await s.readKept(kept[0].key)).toEqual(b);
+    expect(await s.readKept(kept[2].key)).toEqual(a);
+    // Survives a reopen; a rotation key is never read as a kept one.
+    s.close();
+    const r = await open(idb, 'test', clock);
+    expect(await r.keptCopies()).toEqual(kept);
+    expect(await r.readKept('slot1/a')).toBeNull();
+  });
+
+  it('a damaged kept copy reads as null; keeping nothing is a no-op', async () => {
+    const idb = new IDBFactory();
+    const s = await open(idb);
+    expect(await s.keep([])).toBe(true);
+    await s.writeCritical(bytes(500));
+    expect(await s.keep(['a'])).toBe(true);
+    const [k] = await s.keptCopies();
+    await tamper(idb, 'test', k.key, (rec) => (rec.crc ^= 1));
+    expect(await s.readKept(k.key)).toBeNull();
+  });
+});

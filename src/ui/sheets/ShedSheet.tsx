@@ -195,10 +195,10 @@ function KitRow({ app, kit }: { app: AppController; kit: KitShopItem }): JSX.Ele
       </p>
       {kit.available ? (
         <div class="hf-buy-row">
-          <Button disabled={!afford || !fits} onClick={() => buy('cargo')} label={`Buy a ${kit.name} to the bay`}>
+          <Button disabled={!afford || !fits} onClick={() => buy('cargo')} label={`Buy 1 ${kit.name} to the bay`}>
             To bay
           </Button>
-          <Button disabled={!afford} onClick={() => buy('stockpile')} label={`Buy a ${kit.name} to the Stockpile`}>
+          <Button disabled={!afford} onClick={() => buy('stockpile')} label={`Buy 1 ${kit.name} to the Stockpile`}>
             To Stockpile
           </Button>
           {kit.inStockpile > 0 && (

@@ -13,6 +13,7 @@ import { DeathCard } from './overlays/DeathCard';
 import { FuelVignette } from './overlays/FuelVignette';
 import { InterruptCard } from './overlays/InterruptCard';
 import { PerfHud } from './overlays/PerfHud';
+import { RestingChip } from './overlays/RestingChip';
 import { RestoringCard } from './overlays/RestoringCard';
 import { SafeModeCard } from './overlays/SafeModeCard';
 import { StyleChip } from './overlays/StyleChip';
@@ -28,6 +29,7 @@ import { MapHost } from './map/MapSheet';
 import { Ruler } from './map/Ruler';
 import { BuildLayer } from './build/BuildLayer';
 import type { BuildSession } from './build/session';
+import { inScope } from '../config/scope';
 
 /** The UI faces declared in styles.css (03 §10.5). Both looks' faces start loading at boot (≈ 45 KB,
  *  precached) instead of on first use, so an A/B flip does not flash the fallback (04 §7.1 preloads). */
@@ -48,21 +50,24 @@ function Root({ app, vp, build }: { app: AppController; vp: Signal<Viewport>; bu
   const chip = app.state.styleTest.value;
   // Build mode (03 §4.1) swaps the pod HUD and controls for its status bar, dock and tray.
   const building = build !== null && app.state.mode.value === 'build';
+  // The depth ruler and the map are MVP rows (canon §5.5): an M0 build has neither (INT-8).
+  const mvp = inScope('mvp');
   return (
     <>
       <div class="hf-status-scrim" aria-hidden="true" />
       {inGame && building && build && (
         <>
-          <Ruler app={app} vp={vp} build={build} />
+          {mvp && <Ruler app={app} vp={vp} build={build} />}
           <BuildLayer app={app} build={build} vp={vp} />
           {settings.showPerf && <PerfHud app={app} />}
           <Toasts app={app} />
+          <RestingChip app={app} />
         </>
       )}
       {inGame && !building && (
         <>
           <FuelVignette app={app} />
-          <Ruler app={app} vp={vp} />
+          {mvp && <Ruler app={app} vp={vp} />}
           <ControlZone app={app} vp={vp} />
           {overlay === 'countdown' && <Countdown app={app} />}
           <Hud app={app} vp={vp} />
@@ -71,11 +76,12 @@ function Root({ app, vp, build }: { app: AppController; vp: Signal<Viewport>; bu
           {settings.showPerf && <PerfHud app={app} />}
           <Toasts app={app} />
           <StoryLayer app={app} />
+          <RestingChip app={app} />
         </>
       )}
       <SheetHost app={app} />
       {overlay === 'ctxlost' && <RestoringCard />}
-      <MapHost app={app} />
+      {mvp && <MapHost app={app} />}
       {overlay === 'interrupt' && <InterruptCard app={app} vp={vp} />}
       {overlay === 'death' && <DeathCard app={app} />}
       {overlay === 'title' && <TitleScreen app={app} />}

@@ -1,7 +1,11 @@
 // Build-mode overlay materials (03 §4.3, §4.10; 04 §5.4): translucent ghosts (valid = role colour 50%, invalid =
-// #FF4D5E 45% + hatch, queued jobs = pulsing blueprint, x-ray = a building faded to 40% because it hides the
-// cursor), the ghosts' depth prepass and crisp silhouette outline, and status bubbles (28-pt discs with one glyph).
-// All draw in the late pass (Pixel Lab pass 3), depth-tested; only the prepass writes depth.
+// magenta-crimson #E0249A 45% striped with plum ink inside a deep-red outline, queued jobs = pulsing blueprint,
+// x-ray = a building faded to 40% because it hides the cursor), the ghosts' depth prepass and crisp silhouette
+// outline, and status bubbles (28-pt discs with one glyph).
+// All draw in the late pass (Pixel Lab pass 3), depth-tested; only the prepass writes depth. Every colour pass
+// ends in <colorspace_fragment>: production Toon draws straight to the sRGB canvas, where a ShaderMaterial must
+// encode its own output (into a render target it stays linear and the sRGB attachment encodes). Without it the
+// canvas showed raw linear values: coral #FF5A4E and the old invalid #FF4D5E both came out as pure red (BUILD-10).
 import { BackSide, Color, DataTexture, DoubleSide, MeshBasicMaterial, NearestFilter, NoColorSpace, RGBAFormat, ShaderMaterial, UnsignedByteType, Vector2 } from 'three';
 import { ROLE, UI } from '../palette';
 import { PART_FLAG } from '../materials/glsl';
@@ -10,12 +14,21 @@ export { BUBBLE_GLYPH } from './status';
 
 /** Ghost styles (hfGhost.y). XRAY: a real building drawn see-through over what it hides (03 §4.9). */
 export const GHOST_STYLE = { VALID: 0, INVALID: 1, JOB: 2, ACTIVE: 3, XRAY: 4 } as const;
-export const INVALID_HEX = 0xff4d5e;
+/**
+ * Invalid ghost tint (03 §4.3, §8.6): a magenta-crimson that no role owns. The old #FF4D5E sat 10° of hue from the
+ * Processing coral #FF5A4E, so a valid Smelter ghost read as an invalid one (BUILD-10). Hue is never the only cue:
+ * an invalid ghost is also striped with plum ink (GHOST_HATCH_PT) inside the deep-red outline.
+ */
+export const INVALID_HEX = 0xe0249a;
 /** Deep red of an invalid ghost's outline (the bulldoze hull colour). */
 export const INVALID_EDGE_HEX = 0xb3263a;
+/** Bulldoze marks (cursor, hover tint): what a tap would remove, not an invalid ghost. */
+export const BULLDOZE_HEX = 0xff4d5e;
 export const GHOST_ALPHA = { valid: 0.5, invalid: 0.45, job: 0.42, xray: 0.4 } as const;
 /** Ghost outline width: CSS px × render DPR in Toon (as the model hulls), one RT texel in Pixel Lab. */
 export const GHOST_EDGE_PX = 1.5;
+/** Period of an invalid ghost's ink stripes in CSS px (half ink, half tint); whole texels in Pixel Lab. */
+export const GHOST_HATCH_PT = 8;
 
 /**
  * Ghost vertex transform shared by the body, its depth prepass and its outline, written once so all three land
@@ -44,7 +57,8 @@ export function createGhostMaterial(): ShaderMaterial {
     transparent: true,
     depthWrite: false,
     vertexColors: true,
-    uniforms: { uTime: { value: 0 } },
+    // uHatch: the invalid stripes' period in target pixels (set with the outline width; GHOST_HATCH_PT CSS px).
+    uniforms: { uTime: { value: 0 }, uHatch: { value: GHOST_HATCH_PT * 2 } },
     vertexShader: /* glsl */ `
 ${GHOST_VERTEX_PARS}
 varying vec3 vN;
@@ -75,6 +89,7 @@ void main() {
 }`,
     fragmentShader: /* glsl */ `
 uniform float uTime;
+uniform float uHatch;
 varying vec3 vN;
 varying vec3 vC;
 varying vec2 vG;
@@ -88,10 +103,11 @@ void main() {
   float a = vG.x;
   float style = vG.y;
   if (style > 0.5 && style < 1.5) {
-    // Invalid: diagonal hatch (03 §4.3) over the shaded faces.
-    float h = step(0.55, fract((gl_FragCoord.x + gl_FragCoord.y) / 10.0));
-    c = mix(c, c * 0.7, h);
-    a = mix(a, a + 0.25, h);
+    // Invalid (03 §4.3): hazard stripes, half plum ink at a fixed screen period, so "no" reads without hue (in
+    // greyscale and for every colour-vision type) on any rock or roof; the tint shows in the other half.
+    float h = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) / uHatch));
+    c = mix(c, ${linear(UI.ink)}, h * 0.82);
+    a = mix(a, 0.78, h);
   } else if (style > 1.5 && style < 3.5) {
     // Queued job: pulsing blueprint with world-fixed scan lines; the job being built pulses faster.
     float speed = style > 2.5 ? 9.0 : 3.0;
@@ -101,6 +117,7 @@ void main() {
     a *= 0.7 + 0.45 * pulse;
   }
   gl_FragColor = vec4(c, clamp(a, 0.0, 0.9));
+  #include <colorspace_fragment>
 }`,
   });
 }
@@ -173,6 +190,7 @@ void main() {
   vec3 ink = ${linear(UI.plum)};
   vec3 c = vStyle > 0.5 && vStyle < 1.5 ? ${linear(INVALID_EDGE_HEX)} : mix(vC * 0.55, ink, 0.35);
   gl_FragColor = vec4(c, 0.92);
+  #include <colorspace_fragment>
 }`,
   });
 }
@@ -341,6 +359,7 @@ void main() {
     c = mix(c, vG.y > 0.5 ? alert : ink, m);
   }
   gl_FragColor = vec4(c, 0.96);
+  #include <colorspace_fragment>
 }`,
   });
 }
@@ -352,7 +371,7 @@ export function overlayMaterial(hex: number, opacity: number): MeshBasicMaterial
 
 export const OVERLAY_HEX = {
   cursor: UI.cream,
-  bulldoze: INVALID_HEX,
+  bulldoze: BULLDOZE_HEX,
   highlight: ROLE.logistics,
   select: ROLE.chevron,
 } as const;

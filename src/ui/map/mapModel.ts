@@ -89,6 +89,11 @@ const METAL_NAME: Record<LodeMetal, string> = {
 };
 const PURITY_LETTER: Record<Purity, 'P' | 'N' | 'R'> = { poor: 'P', normal: 'N', rich: 'R' };
 const PURITY_NAME: Record<Purity, string> = { poor: 'Poor', normal: 'Normal', rich: 'Rich' };
+/** A world's purity knowledge for knownLodes: the hosted factory's, or none (M0 and the UI fakes have no factory). */
+export function worldPurityKnown(w: { readonly factory: { purityKnown(id: number): boolean } | null }): (id: number) => boolean {
+  return (id) => w.factory?.purityKnown(id) === true;
+}
+
 /** Dot pings the Poor Iridium lode (rows 195–259, canon §3.2 R12) when the pod first passes r180. */
 export const IRIDIUM_PING_ROW = 180;
 const IRIDIUM_PING_TOP_MAX = 259;
@@ -109,7 +114,7 @@ export interface MapLode {
   discovered: boolean;
   /** Pinged by Dot but not yet found: a pulsing ring and "?" (03 §6.6). */
   pinged: boolean;
-  /** "?" until discovered, then P / N / R (03 §6.6). */
+  /** "?" until discovered and its purity known (02 §3.6), then P / N / R (03 §6.6). */
   letter: '?' | 'P' | 'N' | 'R';
   /** Metal colour once discovered. */
   colour: number | null;
@@ -122,8 +127,12 @@ export function feetText(row: number): string {
   return `${formatInt(Math.round(TILE_FT * Math.max(0, row)))} ft`;
 }
 
-/** Lodes the player knows about: discovered ones, plus pinged ones still to find. */
-export function knownLodes(lodes: readonly Lode[], scope: Scope, deepestRow: number): MapLode[] {
+/**
+ * Lodes the player knows about: discovered ones, plus pinged ones still to find. `purityKnown` is the factory's
+ * (02 §3.6: fixed-purity lodes and Dowser scans at discovery, else the first drilled ore); until it says so a
+ * discovered lode shows its metal but "?" and "Purity unknown" (SIM-8).
+ */
+export function knownLodes(lodes: readonly Lode[], scope: Scope, deepestRow: number, purityKnown: (id: number) => boolean): MapLode[] {
   const out: MapLode[] = [];
   const floor = scopeFloorRow(scope);
   for (const l of lodes) {
@@ -132,6 +141,7 @@ export function knownLodes(lodes: readonly Lode[], scope: Scope, deepestRow: num
     const pinged = !l.discovered && isPinged(l, deepestRow);
     if (!l.discovered && !pinged) continue;
     const tier = LODE_ORE_TIER[l.metal];
+    const purity = l.discovered && purityKnown(l.id) ? l.purity : null;
     out.push({
       id: l.id,
       cx: l.x0 + LODE_W / 2,
@@ -139,10 +149,12 @@ export function knownLodes(lodes: readonly Lode[], scope: Scope, deepestRow: num
       top: l.top,
       discovered: l.discovered,
       pinged,
-      letter: l.discovered ? PURITY_LETTER[l.purity] : '?',
+      letter: purity ? PURITY_LETTER[purity] : '?',
       colour: l.discovered && tier > 0 ? ORES[tier - 1].base : null,
       title: l.discovered ? `${METAL_NAME[l.metal]} lode` : 'Survey ping',
-      detail: l.discovered ? `${PURITY_NAME[l.purity]} purity · ${feetText(l.top)}` : `Dot heard something big near ${feetText(l.top)}`,
+      detail: !l.discovered
+        ? `Dot heard something big near ${feetText(l.top)}`
+        : `${purity ? `${PURITY_NAME[purity]} purity` : 'Purity unknown'} · ${feetText(l.top)}`,
     });
   }
   return out;

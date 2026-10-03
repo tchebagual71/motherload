@@ -29,6 +29,7 @@ export function defaultSettings(screenWidth: number, screenHeight: number, osRed
     landingAssist: false,
     steadyDrill: false,
     music: true,
+    voiceBlips: true,
   };
 }
 
@@ -74,6 +75,7 @@ export function sanitizeSettings(raw: unknown, d: Settings): Settings {
     ...(r.batterySaver === true && { batterySaver: true }),
     ...(r.instantBuild === true && { instantBuild: true }),
     music: pickBool(r.music, d.music),
+    voiceBlips: pickBool(r.voiceBlips, d.voiceBlips),
   };
 }
 

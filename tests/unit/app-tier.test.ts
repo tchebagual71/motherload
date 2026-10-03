@@ -47,6 +47,7 @@ describe('settings', () => {
       landingAssist: false,
       steadyDrill: false,
       music: true,
+      voiceBlips: true,
     });
     expect(defaultSettings(375, 667).controlSize).toBe('S');
     expect(defaultSettings(375, 667, true).reducedMotion).toBe(true);
@@ -63,6 +64,9 @@ describe('settings', () => {
     expect(sanitizeSettings('garbage', d)).toEqual(d);
     expect(sanitizeSettings({ music: false }, d).music).toBe(false);
     expect(sanitizeSettings({ music: 'off' }, d).music).toBe(true);
+    // Voice blips (03 §11.5, §12): default on; an older stored object without the field keeps it on.
+    expect(sanitizeSettings({ voiceBlips: false }, d).voiceBlips).toBe(false);
+    expect(sanitizeSettings({ sound: true }, d).voiceBlips).toBe(true);
   });
 
   it('round-trips through a channel-prefixed store and survives corrupt JSON', () => {

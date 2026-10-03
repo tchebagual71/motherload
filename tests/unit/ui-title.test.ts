@@ -98,3 +98,31 @@ describe('Install steps layout (UI-7)', () => {
     });
   }
 });
+
+describe('a stored save this build cannot load (04 §4.11; SIM-4)', () => {
+  const kept = (kind: 'test' | 'newer', fresh: boolean) =>
+    createFakeApp({ scope: 'mvp', look: 'toon', overlay: 'title', standalone: true, keptSave: { kind, fresh } });
+
+  it('the boot that refused an M0 save says so on the title, and copies the kept code', async () => {
+    app = kept('test', true);
+    const writeText = vi.fn(async () => undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    await mount();
+    const card = dom.root.querySelector('.hf-kept-save');
+    expect(text(card)).toContain("This test save can't be loaded");
+    await flush(() => button('Copy its save code')!.click());
+    await flush(() => new Promise((r) => setTimeout(r, 0)));
+    expect(writeText).toHaveBeenCalledWith('HF1:kept-test-save');
+    expect(text(card)).toContain('Copied');
+  });
+
+  it('a newer save names itself; a save kept by an earlier boot stays off the title (Menu → Saves offers it)', async () => {
+    app = kept('newer', true);
+    await mount();
+    expect(text(dom.root.querySelector('.hf-kept-save'))).toContain('This save is from a newer version');
+    await flush(() => render(null, dom.root as unknown as HTMLElement));
+    app = kept('test', false);
+    await mount();
+    expect(dom.root.querySelector('.hf-kept-save')).toBeNull();
+  });
+});
