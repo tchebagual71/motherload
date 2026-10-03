@@ -36,6 +36,15 @@ export interface RenderFrame {
   brightMines: boolean;
   /** Accessibility: no camera shake, gentler animation. */
   reducedMotion: boolean;
+  /**
+   * The pod may run (no pause reason, canon §4.5). False: a held pod keeps its thrust/dig state for the save,
+   * but its exhaust, drill FX and thruster lamp stop. Omitted = running.
+   */
+  podRunning?: boolean;
+  /** Battery mode (04 §5.8): half the particles, no idle animation. */
+  battery?: boolean;
+  /** Dynamic resolution (04 §5.8): production Toon render DPR, clamped to the tier's floor and cap. */
+  renderDpr?: number;
 }
 
 export interface RenderInfo {
@@ -44,6 +53,8 @@ export interface RenderInfo {
   look: Look;
   quality: QualityTier;
   pixelScale: number;
+  /** DPR the scene renders at (Toon: tier cap or the dynamic-resolution value; Pixel Lab: the device DPR). */
+  renderDpr?: number;
 }
 
 export interface Renderer {

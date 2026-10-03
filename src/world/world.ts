@@ -268,7 +268,7 @@ export class World implements WorldApi {
     return i < 0 ? null : RIM_BUILDINGS[i].id;
   }
 
-  /** Armed = lights pulse (03 §6.4). Not part of WorldApi yet. */
+  /** Armed = lights pulse (03 §6.4). */
   isPadArmed(id: RimBuildingId): boolean {
     return this.pads.isArmed(this.pod, padIndexOf(id));
   }

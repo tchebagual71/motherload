@@ -72,6 +72,7 @@ export function SettingsSheet({ app, close, leaving }: { app: AppController; clo
           onChange={(v) => set({ textScale: v === '1.15' ? 1.15 : 1 })}
         />
       )}
+      <Switch label="Battery mode" hint="30 fps, fewer particles" value={s.batterySaver === true} onChange={(v) => set({ batterySaver: v })} />
       <Switch label="Bright Mines" hint="Lifts the darkness underground" value={s.brightMines} onChange={(v) => set({ brightMines: v })} />
       <Switch label="Reduced motion" hint="No shake, squash or camera shots" value={s.reducedMotion} onChange={(v) => set({ reducedMotion: v })} />
       <Switch label="Performance HUD" hint="fps, frame time, draw calls" value={s.showPerf} onChange={(v) => set({ showPerf: v })} />

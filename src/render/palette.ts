@@ -1,4 +1,5 @@
 // Shared palette (03 §8.2–8.6). Hex numbers for three.js Color. Owned by 03; mirrored here for code.
+import type { LodeMetal } from '../shared/types';
 
 export const SURFACE = {
   skyTop: 0xf2b58e,
@@ -76,6 +77,9 @@ export const ORES = [
   { base: 0xeefbff, highlight: 0xffffff, emissive: 0.6, shape: 'octahedron' },
   { base: 0xb78cff, highlight: 0xebddff, emissive: 0.7, shape: 'twinPoint' },
 ] as const;
+
+/** Mineral tier of each lode metal's ore colour (ORES[tier − 1]); Kerogen has none (03 §8.4 lode ore). */
+export const LODE_ORE_TIER: Readonly<Record<LodeMetal, number>> = { hematite: 1, copper: 2, cobalt: 3, gold: 4, iridium: 5, thorium: 6, kerogen: 0 };
 
 /** Relic colours by relic id (Fossil Shell, Strongbox, Recorder, Sigil Tablet). */
 export const RELIC_COLOURS = [0xf2e6c9, 0xc8963e, 0xff7a3d, 0x5e5a70] as const;

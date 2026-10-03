@@ -280,6 +280,9 @@ export class FakeWorld implements WorldApi {
     return null;
   }
   sheetClosed(_id: RimBuildingId): void {}
+  isPadArmed(_id: RimBuildingId): boolean {
+    return true;
+  }
 
   fuelQuote(liters: number | 'fill'): Quote {
     const room = Math.max(0, this.stats().maxFuel - this.pod.fuel);

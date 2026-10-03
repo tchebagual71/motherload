@@ -1,6 +1,6 @@
 // Live ViewportLayout for render and input (03 §1.1): canvas size, device pixel ratio, safe-area insets from a
 // probe, and the visual viewport so a floating Safari toolbar never covers the controls. Re-read on every
-// resize, orientation change and visual-viewport change.
+// resize, orientation change, visual-viewport change and devicePixelRatio change (zoom, display switch).
 import type { ViewportLayout } from '../render/api';
 import { createSafeAreaProbe } from '../platform/safeArea';
 import { computeLayout, sameLayout, type ControlSize } from './layout';
@@ -57,6 +57,7 @@ export function createViewportTracker(opts: ViewportTrackerOptions): ViewportTra
   window.addEventListener('orientationchange', recompute);
   vv?.addEventListener('resize', recompute);
   vv?.addEventListener('scroll', recompute);
+  const dpr = opts.dprOverride === null ? watchDevicePixelRatio(recompute) : null;
 
   return {
     get layout() {
@@ -72,7 +73,33 @@ export function createViewportTracker(opts: ViewportTrackerOptions): ViewportTra
       window.removeEventListener('orientationchange', recompute);
       vv?.removeEventListener('resize', recompute);
       vv?.removeEventListener('scroll', recompute);
+      dpr?.dispose();
       probe.dispose();
+    },
+  };
+}
+
+/**
+ * A DPR change alone fires no resize: a `(resolution: Ndppx)` query matching the current ratio fires `change`
+ * once it stops matching, so it is re-armed for the new ratio each time.
+ */
+export function watchDevicePixelRatio(onChange: () => void): { dispose(): void } {
+  if (typeof matchMedia === 'undefined') return { dispose() {} };
+  let mq: MediaQueryList | null = null;
+  const arm = (): void => {
+    mq?.removeEventListener('change', fire);
+    mq = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    mq.addEventListener('change', fire);
+  };
+  const fire = (): void => {
+    arm();
+    onChange();
+  };
+  arm();
+  return {
+    dispose() {
+      mq?.removeEventListener('change', fire);
+      mq = null;
     },
   };
 }

@@ -57,6 +57,7 @@ export function sanitizeSettings(raw: unknown, d: Settings): Settings {
     returnTick: r.returnTick === 'training' || r.returnTick === 'on' || r.returnTick === 'off' ? r.returnTick : d.returnTick,
     landingAssist: pickBool(r.landingAssist, d.landingAssist),
     steadyDrill: pickBool(r.steadyDrill, d.steadyDrill),
+    ...(r.batterySaver === true && { batterySaver: true }),
   };
 }
 

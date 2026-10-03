@@ -30,10 +30,15 @@ export const REMESH_NEAR_POD = 4;
 export const STYLE_TEST_TOON_DPR = 2;
 export const MAX_LAMPS = 16;
 
-/** Toon render DPR for a device DPR: the style test pins it, production caps it by tier. */
-export function toonDpr(deviceDpr: number, tier: QualityTier, styleTest: boolean): number {
-  const cap = styleTest ? STYLE_TEST_TOON_DPR : QUALITY[tier].dprCap;
-  return Math.max(0.5, Math.min(deviceDpr, cap));
+/**
+ * Toon render DPR for a device DPR: the style test pins it (canon §5.1: dynamic resolution off); production
+ * caps it by tier and, with dynamic resolution (04 §5.8), follows `dynamic` down to the tier's floor.
+ */
+export function toonDpr(deviceDpr: number, tier: QualityTier, styleTest: boolean, dynamic: number | null = null): number {
+  const spec = QUALITY[tier];
+  const cap = Math.min(deviceDpr, styleTest ? STYLE_TEST_TOON_DPR : spec.dprCap);
+  const want = styleTest || dynamic === null ? cap : Math.min(cap, Math.max(spec.dprFloor, dynamic));
+  return Math.max(0.5, want);
 }
 
 /** Outline scope for a tier; the style test outlines everything in both looks (04 §5.5). */

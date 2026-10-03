@@ -7,6 +7,12 @@ import { F, T, type Lode, type TerrainCode } from '../shared/types';
 export const CHUNKS_X = Math.ceil(MINE_W / CHUNK); // 3
 export const CHUNKS_Y = Math.ceil(MINE_H / CHUNK); // 38
 
+/**
+ * Cell flags the chunk mesher reads (render/terrain/mesher.ts: revealed methane tint). Only these bump
+ * chunkVersion; SEEN/CHARTED/DUG feed the map and the sim, and a remesh would rebuild identical geometry.
+ */
+export const MESH_FLAGS = F.REVEALED;
+
 export class TerrainGrid {
   readonly w = MINE_W;
   readonly h = MINE_H;
@@ -66,8 +72,8 @@ export class TerrainGrid {
     const after = on ? before | f : before & ~f;
     if (after === before) return;
     this.flags[i] = after;
-    // SEEN/CHARTED only affect map/fog; still bump so the renderer can fade fog.
-    this.touch(x, r);
+    if ((before ^ after) & MESH_FLAGS) this.touch(x, r);
+    else this.version++;
   }
   lodeAt(x: number, r: number): Lode | null {
     if (!this.inBounds(x, r)) return null;

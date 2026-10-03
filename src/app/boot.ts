@@ -41,9 +41,10 @@ import { GameApp, type AppHooks } from './controller';
 import { orientationFlipped } from './layout';
 import { GameLoop } from './loop';
 import { NOTICE } from './notices';
+import { QUALITY_NOTICE, QualityGovernor, RunTracker, createLoopQuality, type TierChangeReason } from './qualityGovernor';
 import { createSettingsStore, defaultSettings, initialLook, type SettingsStore } from './settings';
 import { createStyleViews } from './styleViews';
-import { resolveTier } from './tier';
+import { isQualityTier, resolveTier } from './tier';
 import type { Settings } from './types';
 import { createViewportTracker, parseDprOverride, type ViewportTracker } from './viewport';
 import { inPlay, WakePolicy } from './wakePolicy';
@@ -82,6 +83,38 @@ interface BootConfig {
   look: Look;
   resolveQuality(q: Settings['quality']): QualityTier;
   navStart: number;
+  /** Automatic quality (canon §3.14): inert when the URL or the M0 style test pins the tier. */
+  governor: QualityGovernor;
+  run: RunTracker | null;
+  /** The previous run died in view: the governor already dropped a rung; boot toasts once the UI is up. */
+  crashed: boolean;
+  /** Live OS reduced-motion preference. */
+  osReducedMotionNow(): boolean;
+}
+
+/** prefers-reduced-motion, following changes while the app runs (INT-7). */
+function watchReducedMotion(initial: boolean): () => boolean {
+  let on = initial;
+  try {
+    const mq = matchMedia('(prefers-reduced-motion: reduce)');
+    mq.addEventListener('change', () => (on = mq.matches));
+  } catch {
+    // No matchMedia: keep the boot-time value.
+  }
+  return () => on;
+}
+
+/** Governor + crash-loop tracker (04 §10.5). A crash found here drops the tier before the renderer exists. */
+function createQuality(params: URLSearchParams, device: DeviceInfo): { governor: QualityGovernor; run: RunTracker | null; crashed: boolean } {
+  const pinned = isQualityTier(params.get('tier')) || SCOPE === 'm0';
+  const governor = new QualityGovernor({ kv: local, key: lsKey('quality'), device, pinned });
+  const run = pinned ? null : new RunTracker(local, lsKey('run'), () => Date.now());
+  const crashed = run?.boot() ?? false;
+  if (crashed) governor.crashed();
+  if (run) {
+    onLifecycle({ hidden: () => run.clean(), pagehide: () => run.clean(), visible: () => run.beat(true) });
+  }
+  return { governor, run, crashed };
 }
 
 function readConfig(): BootConfig {
@@ -90,6 +123,7 @@ function readConfig(): BootConfig {
   const osReducedMotion = prefersReducedMotion();
   const settingsStore = createSettingsStore(local, (n) => lsKey(n));
   const urlTier = params.get('tier');
+  const quality = createQuality(params, device);
   return {
     params,
     testMode: params.get('test') === '1',
@@ -99,8 +133,10 @@ function readConfig(): BootConfig {
     // Text scale is an MVP row (canon §5.5): an M0 build keeps 100%.
     settings: settingsStore.loadSettings(defaultSettings(screen.width, screen.height, osReducedMotion, inScope('mvp') ? osTextScale() : 1)),
     look: initialLook(params.get('look'), settingsStore.loadLook()),
-    resolveQuality: (q) => resolveTier(q, urlTier, device),
+    resolveQuality: (q) => resolveTier(q, urlTier, device, quality.governor.tier),
     navStart: performance.now(),
+    ...quality,
+    osReducedMotionNow: watchReducedMotion(osReducedMotion),
   };
 }
 
@@ -225,6 +261,23 @@ function createPerfReporter(cfg: BootConfig, app: GameApp, perf: PerfMonitor, vi
   };
 }
 
+/** Automatic tier changes reach the renderer (when Settings → Quality is Auto), the Perf Report and a toast. */
+function wireQualityChanges(cfg: BootConfig, app: GameApp, reporter: PerfReporter, renderer: () => Renderer | null): void {
+  const notify = (reason: TierChangeReason): void => {
+    const text = QUALITY_NOTICE[reason];
+    if (text) app.toast(text, 'info');
+  };
+  // A tier the player picked is unaffected, so it gets no toast.
+  const auto = (): boolean => app.state.settings.peek().quality === 'auto';
+  if (cfg.crashed && auto()) notify('crash');
+  cfg.governor.setOnChange((_tier, reason) => {
+    const tier = cfg.resolveQuality(app.state.settings.peek().quality);
+    renderer()?.setQuality(tier);
+    reporter.recorder.switchTo(app.state.look.peek(), tier);
+    if (auto()) notify(reason);
+  });
+}
+
 interface EngineDeps {
   cfg: BootConfig;
   app: GameApp;
@@ -281,7 +334,11 @@ function startEngine(d: EngineDeps): { loop: GameLoop; renderer: Renderer } | nu
     saves: d.saves,
     perf: d.perf,
     layout: () => viewport.layout,
-    osReducedMotion: cfg.osReducedMotion,
+    osReducedMotion: cfg.osReducedMotionNow,
+    quality: createLoopQuality(cfg.governor, cfg.run, {
+      batterySetting: () => app.state.settings.peek().batterySaver === true,
+      autoTier: () => app.state.settings.peek().quality === 'auto',
+    }),
     onFirstTick: d.onFirstTick,
     onFirstFrame: d.onFirstFrame,
     onError: (e) => {
@@ -407,6 +464,7 @@ export async function boot(): Promise<void> {
   const wake = new WakePolicy(createWakeLock());
   effect(() => wake.update(inPlay(app.state.overlay.value, app.state.sheet.value)));
   hooks.onLook = (l) => reporter.recorder.switchTo(l, cfg.resolveQuality(app.state.settings.peek().quality));
+  wireQualityChanges(cfg, app, reporter, () => engine?.renderer ?? null);
   hooks.onSettings = (next, prev) => {
     if (next.controlSize !== prev.controlSize) viewport.setControlSize(next.controlSize);
     if (next.quality !== prev.quality) reporter.recorder.switchTo(app.state.look.peek(), cfg.resolveQuality(next.quality));

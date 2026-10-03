@@ -199,13 +199,17 @@ class PipModel implements PodModel {
   // ---- animation ------------------------------------------------------------------------------
 
   private animateBody(s: PodVisualState, dt: number, t: number): void {
+    // Reduced motion (03 §7) drops squash, stretch, bob and shake; battery mode (04 §5.8) the idle bob only.
+    const calm = s.reducedMotion === true;
     if (!s.grounded) this.airVy = s.vy;
-    else if (!this.wasGrounded) this.squash = Math.min(1, Math.max(0.3, -this.airVy / 8));
+    else if (!this.wasGrounded && !calm) this.squash = Math.min(1, Math.max(0.3, -this.airVy / 8));
     this.wasGrounded = s.grounded;
-    this.stepSquashSpring(dt);
+    if (calm) this.squash = this.squashV = 0;
+    else this.stepSquashSpring(dt);
 
-    this.stretch += (Math.max(0, s.thrust) - this.stretch) * approach(10, dt);
-    const idleTarget = !s.digging && Math.abs(s.vx) < 0.4 && Math.abs(s.vy) < 0.4 ? 1 : 0;
+    this.stretch += ((calm ? 0 : Math.max(0, s.thrust)) - this.stretch) * approach(10, dt);
+    const still = calm || s.still === true;
+    const idleTarget = !still && !s.digging && Math.abs(s.vx) < 0.4 && Math.abs(s.vy) < 0.4 ? 1 : 0;
     this.idle += (idleTarget - this.idle) * approach(4, dt);
     const wave = Math.sin(t * Math.PI * 2 * BOB_HZ);
     // Grounded idle "breathes" from the skids up; hovering idle bobs.
@@ -224,7 +228,7 @@ class PipModel implements PodModel {
     const fx = Math.abs(this.flip) < 0.12 ? (this.flip < 0 ? -0.12 : 0.12) : this.flip;
     this.facingGroup.scale.x = fx;
 
-    const shake = JITTER * this.extend * (s.digging ? 1 : 0);
+    const shake = calm ? 0 : JITTER * this.extend * (s.digging ? 1 : 0);
     const jx = shake * Math.sin(t * Math.PI * 2 * JITTER_HZ);
     const jy = shake * Math.sin(t * Math.PI * 2 * JITTER_HZ * 1.37 + 1.1);
     this.root.position.set(s.x + jx, s.y + bob + jy, 0);
