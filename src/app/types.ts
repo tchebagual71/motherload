@@ -54,6 +54,8 @@ export interface Settings {
   steadyDrill: boolean;
   /** Battery mode on (04 §5.8: 30 fps, half the particles, no idle animation); else only when Low Power Mode is suspected. */
   batterySaver?: boolean;
+  /** Build mode: placements commit on lift instead of ghost-and-confirm; painting and Bulldoze still preview (03 §4.3). */
+  instantBuild?: boolean;
   /** Music ("Kettle On", 03 §11.2); SFX and ambience follow `sound` alone. */
   music: boolean;
 }

@@ -22,7 +22,11 @@ import { SaveScheduler, type SaveSink } from '../save/scheduler';
 import type { WriteError } from '../save/store';
 import type { Look } from '../shared/types';
 import { mountUI } from '../ui';
+import { installBuildContext } from '../ui/build/contextActions';
+import { BuildSession } from '../ui/build/session';
+import { worldArea } from '../ui/build/tools';
 import { debugEnabled } from '../ui/env';
+import { TOUCH } from '../shared/canon';
 import {
   adoptLateStore,
   codes,
@@ -288,6 +292,8 @@ interface EngineDeps {
   saves: SaveScheduler;
   perf: PerfMonitor;
   reporter: PerfReporter;
+  /** Build-mode session (MVP), or null in M0 builds. */
+  build: BuildSession | null;
   /** Called once this boot has drawn its first frame. */
   onFirstFrame(): void;
   onFirstTick(): void;
@@ -323,6 +329,7 @@ function startEngine(d: EngineDeps): { loop: GameLoop; renderer: Renderer } | nu
       const p = app.world.pod;
       return renderer.worldToScreen(p.x, p.y, 0);
     },
+    build: d.build ?? undefined,
   });
   app.attachInput(input);
   let reported = false;
@@ -355,6 +362,7 @@ function startEngine(d: EngineDeps): { loop: GameLoop; renderer: Renderer } | nu
         app,
         loop,
         renderer,
+        build: d.build,
         perfReport: () => d.reporter.report(renderer),
         audioState: () => d.audio.state,
         saveNow: async () => (await d.saves.critical(performance.now()))?.ok ?? false,
@@ -480,8 +488,25 @@ export async function boot(): Promise<void> {
     if (t?.closest('button') && !t.closest('[data-slot],[data-thrust]')) audio.play('uiTap');
   });
 
+  // ---- build mode (MVP; 03 §4): the session owns tools and the build camera; input, UI and the context button share it
+  const build = inScope('mvp')
+    ? new BuildSession({
+        app,
+        renderer: () => engine?.renderer ?? null,
+        area: () => {
+          const l = viewport.layout;
+          const bottomInset = Math.max(0, l.controlZone - TOUCH.controlZone[app.state.settings.peek().controlSize]);
+          return worldArea(l.width, l.height, l.clearTop - TOUCH.hudRow, bottomInset);
+        },
+      })
+    : null;
+  if (build) {
+    app.attachBuild(build);
+    installBuildContext(build);
+  }
+
   // ---- UI
-  mountUI(uiRoot, app);
+  mountUI(uiRoot, app, { build: build ?? undefined });
   document.getElementById('boot')?.remove();
   // Held behind the title (or Safe Mode) until the toast layer shows; a notice about the loaded copy is dropped if
   // the player starts a new game instead.
@@ -500,6 +525,7 @@ export async function boot(): Promise<void> {
     saves,
     perf,
     reporter,
+    build,
     onFirstTick: () => tracker.phase('firstTick'),
     onFirstFrame: () => {
       reporter.marks.firstFrameMs = performance.now() - cfg.navStart;

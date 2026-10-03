@@ -9,7 +9,9 @@ import { TOUCH } from '../shared/canon';
 import { closeCurrentSheet } from '../ui/actions';
 import { runContextAction } from '../ui/context';
 import { debugEnabled } from '../ui/env';
+import type { BuildSession } from '../ui/build/session';
 import { CanvasArbiter, type PointerSample } from './arbiter';
+import { createBuildInput } from './build';
 import { SlotPress, type SlotKind } from './arming';
 import { controls } from './controlsState';
 import { installGestureGuards } from './gestures';
@@ -32,6 +34,8 @@ export interface CreateInputOptions {
   isTapTarget?: (px: number, py: number) => boolean;
   /** The pod's position in canvas CSS px (the one-handed virtual origin's x), or null before the first frame. */
   podScreen?: () => { x: number; y: number } | null;
+  /** Build mode (03 §4): canvas gestures go to this session while AppState.mode is 'build'. */
+  build?: BuildSession;
 }
 
 /** The base slides when the thumb passes 1.25 R (03 §3.1 [UX]). */
@@ -68,6 +72,8 @@ export function createInput(opts: CreateInputOptions): InputController {
   const tapEls = new Map<number, HTMLElement>();
   const swallow = new ClickSwallow<HTMLElement>();
   controls.podScreen = opts.podScreen ?? null;
+  const buildInput = opts.build ? createBuildInput({ session: opts.build, app }) : null;
+  const building = (): boolean => app.state.mode.peek() === 'build';
 
   const sample = (e: PointerEvent): PointerSample => {
     scratch.id = e.pointerId;
@@ -182,6 +188,10 @@ export function createInput(opts: CreateInputOptions): InputController {
 
   // ---------------------------------------------------------------- canvas pointers
   const onCanvasDown = (e: PointerEvent): void => {
+    if (buildInput && building()) {
+      onBuildDown(e);
+      return;
+    }
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     app.unlockAudio();
     const rect = canvas.getBoundingClientRect();
@@ -210,13 +220,37 @@ export function createInput(opts: CreateInputOptions): InputController {
     return arbiter.down(p, oneHandedZone(layout, size, leftHanded), virtualOrigin(layout, size, pod ? pod.x : null));
   };
 
+  // Build mode (04 §6.2): its own machine; a build pointer stays there until it lifts, so it never becomes a stick.
+  const onBuildDown = (e: PointerEvent): void => {
+    if (!buildInput) return;
+    app.unlockAudio();
+    const rect = canvas.getBoundingClientRect();
+    canvasLeft = rect.left;
+    canvasTop = rect.top;
+    buildInput.down(e, e.clientX - canvasLeft, e.clientY - canvasTop);
+    if (!buildInput.owns(e.pointerId)) return;
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch {
+      // See onCanvasDown.
+    }
+  };
+
   const onCanvasMove = (e: PointerEvent): void => {
+    if (buildInput && (buildInput.owns(e.pointerId) || (building() && arbiter.roleOf(e.pointerId) === null))) {
+      buildInput.move(e, e.clientX - canvasLeft, e.clientY - canvasTop);
+      return;
+    }
     if (arbiter.roleOf(e.pointerId) === null) return;
     arbiter.move(sample(e));
     if (e.pointerId === arbiter.stick.pointerId) publishStick();
   };
 
   const onCanvasUp = (e: PointerEvent): void => {
+    if (buildInput?.owns(e.pointerId)) {
+      buildInput.up(e, e.clientX - canvasLeft, e.clientY - canvasTop);
+      return;
+    }
     const wasStick = e.pointerId === arbiter.stick.pointerId;
     const tap = arbiter.up(sample(e));
     if (wasStick) publishStick();
@@ -224,6 +258,10 @@ export function createInput(opts: CreateInputOptions): InputController {
   };
 
   const onCanvasCancel = (e: PointerEvent): void => {
+    if (buildInput?.owns(e.pointerId)) {
+      buildInput.cancel(e.pointerId);
+      return;
+    }
     const wasStick = arbiter.cancel(e.pointerId);
     if (!wasStick) return;
     publishStick();
@@ -231,6 +269,10 @@ export function createInput(opts: CreateInputOptions): InputController {
   };
 
   const onCanvasLostCapture = (e: PointerEvent): void => {
+    if (buildInput?.owns(e.pointerId)) {
+      buildInput.cancel(e.pointerId);
+      return;
+    }
     // Fires after every pointerup too (already removed → no-op); otherwise drop the pointer quietly.
     if (arbiter.roleOf(e.pointerId) !== null && arbiter.cancel(e.pointerId)) publishStick();
   };
@@ -363,8 +405,25 @@ export function createInput(opts: CreateInputOptions): InputController {
     }
   };
 
+  const onWheel = (e: WheelEvent): void => {
+    if (!buildInput || !building()) return;
+    const rect = canvas.getBoundingClientRect();
+    buildInput.wheel(e, e.clientX - rect.left, e.clientY - rect.top);
+  };
+
   const onKeyDown = (e: KeyboardEvent): void => {
-    if (e.metaKey || e.ctrlKey || e.altKey || isTextField(e.target)) return;
+    if (isTextField(e.target)) return;
+    if (buildInput && building() && app.state.sheet.peek() === null) {
+      if (buildInput.key(e)) e.preventDefault();
+      return;
+    }
+    // B opens build mode (03 §3.7) when nothing else holds the screen.
+    if (e.code === 'KeyB' && !e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && buildInput && !paused()) {
+      app.enterBuild();
+      e.preventDefault();
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     const cmd = keys.keyDown(e.code, e.repeat);
     if (cmd && runCommand(cmd)) e.preventDefault();
   };
@@ -376,6 +435,7 @@ export function createInput(opts: CreateInputOptions): InputController {
 
   // ---------------------------------------------------------------- lifecycle
   const releaseAll = (): void => {
+    buildInput?.releaseAll();
     arbiter.releaseAll();
     press.cancel();
     clearPressVisuals();
@@ -400,6 +460,7 @@ export function createInput(opts: CreateInputOptions): InputController {
     [canvas, 'pointerup', onCanvasUp as EventListener],
     [canvas, 'pointercancel', onCanvasCancel as EventListener],
     [canvas, 'lostpointercapture', onCanvasLostCapture as EventListener],
+    [canvas, 'wheel', onWheel as EventListener],
     [uiRoot, 'pointerdown', onUiDown as EventListener],
     [uiRoot, 'pointermove', onUiMove as EventListener],
     [uiRoot, 'pointerup', onUiUp as EventListener],
@@ -433,7 +494,7 @@ export function createInput(opts: CreateInputOptions): InputController {
       return intent;
     },
     get touching(): boolean {
-      return arbiter.pointerCount > 0 || thrustPointer !== -1 || press.captured;
+      return arbiter.pointerCount > 0 || thrustPointer !== -1 || press.captured || (buildInput?.touching ?? false);
     },
     get active(): boolean {
       return arbiter.stick.magnitude > 0 || keys.active || thrustPointer !== -1 || thrustLatched;
@@ -441,6 +502,7 @@ export function createInput(opts: CreateInputOptions): InputController {
     releaseAll,
     dispose(): void {
       releaseAll();
+      buildInput?.dispose();
       if (controls.podScreen === opts.podScreen) controls.podScreen = null;
       for (const [target, type, fn, capture] of listen) target.removeEventListener(type, fn, capture);
       disposeGuards();
