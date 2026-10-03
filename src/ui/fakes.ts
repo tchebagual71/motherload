@@ -162,6 +162,13 @@ export class FakeWorld implements WorldApi {
   ghostProgress(): null {
     return null;
   }
+  deconstructUnderground(): { ok: false; code: 'E_INVALID' } {
+    return { ok: false, code: 'E_INVALID' };
+  }
+  removeUndergroundBelts(): { ok: false; code: 'E_INVALID' } {
+    return { ok: false, code: 'E_INVALID' };
+  }
+  setAway(): void {}
   readonly seed = 7;
   /** The harness never reads terrain; a real grid would pull sim code into the UI bundle. */
   readonly terrain = null as unknown as TerrainGrid;

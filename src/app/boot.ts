@@ -202,10 +202,12 @@ function wireLifecycle(app: GameApp, saves: SaveScheduler, audio: AudioEngine, l
   onLifecycle({
     hidden: () => {
       criticalSave();
+      app.world.setAway(true); // after the save: a fresh session is never away (MVP: the factory sleeps, 02 §8)
       audio.suspend();
     },
     pagehide: criticalSave,
     visible: () => {
+      app.world.setAway(false);
       loop()?.resetClock();
       audio.resume();
       app.interrupt();

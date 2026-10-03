@@ -30,4 +30,6 @@ export interface SaveState {
   pads: PadSnapshot;
   /** Factory bytes (FACT section, MVP+); absent in M0 saves and M0 builds. */
   factory?: Uint8Array;
+  /** The pod's ghost-completion timer (PODS, version ≥ 1; 02 §2.6): job id (0 = none) and steps held. */
+  ghost?: { id: number; steps: number };
 }

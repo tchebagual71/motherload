@@ -17,6 +17,10 @@ import {
   BEATS,
   type LedgerEntry,
 } from '../../story';
+import { YARD_EXPANSIONS, RUNGS } from '../../factory/api';
+import { scopeAtLeast } from '../../shared/scope';
+import { act } from '../actions';
+import { Button } from '../widgets';
 import { BottomSheet } from '../BottomSheet';
 import { formatCash, formatDepth, formatInt } from '../format';
 import { Icon } from '../icons';
@@ -53,6 +57,7 @@ export function OfficeSheet({ app, close, leaving }: { app: AppController; close
       </div>
       {tab === 'log' && <TransmissionLog ledger={ledger} />}
       {tab === 'board' && <MilestoneBoard ledger={ledger} />}
+      {tab === 'plans' && app.world.factory && <YardExpansionCard app={app} />}
       {tab === 'plans' && <CoopPlans flags={app.world.story.flags} />}
       {tab === 'stats' && <ClaimStats app={app} ledger={ledger} />}
     </BottomSheet>
@@ -180,5 +185,49 @@ function ClaimStats({ app, ledger }: { app: AppController; ledger: StoryLedger }
         </div>
       ))}
     </dl>
+  );
+}
+
+const EXPANSION_NAMES = ['Yard Expansion I', 'Yard Expansion II', 'Yard Expansion III'];
+
+/** Dot's office "expansions" (canon §3.1; 03 §6.3): the next Yard Expansion, its price and what unlocks it. */
+function YardExpansionCard({ app }: { app: AppController }): JSX.Element | null {
+  const w = app.world;
+  const f = w.factory;
+  if (!f) return null;
+  const i = YARD_EXPANSIONS.findIndex((x) => x.rows > f.yardRows);
+  const next = i >= 0 ? YARD_EXPANSIONS[i] : null;
+  const inScope = next !== null && (next.scope === 'mvp' || scopeAtLeast(w.scope, 'v1'));
+  const open = next !== null && f.isUnlocked(next.rung);
+  const trigger = next ? (RUNGS.find((r) => r.id === next.rung)?.trigger ?? '') : '';
+  const short = next ? next.cash - w.wallet.cash : 0;
+  return (
+    <div class="hf-card hf-office-yard" role="group" aria-label="Yard expansion" style={{ margin: '4px 0 14px' }}>
+      <div class="hf-card-head">
+        <span class="hf-card-icon">
+          <Icon name="shed" size={22} />
+        </span>
+        <span class="hf-card-title">{next && inScope ? EXPANSION_NAMES[i] : 'Your Yard'}</span>
+        <span class="hf-card-tier hf-digits">
+          48 × {f.yardRows}
+          {next && inScope ? ` → ${next.rows}` : ''}
+        </span>
+      </div>
+      {next && inScope ? (
+        <>
+          <p class="hf-card-text">More Yard rows for Smelters, Assemblers and Bins.</p>
+          <div class="hf-card-foot">
+            <span class="hf-price hf-digits">{formatCash(next.cash)}</span>
+            {!open && <span class="hf-blocker">Locked · {trigger}</span>}
+            {open && short > 0 && <span class="hf-blocker">Need {formatCash(short)} more</span>}
+            <Button kind="primary" disabled={!open || short > 0} label={`Buy ${EXPANSION_NAMES[i]}, ${next.cash} dollars`} onClick={() => act(app, () => w.expandYard())}>
+              BUY
+            </Button>
+          </div>
+        </>
+      ) : (
+        <p class="hf-card-text">{next ? 'More Yard comes in the next update.' : 'The Yard is as big as it gets.'}</p>
+      )}
+    </div>
   );
 }

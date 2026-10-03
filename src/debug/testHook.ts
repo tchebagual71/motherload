@@ -79,11 +79,16 @@ export interface TestHookDeps {
   saveNow(): Promise<boolean>;
 }
 
-/** Hash of the world state a save carries, independent of how many (held) steps ran since. */
+/**
+ * Hash of the world state a save carries, independent of how many (held) steps ran since. The factory (FACT)
+ * is left out: it keeps ticking while the pod is held (canon §4.5), and has its own stateHash. The CRC covers
+ * the payload only: a CRC-32 over a file including its own CRC trailer is a constant (0x2144DF1C).
+ */
 export function worldStateHash(world: WorldApi): number {
   const s = deserialize(world.serialize());
   const pod = { ...s.pod, prevX: s.pod.x, prevY: s.pod.y };
-  return crc32(serialize({ ...s, stepNo: 0, pod }));
+  const bytes = serialize({ ...s, stepNo: 0, pod, factory: undefined });
+  return crc32(bytes, 0, bytes.length - 4);
 }
 
 /** The canvas context's WEBGL_lose_context, kept once found (it is unavailable while the context is lost). */

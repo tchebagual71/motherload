@@ -15,6 +15,7 @@ import {
   readLodes,
   readMeta,
   readPads,
+  readGhostTimer,
   readPod,
   readRng,
   readStory,
@@ -23,6 +24,7 @@ import {
   writeLodes,
   writeMeta,
   writePads,
+  writeGhostTimer,
   writePod,
   writeRng,
   writeStory,
@@ -35,8 +37,13 @@ export { SaveError, isSaveError, type SaveErrorCode } from './errors';
 export { crc32 } from './crc32';
 export type { PadSnapshot, SaveState } from './types';
 
-/** HFSV format version. M0 writes 0 and is never migrated; the MVP ships 1 (04 §4.9, §4.11). */
-export const SAVE_VERSION = 0;
+/**
+ * HFSV format version (04 §4.9, §4.11). M0 wrote 0; the MVP writes 1 (Kit meter units in cargo, the ghost
+ * timer in PODS, the optional FACT section). Version 0 still loads: no FACT, so the World hosts a fresh factory.
+ */
+export const SAVE_VERSION = 1;
+/** Oldest version this build reads. */
+export const MIN_SAVE_VERSION = 0;
 /** 04 §4.9: an HFSV file is ≤ 1 MiB uncompressed. */
 export const MAX_SAVE_BYTES = 1 << 20;
 
@@ -44,8 +51,10 @@ const HEADER_BYTES = 6;
 const SECTION_HEADER_BYTES = 8;
 const CRC_BYTES = 4;
 const REQUIRED = [TAG.META, TAG.TERR, TAG.LODE, TAG.PODS, TAG.WALT, TAG.STRY, TAG.RNGS, TAG.PADS] as const;
-type Tag = (typeof REQUIRED)[number];
-const KNOWN: ReadonlySet<string> = new Set(REQUIRED);
+/** Present when the World hosts a factory (MVP+). */
+const OPTIONAL = [TAG.FACT] as const;
+type Tag = (typeof REQUIRED)[number] | (typeof OPTIONAL)[number];
+const KNOWN: ReadonlySet<string> = new Set<string>([...REQUIRED, ...OPTIONAL]);
 
 /** Reused between saves: the critical path must not grow a fresh 60 KB buffer each time. */
 const writer = new ByteWriter();
@@ -66,17 +75,22 @@ export function serialize(s: SaveState): Uint8Array {
   section(w, TAG.META, () => writeMeta(w, s));
   section(w, TAG.TERR, () => writeTerrain(w, s.grid));
   section(w, TAG.LODE, () => writeLodes(w, s.grid.lodes));
-  section(w, TAG.PODS, () => writePod(w, s.pod));
+  section(w, TAG.PODS, () => {
+    writePod(w, s.pod);
+    writeGhostTimer(w, s.ghost);
+  });
   section(w, TAG.WALT, () => writeWallet(w, s.wallet));
   section(w, TAG.STRY, () => writeStory(w, s.story));
   section(w, TAG.RNGS, () => writeRng(w, s.rng));
   section(w, TAG.PADS, () => writePads(w, s.pads));
+  const fact = s.factory;
+  if (fact) section(w, TAG.FACT, () => w.bytes(fact));
   w.u32(crc32(w.view8()));
   return w.toBytes();
 }
 
-/** Check magic, CRC and version; returns the section table (tag → body window). */
-function readEnvelope(bytes: Uint8Array): Map<string, [number, number]> {
+/** Check magic, CRC and version; returns the version and the section table (tag → body window). */
+function readEnvelope(bytes: Uint8Array): { version: number; table: Map<string, [number, number]> } {
   if (bytes.length > MAX_SAVE_BYTES) throw new SaveError('bounds', `Save is larger than ${MAX_SAVE_BYTES} bytes`);
   if (bytes.length < HEADER_BYTES + CRC_BYTES) throw new SaveError('truncated', 'Save is too short');
   const head = new ByteReader(bytes);
@@ -85,9 +99,8 @@ function readEnvelope(bytes: Uint8Array): Map<string, [number, number]> {
   const stored = new ByteReader(bytes, end).u32('CRC');
   if (crc32(bytes, 0, end) !== stored) throw new SaveError('crc', 'Save is damaged (checksum mismatch)');
   const version = head.u16('version');
-  if (version !== SAVE_VERSION) {
-    throw new SaveError('version', version > SAVE_VERSION ? 'Save is from a newer version' : "This test save can't be loaded");
-  }
+  if (version > SAVE_VERSION) throw new SaveError('version', 'Save is from a newer version');
+  if (version < MIN_SAVE_VERSION) throw new SaveError('version', "This test save can't be loaded");
 
   const table = new Map<string, [number, number]>();
   const r = new ByteReader(bytes, HEADER_BYTES, end);
@@ -102,7 +115,9 @@ function readEnvelope(bytes: Uint8Array): Map<string, [number, number]> {
     table.set(tag, [start, start + len]);
   }
   for (const tag of REQUIRED) if (!table.has(tag)) throw new SaveError('missing', `Save has no ${tag} section`);
-  return table;
+  // Version 0 predates the factory: a FACT section there is not one this build wrote.
+  if (version < 1 && table.has(TAG.FACT)) throw new SaveError('section', 'Version 0 save with a FACT section');
+  return { version, table };
 }
 
 /** Run `read` over one section body and require it to consume the body exactly. */
@@ -125,7 +140,7 @@ export function deserialize(bytes: Uint8Array): SaveState {
 }
 
 function decode(bytes: Uint8Array): SaveState {
-  const table = readEnvelope(bytes);
+  const { version, table } = readEnvelope(bytes);
   const meta = readSection(bytes, table, TAG.META, readMeta);
   const grid = readSection(bytes, table, TAG.TERR, (r) => readTerrain(r, meta.seed));
   readSection(bytes, table, TAG.LODE, (r) => readLodes(r, grid));
@@ -139,12 +154,22 @@ function decode(bytes: Uint8Array): SaveState {
     stepNo: meta.stepNo,
     meta: { surveyColumn: meta.surveyColumn, scriptedLodeId: meta.scriptedLodeId },
     grid,
-    pod: readSection(bytes, table, TAG.PODS, readPod),
+    ...readSection(bytes, table, TAG.PODS, (r) => {
+      const pod = readPod(r, version);
+      return version >= 1 ? { pod, ghost: readGhostTimer(r) } : { pod };
+    }),
     wallet: readSection(bytes, table, TAG.WALT, readWallet),
     story: readSection(bytes, table, TAG.STRY, readStory),
     rng: readSection(bytes, table, TAG.RNGS, readRng),
     pads: readSection(bytes, table, TAG.PADS, readPads),
+    ...readFactory(bytes, table),
   };
+}
+
+/** The FACT body as an owned copy (the factory parses and validates it when the World hosts it). */
+function readFactory(bytes: Uint8Array, table: Map<string, [number, number]>): { factory?: Uint8Array } {
+  const at = table.get(TAG.FACT);
+  return at ? { factory: bytes.slice(at[0], at[1]) } : {};
 }
 
 // ---------- Export codes (canon §3.15: `HF1:` + base64url) ----------

@@ -22,6 +22,7 @@ import { STREAM, type RngState } from '../../shared/rng';
 import { T, type CargoItem, type ConsumableId, type Lode, type LodeMetal, type Purity, type Scope } from '../../shared/types';
 import { TerrainGrid } from '../../terrain/grid';
 import type { DigDir, DigState, PodState, Sector } from '../../pod/types';
+import { kitUnits } from '../../factory/api';
 import type { StoryState, Wallet } from '../../world/api';
 import type { ByteReader, ByteWriter } from './bytes';
 import { SaveError } from './errors';
@@ -36,6 +37,8 @@ export const TAG = {
   STRY: 'STRY',
   RNGS: 'RNGS',
   PADS: 'PADS',
+  /** Factory bytes (MVP+): `FactoryApi.serialize()` verbatim; the factory validates its own sub-sections. */
+  FACT: 'FACT',
 } as const;
 
 // ---------- enumerations (append-only: the index is the stored byte) ----------
@@ -66,6 +69,8 @@ const MAX_TIMER_STEPS = 1_000_000;
 const MAX_STEP_NO = Number.MAX_SAFE_INTEGER;
 const MAX_MONEY = 1e15;
 const MAX_RNG_STREAMS = 16;
+/** Ghost completion holds 60 steps (02 §2.6); a saved timer is always below that. */
+const MAX_GHOST_STEPS = 60;
 const Y_MIN = -MINE_H;
 const Y_MAX = SKY_ROWS + 16;
 
@@ -179,6 +184,7 @@ export function readLodes(r: ByteReader, grid: TerrainGrid): void {
 
 // ---------- PODS ----------
 
+/** Version ≥ 1: a Kit carries its remaining meter units (0 = full, the default). */
 function writeCargo(w: ByteWriter, cargo: readonly CargoItem[]): void {
   w.u16(cargo.length);
   for (const item of cargo) {
@@ -194,19 +200,27 @@ function writeCargo(w: ByteWriter, cargo: readonly CargoItem[]): void {
       case 'kit':
         w.u8(CARGO_KIT);
         w.str(item.id);
+        w.u8(item.units ?? 0);
         break;
     }
   }
 }
 
-function readCargo(r: ByteReader): CargoItem[] {
+function readKit(r: ByteReader, version: number): CargoItem {
+  const id = r.str('kit id', MAX_KIT_ID);
+  if (version < 1) return { kind: 'kit', id };
+  const units = r.int(r.u8('kit units'), 0, kitUnits(id), 'kit units');
+  return units === 0 ? { kind: 'kit', id } : { kind: 'kit', id, units };
+}
+
+function readCargo(r: ByteReader, version: number): CargoItem[] {
   const n = r.int(r.u16('cargo count'), 0, MAX_CARGO, 'cargo count');
   const cargo: CargoItem[] = [];
   for (let i = 0; i < n; i++) {
     const kind = r.u8('cargo kind');
     if (kind === CARGO_MINERAL) cargo.push({ kind: 'mineral', tier: r.int(r.u8('mineral tier'), 1, MINERALS.length, 'mineral tier') });
     else if (kind === CARGO_RELIC) cargo.push({ kind: 'relic', id: r.int(r.u8('relic id'), 0, RELICS.length - 1, 'relic id') });
-    else if (kind === CARGO_KIT) cargo.push({ kind: 'kit', id: r.str('kit id', MAX_KIT_ID) });
+    else if (kind === CARGO_KIT) cargo.push(readKit(r, version));
     else bounds('cargo kind', kind);
   }
   return cargo;
@@ -295,7 +309,8 @@ function readQuickSlots(r: ByteReader): ConsumableId[] {
   return slots;
 }
 
-export function readPod(r: ByteReader): PodState {
+/** `version` is the file's HFSV version: 0 (M0) has no Kit units. */
+export function readPod(r: ByteReader, version: number): PodState {
   const x = r.finite(0, MINE_W, 'pod x');
   const y = r.finite(Y_MIN, Y_MAX, 'pod y');
   const vx = r.finite(-MAX_SPEED, MAX_SPEED, 'pod vx');
@@ -307,7 +322,7 @@ export function readPod(r: ByteReader): PodState {
   const fuel = r.finite(0, MAX_TANK_OR_HULL, 'fuel');
   const hull = r.finite(0, MAX_TANK_OR_HULL, 'hull');
   const tiers = readTiers(r);
-  const cargo = readCargo(r);
+  const cargo = readCargo(r, version);
   const consumables = readConsumables(r);
   const quickSlots = readQuickSlots(r);
   const dig = readDig(r);
@@ -342,6 +357,18 @@ export function readPod(r: ByteReader): PodState {
     destroyed: r.bool('destroyed'),
     row: r.int(r.u16('row'), 0, MINE_H - 1, 'row'),
   };
+}
+
+/** The ghost-completion timer, after the pod in PODS (version ≥ 1; 04 §4.9 "ghost timer"). */
+export function writeGhostTimer(w: ByteWriter, g: { id: number; steps: number } | undefined): void {
+  w.u16(g ? g.id : 0);
+  w.u16(g ? g.steps : 0);
+}
+
+export function readGhostTimer(r: ByteReader): { id: number; steps: number } {
+  const id = r.u16('ghost id');
+  const steps = r.int(r.u16('ghost steps'), 0, MAX_GHOST_STEPS, 'ghost steps');
+  return id === 0 ? { id: 0, steps: 0 } : { id, steps };
 }
 
 // ---------- WALT ----------

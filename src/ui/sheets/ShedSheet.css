@@ -1,0 +1,78 @@
+/* Supply Shed shelves, Starter Kit and Kits (03 §6.3); the Assay's Sell / Stockpile toggle. Selectors pair with
+   the base class (.hf-card.hf-starter …) because this sheet's CSS can load before the shared styles.css. */
+.hf-seg.hf-shed-tabs {
+  display: flex;
+  margin: 4px 0 10px;
+}
+.hf-shed-tabs > .hf-seg-btn {
+  flex: 1 1 0;
+}
+
+.hf-card.hf-starter {
+  margin: 0 0 12px;
+  border-color: var(--hf-amber);
+  background: #fff6e2;
+  box-shadow: var(--lip) #e0a12e;
+}
+.hf-card-icon.hf-starter-icon {
+  background: var(--hf-amber);
+  color: var(--hf-ink);
+}
+.hf-btn.hf-starter-btn {
+  width: 100%;
+  margin-top: 10px;
+}
+.hf-blocker.hf-starter-block {
+  margin: 8px 2px 0;
+}
+
+.hf-card-icon.hf-kit-icon {
+  background: var(--hf-primary-lip);
+}
+.hf-kit .hf-card-tier {
+  white-space: nowrap;
+}
+.hf-kit .hf-buy-row > .hf-btn {
+  padding: 0 8px;
+}
+
+.hf-shop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 6px;
+  padding: 10px 12px;
+  border-radius: var(--r-card);
+  border: var(--bw) dashed var(--hf-border);
+  background: var(--hf-cream-2);
+}
+.hf-shop-list .hf-parts {
+  margin: 0;
+}
+.hf-shop-list-head {
+  font: 800 calc(14px * var(--hf-ts, 1))/1.2 var(--hf-font);
+}
+.hf-btn.hf-shop-list-btn {
+  width: 100%;
+}
+
+/* Assay: per-row Sell / Stockpile on its own line (44-pt segments) */
+.hf-list-row.hf-assay-row {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+.hf-seg.hf-assay-toggle {
+  flex: 1 1 100%;
+  display: flex;
+  margin: 0 0 4px 34px;
+}
+.hf-assay-toggle > .hf-seg-btn {
+  flex: 1 1 0;
+}
+.hf-assay-row.hf-assay-stock .hf-list-value {
+  color: var(--hf-ink-soft);
+  text-decoration: line-through;
+}
+.hf-note.hf-stock-note {
+  margin: 10px 4px 0;
+}

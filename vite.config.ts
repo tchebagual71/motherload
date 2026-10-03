@@ -72,9 +72,9 @@ export default defineConfig({
         cacheId: `hf-${channel}`,
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
         // Debug-only chunks and the jetsam probe stay network-only (04 §9.2).
-        globIgnores: ['jetsam.html', '**/jetsamPage-*.js', '**/DebugSheet-*.js', '**/testHook-*.js', '**/*harness*'],
+        globIgnores: ['jetsam.html', '**/jetsamPage-*.js', 'bench.html', '**/benchPage-*.js', '**/DebugSheet-*.js', '**/testHook-*.js', '**/*harness*'],
         navigateFallback: 'index.html',
-        navigateFallbackDenylist: [/jetsam\.html/, /harness\.html/],
+        navigateFallbackDenylist: [/jetsam\.html/, /bench\.html/, /harness\.html/],
         cleanupOutdatedCaches: true,
         maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
       },
@@ -90,7 +90,7 @@ export default defineConfig({
     sourcemap: true,
     chunkSizeWarningLimit: 900,
     rolldownOptions: {
-      input: { main: 'index.html', jetsamPage: 'jetsam.html' },
+      input: { main: 'index.html', jetsamPage: 'jetsam.html', benchPage: 'bench.html' },
     },
   },
   test: {

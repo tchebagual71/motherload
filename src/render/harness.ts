@@ -121,6 +121,13 @@ class FakeWorld implements WorldApi {
   ghostProgress(): null {
     return null;
   }
+  deconstructUnderground(): { ok: false; code: 'E_INVALID' } {
+    return { ok: false, code: 'E_INVALID' };
+  }
+  removeUndergroundBelts(): { ok: false; code: 'E_INVALID' } {
+    return { ok: false, code: 'E_INVALID' };
+  }
+  setAway(): void {}
   readonly seed = SEED;
   readonly scope: Scope = SCOPE;
   readonly terrain: TerrainGrid;

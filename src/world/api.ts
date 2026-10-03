@@ -6,7 +6,7 @@ import type { GameEvent } from '../shared/events';
 import type { CargoItem, ConsumableId, RimBuildingId, Scope } from '../shared/types';
 import type { TerrainGrid } from '../terrain/grid';
 import type { PodIntent, PodState } from '../pod/types';
-import type { FactoryApi } from '../factory/api';
+import type { Cell, FactoryApi, Res } from '../factory/api';
 
 export interface Wallet {
   cash: number;
@@ -145,7 +145,8 @@ export interface WorldApi {
   // ---- Assay Office ----
   cargoGroups(): CargoGroup[];
   cargoValue(): number;
-  sellAll(): Result;
+  /** Sell every sellable item; items like any of `keep` (same tier, relic or Kit id) stay aboard (the Stockpile toggle). */
+  sellAll(keep?: readonly CargoItem[]): Result;
   // ---- Garage ----
   repairQuote(): Quote;
   repairAll(): Result;
@@ -191,6 +192,15 @@ export interface WorldApi {
   expandYard(): Result;
   /** Underground ghost job the pod is completing right now (build ring), or null. */
   ghostProgress(): { id: number; progress: number } | null;
+  /**
+   * Deconstruct an underground piece (02 §2.7): its Kit goes to the bay when the pod is within 2 tiles and has
+   * room (metered Kits merge), else to the Stockpile. Surface ids fall through to factory.deconstruct.
+   */
+  deconstructUnderground(id: number): Res<{ refund: number }>;
+  /** Remove underground belt tiles, refunding Belt Kit units like deconstructUnderground. */
+  removeUndergroundBelts(cells: readonly Cell[]): Res<{ refund: number }>;
+  /** The app is hidden (canon §4.5 away): the MVP factory sleeps (02 §8). */
+  setAway(on: boolean): void;
 
   // ---- Failure ----
   /** Salvage after destruction: lose cargo, pay the fee (shortfall → debt), refuel/repair, respawn on the Pump House pad (disarmed). */
