@@ -112,6 +112,8 @@ export interface BuildFrame {
   selectedId: number | null;
   /** Map overlay (03 §4.10; the ◫ button). MVP: 'logistics' dims the terrain to 30% and marks jam heads ⊘. */
   overlay?: 'logistics' | null;
+  /** The armed building tool (null: none or Bulldoze): its placement highlight shows before the first tap. */
+  tool?: BuildingKind | null;
 }
 
 /** Build camera (canon §3.4: surface build 45° + n·90° / 55°; underground build 8° / 12°). */

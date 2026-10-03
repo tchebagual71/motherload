@@ -6,7 +6,7 @@ import type { GameEvent } from '../shared/events';
 import type { CargoItem, ConsumableId, RimBuildingId, Scope } from '../shared/types';
 import type { TerrainGrid } from '../terrain/grid';
 import type { PodIntent, PodState } from '../pod/types';
-import type { Cell, FactoryApi, Res } from '../factory/api';
+import type { Cell, ErrCode, FactoryApi, Res } from '../factory/api';
 
 export interface Wallet {
   cash: number;
@@ -190,8 +190,12 @@ export interface WorldApi {
   stockpileCargo(item: CargoItem, n: number | 'all'): Result;
   /** Buy the next Yard Expansion (canon §3.1; Dot's office). */
   expandYard(): Result;
-  /** Underground ghost job the pod is completing right now (build ring), or null. */
-  ghostProgress(): { id: number; progress: number } | null;
+  /**
+   * Underground ghost job the pod is completing right now (build ring), or null. `blocked` is the refusal code while
+   * the job in reach keeps failing for the same reason (e.g. E_POD: Pip stands in the footprint); the ring then holds
+   * instead of looping, and the goal chip names the fix.
+   */
+  ghostProgress(): { id: number; progress: number; blocked: ErrCode | null } | null;
   /**
    * Deconstruct an underground piece (02 §2.7): its Kit goes to the bay when the pod is within 2 tiles and has
    * room (metered Kits merge), else to the Stockpile. Surface ids fall through to factory.deconstruct.

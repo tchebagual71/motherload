@@ -19,7 +19,7 @@ import { PUMP_PAD, PadArming, isNeutral, isOnRim, padIndexAt, padIndexOf } from 
 import { newStory, resetTrip, updateDepth, updateTrip } from './rules';
 import { RECORDER_RELIC, StoryDirector, obFlag, rungFlag, type StoryContext, type StorySnapshot } from '../story';
 import { scopeAtLeast } from '../shared/scope';
-import { Factory, FactoryLoadError, RUNGS, YARD_EXPANSIONS, type Cell, type FactoryPorts, type Res } from '../factory';
+import { Factory, FactoryLoadError, RUNGS, YARD_EXPANSIONS, type Cell, type ErrCode, type FactoryPorts, type Res } from '../factory';
 import { LODE_TABLE } from '../terrain/lodes';
 import { CargoKitSink, CargoKitSource } from './kits';
 import { GHOST_REACH, GhostBuilder, jobDistance } from './ghostJob';
@@ -635,8 +635,9 @@ export class World implements WorldApi {
     this.emit({ t: 'purchase', kind: 'yard', amount: cash - this.wallet.cash });
     return { ok: true, message: `Yard expanded to 48 × ${r.rows}`, amount: r.rows };
   }
-  ghostProgress(): { id: number; progress: number } | null {
-    return this.factory ? this.ghosts.progress() : null;
+  ghostProgress(): { id: number; progress: number; blocked: ErrCode | null } | null {
+    const p = this.factory ? this.ghosts.progress() : null;
+    return p ? { ...p, blocked: null } : null;
   }
 
   /** The bay takes refunds only when the pod is alive and within 2 tiles of the piece (02 §2.7). */
