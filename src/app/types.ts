@@ -69,6 +69,8 @@ export interface GoalChip {
   text: string;
   /** Optional progress text, e.g. "3/5". */
   progress?: string;
+  /** Next Goals (01 §2.3, ≤ 3), shown when the chip is tapped. */
+  next?: string[];
 }
 
 /** Shown on trip end (01 §3.10). */
@@ -80,6 +82,8 @@ export interface TripSummary {
   fuelUsed: number;
   hullLost: number;
   nextGoals: string[];
+  /** Trip time in seconds (01 §2.3). */
+  seconds?: number;
 }
 
 export interface DeathInfo {

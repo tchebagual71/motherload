@@ -28,6 +28,7 @@ export function MenuSheet({ app, close, leaving }: { app: AppController; close: 
       ) : (
         <nav class="hf-menu">
           {mvp && <MenuItem icon="cargo" label="Cargo" onClick={go('cargo')} />}
+          {mvp && <MenuItem icon="assay" label="Dot's office" onClick={go('office')} />}
           <MenuItem icon="gear" label="Settings" onClick={go('settings')} />
           <MenuItem icon="save" label="Saves" onClick={go('saves')} />
           <MenuItem icon="help" label="How to play" onClick={() => setHelp(true)} />
