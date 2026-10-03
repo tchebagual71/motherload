@@ -7,14 +7,17 @@ import { T, type CargoItem, type ConsumableId, type RimBuildingId, type Scope } 
 import { generateWorld, type GenMeta } from '../terrain/generate';
 import type { TerrainGrid } from '../terrain/grid';
 import { applyScopeOverlay, scopeFloorRow } from '../terrain/scope';
-import { PUMP_PAD_X, createPod, destructionCause, podStats, stepPod, type PodStepCtx } from '../pod';
+import { PUMP_PAD_X, createPod, destructionCause, podStats, returnTickLiters, stepPod, type PodStepCtx } from '../pod';
 import type { PodIntent, PodState } from '../pod/types';
 import * as econ from '../economy';
 import type { EconomyCtx, PartsLedger } from '../economy';
 import { deserialize as decodeSave, serialize as encodeSave, type SaveState } from '../save/codec';
 import type { CargoGroup, PodStats, Quote, Result, ShopItem, StoryState, UpgradeCard, Wallet, WorldApi } from './api';
+import { DiscardLog, takeCargo } from './discard';
+import { loadScope } from './loadScope';
 import { PUMP_PAD, PadArming, isNeutral, isOnRim, padIndexAt, padIndexOf } from './pads';
 import { newStory, resetTrip, updateDepth, updateTrip } from './rules';
+import { scopeAtLeast } from '../shared/scope';
 
 export interface WorldOptions {
   seed: number;
@@ -73,11 +76,11 @@ function isCarvable(grid: TerrainGrid, x: number, r: number): boolean {
   return c !== T.LODE_ROCK && c !== T.SEAL && c !== T.HEARTSTONE && c !== T.PAVED && grid.occupant[grid.idx(x, r)] === 0;
 }
 
-/** Nearest carvable column to `preferred` on row r. */
-function debugColumn(grid: TerrainGrid, preferred: number, r: number): number {
+/** Nearest carvable column to `preferred` on row r, skipping column `avoid` (the survey shaft). */
+function debugColumn(grid: TerrainGrid, preferred: number, r: number, avoid: number): number {
   for (let d = 0; d < MINE_W; d++) {
     for (const x of d === 0 ? [preferred] : [preferred - d, preferred + d]) {
-      if (x >= 0 && x < MINE_W && isCarvable(grid, x, r)) return x;
+      if (x >= 0 && x < MINE_W && x !== avoid && isCarvable(grid, x, r)) return x;
     }
   }
   return preferred;
@@ -97,6 +100,7 @@ export class World implements WorldApi {
   private steps: number;
   private readonly rng: Rng;
   private readonly pads: PadArming;
+  private readonly discards = new DiscardLog();
   private events: GameEvent[] = [];
   /**
    * The pod was already destroyed when this World was restored (a save written during the death card,
@@ -130,8 +134,10 @@ export class World implements WorldApi {
     this.shop = { pod: this.pod, wallet: this.wallet, scope: this.scope, parts: econ.EMPTY_PARTS, emit: this.emit };
   }
 
-  static deserialize(bytes: Uint8Array): World {
+  /** `buildScope`: the scope this build plays (INT-6); an older save migrates to it, a newer one throws. */
+  static deserialize(bytes: Uint8Array, buildScope?: Scope): World {
     const s = decodeSave(bytes);
+    if (buildScope) s.scope = loadScope(s.scope, buildScope);
     return new World({ seed: s.seed, scope: s.scope, deepHeat: s.deepHeat }, s);
   }
 
@@ -221,7 +227,8 @@ export class World implements WorldApi {
   private arriveAtPad(pad: number): void {
     const id = RIM_BUILDINGS[pad].id;
     this.emit({ t: 'pad-arrive', id });
-    if (id === 'pump') econ.grantCoopCredit(this.shop, this.story, this.steps);
+    // Co-op Credit is MVP (canon §5.5; INT-10).
+    if (id === 'pump' && scopeAtLeast(this.scope, 'mvp')) econ.grantCoopCredit(this.shop, this.story, this.steps);
   }
 
   // ---- Factory hooks (MVP, 02 §10; canon §4.10). The M0 build has no factory. ----
@@ -302,6 +309,40 @@ export class World implements WorldApi {
     econ.setQuickSlot(this.shop, slot, id);
   }
 
+  // ------------------------------------------------------------------ cargo panel, Return Tick, Rim
+
+  discardCargo(item: CargoItem, n: number | 'all'): Result {
+    if (this.pod.destroyed) return econ.fail('Salvage first');
+    const batch = takeCargo(this.pod.cargo, item, n);
+    if (batch.length === 0) return econ.fail('Nothing like that aboard');
+    this.discards.push(batch);
+    return { ok: true, amount: batch.length };
+  }
+
+  undoDiscard(): Result {
+    const batch = this.discards.pop();
+    if (!batch) return econ.fail('Nothing to undo');
+    // The pod is paused under the panel, so the room the discard made is still there.
+    for (let i = batch.length - 1; i >= 0; i--) this.pod.cargo.push(batch[i]);
+    return { ok: true, amount: batch.length };
+  }
+
+  get discardsPending(): number {
+    return this.discards.pending;
+  }
+
+  commitDiscards(): void {
+    this.discards.clear();
+  }
+
+  returnFuel(): number {
+    return returnTickLiters(this.pod, this.deepHeat);
+  }
+
+  onRim(): boolean {
+    return !this.pod.destroyed && isOnRim(this.pod);
+  }
+
   // ------------------------------------------------------------------ failure
 
   respawn(): { fee: number; debt: number; lost: CargoItem[] } {
@@ -320,15 +361,19 @@ export class World implements WorldApi {
 
   // ------------------------------------------------------------------ debug
 
-  /** Put the pod in a freshly carved 1×1 air cell on `row`: the survey column while inside the shaft, else x 7. */
+  /**
+   * Put the pod, grounded and still, in a freshly carved 1×1 air cell on `row` near x 7 (never the open survey
+   * shaft, INT-12), on a floor: the cell below becomes dirt if it is air.
+   */
   debugTeleport(row: number): void {
     const grid = this.terrain;
-    const r = Math.max(0, Math.min(scopeFloorRow(this.scope) - 1, Math.floor(row)));
-    const shaftBottom = grid.lodes[this.meta.scriptedLodeId]?.top ?? 0;
-    const x = debugColumn(grid, r < shaftBottom ? this.meta.surveyColumn : START_X, r);
+    const floorRow = scopeFloorRow(this.scope);
+    const r = Math.max(0, Math.min(floorRow - 1, Math.floor(row)));
+    const x = debugColumn(grid, START_X, r, this.meta.surveyColumn);
     grid.set(x, r, T.AIR);
     grid.markDug(x, r);
-    placePod(this.pod, x + 0.5, -(r + 1) + STAND_Y, false);
+    if (r + 1 < floorRow && grid.get(x, r + 1) === T.AIR) grid.set(x, r + 1, T.DIRT);
+    placePod(this.pod, x + 0.5, -(r + 1) + STAND_Y, true);
   }
 
   debugGiveCash(amount: number): void {

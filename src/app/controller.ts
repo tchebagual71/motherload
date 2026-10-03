@@ -3,16 +3,21 @@
 // export/import with the 04 §4.13 dry run and the waiting service-worker update (04 §9.2). Renderer, input, audio
 // and saves are attached by boot.ts.
 import { effect, signal } from '@preact/signals';
+import { inScope } from '../config/scope';
 import type { QualityTier, Renderer } from '../render/api';
-import { NO_INTENT } from '../pod/types';
-import { LINES, MINE_H, MINE_W, RIM_BUILDINGS, SALVAGE_MIN, SALVAGE_RATE, SKY_ROWS, TIER_PRICE } from '../shared/canon';
+import { applyAssists, classifyDigTarget, forcedFloorRow, type AssistFlags } from '../pod';
+import { NO_INTENT, type DigDir, type PodIntent } from '../pod/types';
+import { LINES, MINE_H, MINE_W, RIM_BUILDINGS, SALVAGE_MIN, SALVAGE_RATE, SKY_ROWS, TIER_PRICE, TOUCH } from '../shared/canon';
 import type { GameEvent } from '../shared/events';
 import type { Look, RimBuildingId } from '../shared/types';
 import type { DecodedCode } from '../save/exportCode';
 import type { WriteOutcome } from '../save/store';
+import { scopeFloorRow } from '../terrain/scope';
 import type { Result, WorldApi } from '../world/api';
+import { AutoDrive } from './autoDrive';
 import type { SettingsStore } from './settings';
-import { NOTICE } from './notices';
+import { NOTICE, refusalNotice } from './notices';
+import type { StyleView } from './styleViews';
 import { TimeController, type PodMotion, type SheetReason } from './time';
 import { holdToast, pruneToasts, pushToast, toastsCovered } from './toasts';
 import type {
@@ -23,7 +28,9 @@ import type {
   InputController,
   Mode,
   Overlay,
+  OverlayPreview,
   RadioMessage,
+  SafeModeInfo,
   SheetId,
   Settings,
   Toast,
@@ -32,6 +39,13 @@ import type {
 
 export const DEATH_CARD_MS = 3_000;
 export const HUD_TICK_MS = 100;
+/** A previewed upright card (debug, INT-18) clears itself after this long, then asks for the resume tap. */
+export const UPRIGHT_PREVIEW_MS = 3_000;
+/** A one-handed dig tap pushes for at most this many steps: the engage gate plus the drive to the wall (03 §3.6). */
+export const DIG_TAP_MAX_STEPS = 45;
+/** Stick output is exactly 0 inside the dead zone; this only absorbs float noise. */
+const NEUTRAL_EPS = 0.05;
+const DIG_PUSH: Record<DigDir, { sx: number; sy: number }> = { down: { sx: 0, sy: -1 }, left: { sx: -1, sy: 0 }, right: { sx: 1, sy: 0 } };
 /** 04 §4.13: an import runs this many headless steps on a scratch World before anything is written. */
 export const IMPORT_DRY_RUN_STEPS = 1_200;
 const DRY_RUN_SLICE = 200;
@@ -40,6 +54,11 @@ const RIM_IDS: ReadonlySet<string> = new Set(RIM_BUILDINGS.map((b) => b.id));
 
 export function isRimBuilding(id: string | null): id is RimBuildingId {
   return id !== null && RIM_IDS.has(id);
+}
+
+/** No stick, key or THRUST input this step (a fire-slot release does not count). */
+export function stickIdle(i: Readonly<PodIntent>): boolean {
+  return !i.thrust && Math.abs(i.sx) < NEUTRAL_EPS && Math.abs(i.sy) < NEUTRAL_EPS;
 }
 
 function sheetReason(id: SheetId): SheetReason | null {
@@ -129,6 +148,10 @@ export interface ControllerOptions {
   yieldSlice?(): Promise<void>;
   safeMode?: SafeModeHooks | null;
   hooks?: AppHooks;
+  /** First standalone launch with no save (canon §3.15): the title offers "Paste save". */
+  importOffer?: boolean;
+  /** Style-test gallery bookmark `i` (03 §9.4) for a claim with this seed; boot builds them on a scratch World. */
+  styleView?(seed: number, i: number): StyleView | null;
 }
 
 /** A toast raised while the toast layer was covered; `world` set = about that world (dropped if it is replaced). */
@@ -157,6 +180,14 @@ export class GameApp implements AppController {
   private perfReporter: (() => Promise<string>) | null = null;
   private held: HeldToast[] = [];
   private readonly disposeSheetEffect: () => void;
+  /** Style-test gallery bookmark the loop draws instead of play (03 §9.4), or null. */
+  private viewRef: StyleView | null = null;
+  private readonly drive = new AutoDrive();
+  private readonly driveIntent: PodIntent = { sx: 0, sy: 0, thrust: false, fireSlot: -1 };
+  private readonly shaped: PodIntent = { sx: 0, sy: 0, thrust: false, fireSlot: -1 };
+  private readonly assists: AssistFlags = { landingAssist: false, steadyDrill: false };
+  private digTap: { left: number; intent: PodIntent } | null = null;
+  private previewUprightMs = 0;
 
   constructor(private readonly opts: ControllerOptions) {
     this.worldRef = opts.world;
@@ -181,7 +212,11 @@ export class GameApp implements AppController {
       goal: signal<GoalChip | null>(null),
       tripSummary: signal<TripSummary | null>(null),
       updateReady: signal(false),
+      bayFullAt: signal(Number.NEGATIVE_INFINITY),
+      importOffer: signal(opts.importOffer ?? false),
+      safeMode: signal<SafeModeInfo>({ previousOlderByMs: null, error: null }),
     };
+    this.syncAssists(opts.settings);
     this.time = new TimeController(() => this.syncOverlay());
     this.time.raise('title');
     if (this.safeModeActive) this.time.raise('safemode');
@@ -191,6 +226,11 @@ export class GameApp implements AppController {
 
   get world(): WorldApi {
     return this.worldRef;
+  }
+
+  /** The style-test bookmark on show, if any (the loop draws it instead of the live world). */
+  get view(): StyleView | null {
+    return this.viewRef;
   }
 
   // ---------------------------------------------------------------- wiring (boot)
@@ -245,6 +285,7 @@ export class GameApp implements AppController {
     }
     this.time.leaveTitle(this.motion(), this.coldLoad);
     this.coldLoad = false;
+    this.state.importOffer.value = false;
     this.syncOverlay();
     this.opts.hooks?.onPlay?.();
   }
@@ -256,6 +297,7 @@ export class GameApp implements AppController {
     this.state.death.value = null;
     this.deathLeftMs = 0;
     for (const r of ['title', 'death', 'interrupt'] as const) this.time.clear(r);
+    this.state.importOffer.value = false;
     this.saves?.critical(this.opts.now());
     this.toast('New claim staked', 'good');
     if (wasSafe) this.opts.hooks?.onSafeModeResolved?.();
@@ -279,6 +321,7 @@ export class GameApp implements AppController {
     if (next.sound !== prev.sound) this.audio?.setEnabled(next.sound);
     if (next.respectSilent !== prev.respectSilent) this.audio?.setRespectSilent(next.respectSilent);
     if (!next.showPerf) this.state.perf.value = null;
+    this.syncAssists(next);
     this.opts.hooks?.onSettings?.(next, prev);
   }
 
@@ -315,6 +358,7 @@ export class GameApp implements AppController {
     }
     this.setWorld(live, true);
     this.leaveSafeMode();
+    this.state.importOffer.value = false;
     this.saves?.critical(this.opts.now());
     // A cold-loaded world always asks for the resume tap (canon §4.5), even under the closing sheet.
     this.time.interrupt(true);
@@ -344,6 +388,10 @@ export class GameApp implements AppController {
     if (this.deathLeftMs > 0) {
       this.deathLeftMs -= dtMs;
       if (this.deathLeftMs <= 0) this.finishDeath();
+    }
+    if (this.previewUprightMs > 0) {
+      this.previewUprightMs -= dtMs;
+      if (this.previewUprightMs <= 0) this.setUpright(false);
     }
     if (now - this.lastHudAt >= HUD_TICK_MS) {
       this.lastHudAt = now;
@@ -383,6 +431,16 @@ export class GameApp implements AppController {
         case 'coop-credit':
           this.toast(`Co-op Credit: ${e.liters} L on the house`, 'good');
           break;
+        case 'bay-full':
+          // Sound alone is not enough (the silent switch mutes it): pill callout, Cargo context, toast (INT-3).
+          this.state.bayFullAt.value = now;
+          this.toast(NOTICE.bayFull, 'warn');
+          break;
+        case 'dig-refused': {
+          const text = refusalNotice(e.reason, this.worldRef.scope);
+          if (text) this.toast(text, 'info');
+          break;
+        }
         default:
           break;
       }
@@ -452,10 +510,142 @@ export class GameApp implements AppController {
     if (q.some((m) => m.id === id)) this.state.radio.value = q.filter((m) => m.id !== id);
   }
 
+  styleBookmark(i: number | null): void {
+    this.viewRef = i === null ? null : (this.opts.styleView?.(this.worldRef.seed, i) ?? null);
+  }
+
+  previewOverlay(o: OverlayPreview): void {
+    this.closeSheet();
+    this.input?.releaseAll();
+    if (o === 'interrupt') this.time.interrupt(true);
+    else if (o === 'title') this.time.raise('title');
+    else if (this.time.raise('upright')) this.previewUprightMs = UPRIGHT_PREVIEW_MS;
+  }
+
+  // ---------------------------------------------------------------- pod-mode taps and intent shaping
+
+  /**
+   * The intent the pod steps with: sign-tap auto-drive or a one-handed dig tap while the stick is idle, then
+   * the assists (01 §6.4). Any stick, key or THRUST input cancels the automation. Returns a reused object.
+   */
+  shapeIntent(raw: PodIntent): PodIntent {
+    if ((this.drive.active || this.digTap) && !stickIdle(raw)) this.cancelAutomation();
+    let base = raw;
+    if (this.drive.active) base = this.stepDrive(raw) ?? raw;
+    else if (this.digTap) base = this.stepDigTap(raw) ?? raw;
+    return applyAssists(this.worldRef.pod, base, this.assists, this.shaped);
+  }
+
+  /** A world tap in pod mode (canon §3.12): a one-handed dig neighbour first, then a Rim sign. */
+  worldTap(px: number, py: number): void {
+    if (!this.tapsLive()) return;
+    const dir = this.digTapAt(px, py);
+    if (dir) {
+      this.drive.cancel();
+      const push = DIG_PUSH[dir];
+      this.digTap = { left: DIG_TAP_MAX_STEPS, intent: { sx: push.sx, sy: push.sy, thrust: false, fireSlot: -1 } };
+      return;
+    }
+    const id = this.renderer?.screenToRimBuilding(px, py) ?? null;
+    if (isRimBuilding(id)) this.signTap(id);
+  }
+
+  /**
+   * Sign tap (01 §3.10; MVP): with Pip grounded on the Rim, drive to the pad and open the sheet on arrival, armed
+   * or not. Never from the sky or a hole (SIM-3, INT-10).
+   */
+  signTap(id: RimBuildingId): void {
+    if (!inScope('mvp') || !this.tapsLive()) return;
+    const w = this.worldRef;
+    if (!w.onRim()) {
+      this.toast(NOTICE.landFirst, 'info');
+      return;
+    }
+    this.digTap = null;
+    if (w.padUnderPod() === id) this.openSheet(id);
+    else this.drive.start(id);
+  }
+
+  /** Rim building the sign-tap drive is heading for, if any. */
+  get driveTarget(): RimBuildingId | null {
+    return this.drive.destination;
+  }
+
+  /**
+   * One-handed mode (canon §3.12; 03 §3.6): the pod neighbour (down, left, right) whose 44-pt box holds the
+   * point, if pushing into it would dig or be refused. Input asks this to keep such a touch from becoming a stick.
+   */
+  digTapAt(px: number, py: number): DigDir | null {
+    const r = this.renderer;
+    const w = this.worldRef;
+    const pod = w.pod;
+    if (!r || !this.state.settings.peek().oneHanded || !pod.grounded || pod.dig || pod.destroyed) return null;
+    const floor = forcedFloorRow(scopeFloorRow(w.scope));
+    const cx = Math.floor(pod.x);
+    const row = Math.floor(-pod.y);
+    const half = TOUCH.minHit / 2;
+    for (const dir of ['down', 'left', 'right'] as const) {
+      const x = dir === 'down' ? cx : cx + (dir === 'right' ? 1 : -1);
+      const cellRow = dir === 'down' ? row + 1 : row;
+      const t = classifyDigTarget(w.terrain, x, cellRow, floor, w.scope);
+      if (t === 'open' || t === 'blocked') continue;
+      const c = r.worldToScreen(x + 0.5, -(cellRow + 0.5), 0);
+      if (Math.abs(px - c.x) <= half && Math.abs(py - c.y) <= half) return dir;
+    }
+    return null;
+  }
+
+  /** One-handed mode: a touch here is a tap (dig neighbour, or a sign while on the Rim), never a stick. */
+  tapTargetAt(px: number, py: number): boolean {
+    if (this.digTapAt(px, py)) return true;
+    if (!this.worldRef.onRim()) return false;
+    return isRimBuilding(this.renderer?.screenToRimBuilding(px, py) ?? null);
+  }
+
+  private tapsLive(): boolean {
+    const st = this.state;
+    return st.sheet.peek() === null && st.overlay.peek() === null && st.mode.peek() === 'play' && this.viewRef === null;
+  }
+
+  private stepDrive(raw: PodIntent): PodIntent | null {
+    const w = this.worldRef;
+    const id = this.drive.destination;
+    const status = this.drive.step(w.pod, w.onRim(), this.driveIntent);
+    if (status === 'driving') {
+      this.driveIntent.fireSlot = raw.fireSlot;
+      return this.driveIntent;
+    }
+    if (status === 'arrived' && id) this.openSheet(id);
+    return null;
+  }
+
+  /** Push into the tapped neighbour until the dig starts (one dig), or give up. */
+  private stepDigTap(raw: PodIntent): PodIntent | null {
+    const t = this.digTap;
+    const pod = this.worldRef.pod;
+    if (!t || pod.dig || pod.destroyed || --t.left < 0) {
+      this.digTap = null;
+      return null;
+    }
+    t.intent.fireSlot = raw.fireSlot;
+    return t.intent;
+  }
+
+  private cancelAutomation(): void {
+    this.drive.cancel();
+    this.digTap = null;
+  }
+
+  private syncAssists(s: Settings): void {
+    this.assists.landingAssist = s.landingAssist;
+    this.assists.steadyDrill = s.steadyDrill;
+  }
+
   /** Replace the live world (new game, import, Safe Mode recovery). */
   setWorld(w: WorldApi, coldLoad: boolean): void {
     this.worldRef = w;
     this.coldLoad = coldLoad;
+    this.cancelAutomation();
     this.input?.releaseAll();
     this.state.hudTick.value++;
   }
@@ -474,6 +664,7 @@ export class GameApp implements AppController {
   private syncOverlay(): void {
     const o = this.time.overlay();
     if (this.state.overlay.peek() !== o) this.state.overlay.value = o;
+    if (o !== null) this.cancelAutomation();
     this.publishCountdown();
     if (this.held.length > 0 && !toastsCovered(o)) this.releaseHeld();
   }
@@ -505,6 +696,10 @@ export class GameApp implements AppController {
   private onSheetChanged(id: SheetId): void {
     const prev = this.prevSheet;
     this.prevSheet = id;
+    if (id !== null) this.cancelAutomation();
+    // Discards are undoable only until the cargo panel closes (canon §3.7).
+    if (prev === 'cargo' && id !== 'cargo') this.worldRef.commitDiscards();
+    if (prev === 'styletest' && id !== 'styletest') this.styleBookmark(null);
     this.time.setSheet(sheetReason(id), this.motion());
     if (prev === null && id !== null) {
       this.input?.releaseAll();
@@ -573,7 +768,8 @@ export class GameApp implements AppController {
     if (!hooks) return;
     const r = await hooks.loadPrevious();
     if (!r.ok) {
-      this.worldNotice(r.reason, 'warn');
+      // Shown on the Safe Mode card itself (APP-3): a toast would wait behind it.
+      this.state.safeMode.value = { ...this.state.safeMode.peek(), error: r.reason };
       return;
     }
     this.setWorld(r.world, true);

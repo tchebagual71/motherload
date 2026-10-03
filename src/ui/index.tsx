@@ -1,7 +1,7 @@
 // UI entry (04 §7.1): Preact into #ui over the canvas. The root has pointer-events: none; interactive
-// parts re-enable them. Root classes carry the look skin (Pixel Lab), handedness, control size and
-// reduced motion so CSS does the rest. Reduced motion is the setting alone: the OS preference is only
-// its default (03 §12), applied when settings are created.
+// parts re-enable them. Root classes carry the look skin (Pixel Lab), handedness, one-handed mode, control size
+// and reduced motion, and --hf-ts the text scale (canon §3.12), so CSS does the rest. Reduced motion is the
+// setting alone: the OS preference is only its default (03 §12), applied when settings are created.
 import { effect, type Signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { render } from 'preact';
@@ -13,11 +13,13 @@ import { DeathCard } from './overlays/DeathCard';
 import { FuelVignette } from './overlays/FuelVignette';
 import { InterruptCard } from './overlays/InterruptCard';
 import { PerfHud } from './overlays/PerfHud';
+import { RestoringCard } from './overlays/RestoringCard';
 import { SafeModeCard } from './overlays/SafeModeCard';
 import { StyleChip } from './overlays/StyleChip';
 import { TitleScreen } from './overlays/TitleScreen';
 import { Toasts } from './overlays/Toasts';
 import { UprightCard } from './overlays/UprightCard';
+import { RimUpdateChip } from './overlays/UpdateChip';
 import { SheetHost } from './SheetHost';
 import './styles.css';
 import { createViewport, type Viewport } from './viewport';
@@ -36,7 +38,9 @@ function loadFonts(): void {
 function Root({ app, vp }: { app: AppController; vp: Signal<Viewport> }): JSX.Element {
   const overlay = app.state.overlay.value;
   const settings = app.state.settings.value;
-  const inGame = overlay !== 'title' && overlay !== 'upright' && overlay !== 'safemode';
+  // The style-test gallery draws its own frame over a scratch scene: no live HUD or controls under it.
+  const inGame = overlay !== 'title' && overlay !== 'upright' && overlay !== 'safemode' && app.state.sheet.value !== 'styletest';
+  const chip = app.state.styleTest.value;
   return (
     <>
       <div class="hf-status-scrim" aria-hidden="true" />
@@ -46,12 +50,14 @@ function Root({ app, vp }: { app: AppController; vp: Signal<Viewport> }): JSX.El
           <ControlZone app={app} vp={vp} />
           {overlay === 'countdown' && <Countdown app={app} />}
           <Hud app={app} vp={vp} />
-          {app.state.styleTest.value && <StyleChip app={app} />}
+          {chip && <StyleChip app={app} />}
+          <RimUpdateChip app={app} styleChip={chip} />
           {settings.showPerf && <PerfHud app={app} />}
           <Toasts app={app} />
         </>
       )}
       <SheetHost app={app} />
+      {overlay === 'ctxlost' && <RestoringCard />}
       {overlay === 'interrupt' && <InterruptCard app={app} vp={vp} />}
       {overlay === 'death' && <DeathCard app={app} />}
       {overlay === 'title' && <TitleScreen app={app} />}
@@ -71,7 +77,9 @@ export function mountUI(root: HTMLElement, app: AppController): () => void {
     const cl = root.classList;
     cl.toggle('hf-pixel', app.state.look.value === 'pixel');
     cl.toggle('hf-left', s.leftHanded);
+    cl.toggle('hf-one-handed', s.oneHanded);
     cl.toggle('hf-reduced', s.reducedMotion);
+    root.style.setProperty('--hf-ts', String(s.textScale));
     cl.remove('hf-size-S', 'hf-size-M', 'hf-size-L');
     cl.add(`hf-size-${s.controlSize}`);
   });
@@ -80,6 +88,7 @@ export function mountUI(root: HTMLElement, app: AppController): () => void {
     render(null, root);
     stopClasses();
     viewport.dispose();
-    root.classList.remove('hf-ui', 'hf-pixel', 'hf-left', 'hf-reduced', 'hf-size-S', 'hf-size-M', 'hf-size-L');
+    root.classList.remove('hf-ui', 'hf-pixel', 'hf-left', 'hf-one-handed', 'hf-reduced', 'hf-size-S', 'hf-size-M', 'hf-size-L');
+    root.style.removeProperty('--hf-ts');
   };
 }

@@ -30,17 +30,19 @@ import {
   loadInitialWorld,
   nullSink,
   openStore,
+  previousCopyAge,
   randomSeed,
   safeModeHooks,
   seedOverride,
   worlds,
   type LoadedCopy,
 } from './bootWorld';
-import { GameApp, isRimBuilding, type AppHooks } from './controller';
+import { GameApp, type AppHooks } from './controller';
 import { orientationFlipped } from './layout';
 import { GameLoop } from './loop';
 import { NOTICE } from './notices';
 import { createSettingsStore, defaultSettings, initialLook, type SettingsStore } from './settings';
+import { createStyleViews } from './styleViews';
 import { resolveTier } from './tier';
 import type { Settings } from './types';
 import { createViewportTracker, parseDprOverride, type ViewportTracker } from './viewport';
@@ -260,11 +262,12 @@ function startEngine(d: EngineDeps): { loop: GameLoop; renderer: Renderer } | nu
     app,
     getLayout: () => viewport.layout,
     onInterrupt: () => app.interrupt(),
-    onWorldTap: (px, py) => {
-      // Sign tap (03 §6.4): opens that building's sheet while Pip is up on the Rim.
-      const id = renderer.screenToRimBuilding(px, py);
-      const idle = app.state.sheet.peek() === null && app.state.overlay.peek() === null;
-      if (isRimBuilding(id) && app.world.pod.y > -1 && idle) app.openSheet(id);
+    // Sign taps auto-drive to the pad (01 §3.10); one-handed taps on a neighbour dig once (03 §3.6).
+    onWorldTap: (px, py) => app.worldTap(px, py),
+    isTapTarget: (px, py) => app.tapTargetAt(px, py),
+    podScreen: () => {
+      const p = app.world.pod;
+      return renderer.worldToScreen(p.x, p.y, 0);
     },
   });
   app.attachInput(input);
@@ -355,7 +358,14 @@ export async function boot(): Promise<void> {
     yieldSlice: () => new Promise((r) => setTimeout(r, 0)),
     safeMode,
     hooks,
+    importOffer: cfg.device.standalone && initial.noSave,
+    styleView: createStyleViews(),
   });
+  if (store && initial.safeModeCopy) {
+    void previousCopyAge(store, initial.safeModeCopy).then((ms) => {
+      app.state.safeMode.value = { ...app.state.safeMode.peek(), previousOlderByMs: ms };
+    });
+  }
 
   // ---- layout, audio, saves, lifecycle
   const viewport = createViewportTracker({

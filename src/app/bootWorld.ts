@@ -12,9 +12,14 @@ import type { WorldApi } from '../world/api';
 import type { SafeModeHooks, SaveCodes, WorldFactory } from './controller';
 import { damagedFallbackNotice, NOTICE, previousCopyNotice } from './notices';
 
+/**
+ * Every world the app adopts plays under the build's scope (INT-6): a fresh claim gets it, and a stored or
+ * imported save from an older scope migrates forward (world/loadScope.ts); a newer one is refused like a newer
+ * save version.
+ */
 export const worlds: WorldFactory = {
   create: (seed) => new World({ seed, scope: SCOPE }),
-  deserialize: (bytes) => World.deserialize(bytes),
+  deserialize: (bytes) => World.deserialize(bytes, SCOPE),
 };
 
 export const codes: SaveCodes = { encode: encodeSaveCode, decode: decodeSaveCode };
@@ -122,17 +127,20 @@ export interface InitialWorld {
   notice: { text: string; tone: 'info' | 'warn'; aboutWorld: boolean } | null;
   /** Safe Mode (04 §4.13): the copy whose boots keep dying before their first frame. */
   safeModeCopy: CopyId | null;
+  /** No stored save was found or consulted: a first standalone launch offers "Paste save" (canon §3.15). */
+  noSave: boolean;
 }
 
 export async function loadInitialWorld(opened: OpenedStore, tracker: BootTracker, seedParam: number | null): Promise<InitialWorld> {
-  const fresh = (notice: InitialWorld['notice'] = null, safeModeCopy: CopyId | null = null): InitialWorld => ({
+  const fresh = (notice: InitialWorld['notice'] = null, safeModeCopy: CopyId | null = null, noSave = false): InitialWorld => ({
     world: worlds.create(seedParam ?? randomSeed()),
     coldLoad: false,
     loaded: null,
     notice,
     safeModeCopy,
+    noSave,
   });
-  if (seedParam !== null) return fresh();
+  if (seedParam !== null) return fresh(null, null, true);
   const store = opened.store;
   if (!store) return fresh({ text: opened.late ? NOTICE.savesNotLoading : NOTICE.savesUnavailable, tone: 'warn', aboutWorld: false });
 
@@ -140,7 +148,7 @@ export async function loadInitialWorld(opened: OpenedStore, tracker: BootTracker
   // to be decoded and booted, so a copy that keeps killing the boot (in its decode, or later) reaches Safe Mode
   // on its own count, fallback copies included.
   const copies = await store.listCopies();
-  if (copies.length === 0) return fresh();
+  if (copies.length === 0) return fresh(null, null, true);
   for (let i = 0; i < copies.length; i++) {
     const info = copies[i];
     const verdict = i === 0 ? tracker.begin(store.slot, info.copy) : tracker.retarget(info.copy);
@@ -154,10 +162,22 @@ export async function loadInitialWorld(opened: OpenedStore, tracker: BootTracker
       continue; // Corrupt content behind a valid CRC: the next older copy.
     }
     const notice = i > 0 ? { text: damagedFallbackNotice(copies[0].savedAt - info.savedAt), tone: 'warn' as const, aboutWorld: true } : null;
-    return { world, coldLoad: true, loaded: { copy: info.copy, seq: info.seq }, notice, safeModeCopy: null };
+    return { world, coldLoad: true, loaded: { copy: info.copy, seq: info.seq }, notice, safeModeCopy: null, noSave: false };
   }
   tracker.clear();
   return fresh({ text: NOTICE.damagedNewClaim, tone: 'warn', aboutWorld: true });
+}
+
+/**
+ * How much older the newest other copy is than the failing one (the Safe Mode card's "Load previous copy (n min
+ * older)", APP-5), or null when there is no other copy.
+ */
+export async function previousCopyAge(store: Pick<SaveStore, 'listCopies'>, failing: CopyId): Promise<number | null> {
+  const copies = await store.listCopies();
+  const bad = copies.find((c) => c.copy === failing);
+  const older = copies.find((c) => c.copy !== failing);
+  if (!bad || !older) return null;
+  return Math.max(0, bad.savedAt - older.savedAt);
 }
 
 /**

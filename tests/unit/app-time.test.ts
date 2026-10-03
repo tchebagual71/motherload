@@ -55,12 +55,23 @@ describe('TimeController', () => {
     expect(t.overlay()).toBe('safemode');
   });
 
-  it('pauses without an overlay for sheets and context loss', () => {
+  it('pauses without an overlay for sheets', () => {
     const t = new TimeController();
     t.setSheet('sheet', GROUNDED);
-    t.raise('ctxlost');
     expect(t.overlay()).toBeNull();
     expect(t.podRunning).toBe(false);
+  });
+
+  it('context loss shows "Restoring graphics…" over death and the resume card, under the upright card (APP-11)', () => {
+    const t = new TimeController();
+    t.raise('ctxlost');
+    expect(t.overlay()).toBe('ctxlost');
+    expect(t.podRunning).toBe(false);
+    t.raise('death');
+    t.raise('interrupt');
+    expect(t.overlay()).toBe('ctxlost');
+    t.raise('upright');
+    expect(t.overlay()).toBe('upright');
   });
 
   it('ignores interrupt while a modal state holds the pod, unless forced', () => {

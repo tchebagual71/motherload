@@ -10,6 +10,7 @@ import type { ConsumableId } from '../shared/types';
 import type { SaveScheduler } from '../save/scheduler';
 import type { WorldApi } from '../world/api';
 import type { GameApp } from './controller';
+import type { StyleView } from './styleViews';
 import type { InputController, Overlay } from './types';
 
 export const STEP_MS = 1000 / STEP_HZ;
@@ -20,6 +21,8 @@ const STILL_OVERLAYS: ReadonlySet<Overlay> = new Set<Overlay>(['interrupt', 'upr
 const NO_EVENTS: RenderFrame['events'] = [];
 const PERF_PUBLISH_MS = 500;
 const ALPHA_MAX = 0.9999;
+/** A style-test bookmark settles (camera spring, build tween) on a running clock, then holds still (03 §9.4). */
+export const VIEW_SETTLE_MS = 1_500;
 
 /** The canon §3.5 accumulator, separated from rAF for testing. */
 export class FixedStepper {
@@ -84,6 +87,8 @@ export class GameLoop {
   private readonly frameData: RenderFrame;
   private readonly armingData = { radius: 0, progress: 0 };
   private readonly podAudio: PodAudioState = { thrust: 0, digging: false, drillTier: 1 };
+  private viewShown: StyleView | null = null;
+  private viewClock = 0;
 
   constructor(private readonly deps: LoopDeps) {
     this.frameData = {
@@ -194,7 +199,9 @@ export class GameLoop {
     saves?.tick(t);
     this.publishPerf(t);
 
-    if (this.shouldRender(t, events.length > 0)) {
+    const view = app.view;
+    if (view) this.drawView(view, dt);
+    else if (this.shouldRender(t, events.length > 0)) {
       this.lastRenderAt = t;
       renderer.render(this.buildFrame(app.world, t, events));
       if (!this.firstFrameDone) {
@@ -212,9 +219,31 @@ export class GameLoop {
   }
 
   private stepOnce(world: WorldApi): void {
-    const running = this.deps.app.podRunning();
-    const intent = running ? (this.intentOverride ?? this.deps.input.sampleIntent()) : NO_INTENT;
+    const { app } = this.deps;
+    const running = app.podRunning();
+    const override = this.intentOverride;
+    const intent = running ? app.shapeIntent(override ?? this.deps.input.sampleIntent()) : NO_INTENT;
     world.step(intent, running);
+    // fireSlot is edge-triggered (InputController contract): a test override fires once, not every 7 steps (INT-17).
+    if (running && override) override.fireSlot = -1;
+  }
+
+  /** Style-test bookmark (03 §9.4): its own world and camera mode, no events, on a clock that stops after settling. */
+  private drawView(view: StyleView, dt: number): void {
+    if (this.deps.renderer.contextLost) return;
+    if (view !== this.viewShown) {
+      this.viewShown = view;
+      this.viewClock = 0;
+    } else {
+      this.viewClock = Math.min(VIEW_SETTLE_MS, this.viewClock + dt);
+    }
+    const f = this.buildFrame(view.world, this.viewClock, NO_EVENTS);
+    f.alpha = 0;
+    f.touching = false;
+    f.arming = null;
+    f.mode = view.mode;
+    this.deps.renderer.render(f);
+    f.mode = 'play';
   }
 
   private shouldRender(t: number, hadEvents: boolean): boolean {

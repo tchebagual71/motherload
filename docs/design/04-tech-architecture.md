@@ -305,6 +305,7 @@ Storage contents (Bins, Silos, Depot stock, machine buffers) are sorted `(item u
 - **Fixtures:** CI fails if `SAVE_VERSION` rises without the previous fixture and a migration.
 - **Generation freeze** (canon §3.2): from the MVP tag, `tests/golden/worldgen.json` holds TERR and LODE hashes for 5 seeds; changing them requires a migration.
 - **Newer files** are never overwritten.
+- **Scope on load** (INT-6): a world always plays under the build's scope (`config/scope.ts`). A save from an older scope migrates forward on load by restamping its scope only, since scope hides content and never changes generation (m0 → mvp keeps the world, including the dug or undug M0 debug strip, and lifts the r128 floor). A save from a newer scope is refused like a newer `SAVE_VERSION` (`world/loadScope.ts`).
 
 ### 4.12 Autosave triggers and the critical path (canon §3.15)
 

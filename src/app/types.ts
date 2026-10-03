@@ -118,7 +118,21 @@ export interface AppState {
   tripSummary: Signal<TripSummary | null>;
   /** A new service worker is waiting (04 §9.2 "Update ready" chip). */
   updateReady: Signal<boolean>;
+  /** performance.now() of the last "Bay full" (03 §3.5, §6.1: pill callout and the Cargo context for 5 s). */
+  bayFullAt: Signal<number>;
+  /** First standalone launch with no save: the title offers one-tap "Paste save" (canon §3.15; 03 §6.3). */
+  importOffer: Signal<boolean>;
+  /** Safe Mode card (04 §4.13): age of the previous copy (null = none) and the last failed recovery. */
+  safeMode: Signal<SafeModeInfo>;
 }
+
+export interface SafeModeInfo {
+  previousOlderByMs: number | null;
+  error: string | null;
+}
+
+/** Debug "Screens" previews, raised through the time model so they always have a way out (INT-18). */
+export type OverlayPreview = 'interrupt' | 'upright' | 'title';
 
 /** Everything the UI may do. Implemented by app/ (controller.ts). */
 export interface AppController {
@@ -149,6 +163,10 @@ export interface AppController {
   perfReport(): Promise<string>;
   /** Remove the head radio message (the UI calls this when the player dismisses or it auto-advances). */
   dismissRadio(id: number): void;
+  /** Style-test gallery (03 §9.4): show time-frozen bookmark `i` (0–5) instead of play, or null to return. */
+  styleBookmark(i: number | null): void;
+  /** Debug overlay preview through the time model (INT-18). */
+  previewOverlay(o: OverlayPreview): void;
 }
 
 /** Input → app. The input module owns pointer/keyboard handling and produces one intent per sim step. */

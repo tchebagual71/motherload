@@ -1,7 +1,7 @@
 // Keyboard map (03 §3.7). Pure: fed with KeyboardEvent.code strings.
 // Arrows / WASD drive and dig; W / ↑ is full thrust; Space is THRUST; 1–4 are quick slots (explosives fire
-// on key-up after the arm); Esc closes a sheet or opens the menu; Tab cargo; L flips the look (M0);
-// F3 or ` opens the debug menu.
+// on key-up after the arm); E the context button; Esc closes a sheet or opens the menu; Tab cargo; L flips
+// the look (M0); F3 or ` opens the debug menu.
 
 type Dir = 'left' | 'right' | 'up' | 'down' | 'thrust';
 
@@ -25,12 +25,14 @@ export type KeyCommand =
   | { kind: 'slotUp'; slot: number }
   | { kind: 'escape' }
   | { kind: 'cargo' }
+  | { kind: 'context' }
   | { kind: 'look' }
   | { kind: 'debug' };
 
 const DRIVE: KeyCommand = { kind: 'drive' };
 const ESCAPE: KeyCommand = { kind: 'escape' };
 const CARGO: KeyCommand = { kind: 'cargo' };
+const CONTEXT: KeyCommand = { kind: 'context' };
 const LOOK: KeyCommand = { kind: 'look' };
 const DEBUG: KeyCommand = { kind: 'debug' };
 
@@ -63,6 +65,8 @@ export class KeyboardState {
         return ESCAPE;
       case 'Tab':
         return CARGO;
+      case 'KeyE':
+        return CONTEXT;
       case 'KeyL':
         return LOOK;
       case 'F3':

@@ -1,14 +1,16 @@
-// Control-zone visuals (canon §3.12; 03 §1.5, §2.1–2.2, §3.1, §3.4): scrim, floating stick (drawn where
-// the thumb is), rest hint, 2×2 quick slots and the optional THRUST button. Pointer handling lives in
-// input/: slots and THRUST are tagged with data-slot / data-thrust and input delegates on the UI root.
+// Control-zone visuals (canon §3.12; 03 §1.5, §2.1–2.2, §3.1, §3.4–3.6): scrim, floating stick (drawn where
+// the thumb is), rest hint, 2×2 quick slots, the context button and the optional THRUST button. One-handed
+// mode draws a 40% ring at the virtual origin and uses the 52-pt cluster. Pointer handling lives in input/:
+// slots and THRUST are tagged with data-slot / data-thrust and input delegates on the UI root.
 import { useSignalEffect, type Signal } from '@preact/signals';
 import type { CSSProperties, JSX } from 'preact';
 import { useRef } from 'preact/hooks';
 import type { AppController } from '../app/types';
 import { controls } from '../input/controlsState';
 import { slotDecision, isGroundedOnly } from '../input/slots';
-import { controlRects, restHintCentre, type Rect } from '../input/zones';
+import { contextRect, controlRects, ONE_HANDED_ORIGIN_Y, restHintCentre, type Rect } from '../input/zones';
 import { CONSUMABLES, TOUCH, type ConsumableId } from '../shared/canon';
+import { ContextButton } from './ContextButton';
 import { Icon } from './icons';
 import type { Viewport } from './viewport';
 
@@ -22,12 +24,14 @@ export function ControlZone({ app, vp }: { app: AppController; vp: Signal<Viewpo
   const s = app.state.settings.value;
   const v = vp.value;
   const zoneH = TOUCH.controlZone[s.controlSize] + v.ib;
-  const rects = controlRects(v.w, v.h, v.ib, s.controlSize, s.thrustButton, s.leftHanded);
+  const rects = controlRects(v.w, v.h, v.ib, s.controlSize, s.thrustButton, s.leftHanded, s.oneHanded);
+  const ctx = contextRect(v.w, v.h, v.ib, s.controlSize, s.thrustButton, s.leftHanded, s.oneHanded);
   return (
     <div class="hf-controls">
       <div class="hf-zone-scrim" style={{ height: `${zoneH}px` }} />
       <StickVisual app={app} vp={vp} />
       <QuickSlots app={app} rects={rects.slots} />
+      <ContextButton app={app} rect={ctx} />
       {rects.thrust && <ThrustButton rect={rects.thrust} />}
     </div>
   );
@@ -43,8 +47,11 @@ function StickVisual({ app, vp }: { app: AppController; vp: Signal<Viewport> }):
   const s = app.state.settings.value;
   const v = vp.value;
   const r = TOUCH.stickRadius[s.controlSize];
-  const showHint = app.world.story.trips < 3;
-  const rest = restHintCentre({ width: v.w, height: v.h, controlZone: TOUCH.controlZone[s.controlSize] + v.ib, clearTop: v.it + TOUCH.hudRow }, s.controlSize, s.leftHanded);
+  // One-handed: the 40% ring marks the virtual origin (03 §3.6), always; else the rest hint for 3 trips (03 §3.1).
+  const showHint = s.oneHanded || app.world.story.trips < 3;
+  const rest = s.oneHanded
+    ? { x: v.w / 2, y: ONE_HANDED_ORIGIN_Y * v.h }
+    : restHintCentre({ width: v.w, height: v.h, controlZone: TOUCH.controlZone[s.controlSize] + v.ib, clearTop: v.it + TOUCH.hudRow }, s.controlSize, s.leftHanded);
 
   useSignalEffect(() => {
     controls.stickVersion.value;
@@ -183,14 +190,16 @@ function Slot({ index, id, rect, count, disabled, locked, pressed, progress }: S
 
 function ThrustButton({ rect }: { rect: Rect }): JSX.Element {
   const held = controls.thrustHeld.value;
+  const latched = controls.thrustLatched.value;
   return (
     <button
       type="button"
       tabIndex={-1}
-      class={held ? 'hf-thrust hf-pressed' : 'hf-thrust'}
+      class={`hf-thrust${held ? ' hf-pressed' : ''}${latched ? ' hf-latched' : ''}`}
       data-thrust=""
       style={rectStyle(rect)}
       aria-label="Thrust"
+      aria-pressed={latched}
     >
       THRUST
     </button>

@@ -24,6 +24,7 @@ export { thrustInput, skyFade } from './physics';
 export { PUMP_PAD_X } from './consumables';
 export { blocksPod, forcedFloorRow } from './collision';
 export { destructionCause } from './vitals';
+export { applyAssists, landingAssistThrust, stickForThrust, type AssistFlags } from './assists';
 
 export interface PodStepCtx {
   /** Rows ≥ this are treated as an undiggable, impassable scope floor (M0 r128 / MVP r320 overlay; 584 = Seal in v1). */
@@ -88,7 +89,7 @@ export function stepPod(pod: PodState, grid: TerrainGrid, intent: PodIntent, ctx
   const dropIn = pod.dig ? false : updateDigEngage(pod, grid, intent, floor, scope, out);
   if (pod.dig) {
     pod.thrust = 0;
-    advanceDig(pod, grid, floor, heat, out);
+    advanceDig(pod, grid, floor, heat, out, intent.digEngage);
   } else {
     physicsStep(pod, grid, intent, floor, heat, dropIn, out);
   }

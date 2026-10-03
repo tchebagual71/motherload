@@ -37,6 +37,8 @@ const PATHS = {
   check: 'M5 12l5 5 9-10',
   upright: 'M9 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM20 8a8 8 0 0 1 0 8M4 16a8 8 0 0 1 0-8',
   coin: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM14.5 9a2.5 2 0 0 0-5 0c0 2.5 5 1.5 5 4.5a2.5 2 0 0 1-5 0M12 6v1.5M12 16.5V18',
+  undo: 'M9 14L4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3',
+  flip: 'M7 20V4M3 8l4-4 4 4M17 4v16M13 16l4 4 4-4',
 } as const;
 
 export type IconName = keyof typeof PATHS;

@@ -13,6 +13,7 @@ import { PumpSheet } from './sheets/PumpSheet';
 import { SavesSheet } from './sheets/SavesSheet';
 import { SettingsSheet } from './sheets/SettingsSheet';
 import { ShedSheet } from './sheets/ShedSheet';
+import { StyleTestSheet } from './sheets/StyleTestSheet';
 
 export interface SheetProps {
   app: AppController;
@@ -32,6 +33,7 @@ const STATIC_SHEETS: Partial<Record<Exclude<SheetId, null>, ComponentType<SheetP
   settings: SettingsSheet,
   saves: SavesSheet,
   cargo: CargoSheet,
+  styletest: StyleTestSheet,
 };
 
 let debugSheet: ComponentType<SheetProps> | null = null;

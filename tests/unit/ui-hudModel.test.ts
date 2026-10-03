@@ -12,6 +12,7 @@ const stats = (over: Partial<PodStats> = {}): PodStats => ({
   digSteps: 29,
   radiator: 1,
   baySlots: 7,
+  slotsUsed: 0,
   cargoMass: 0,
   scannerLodeRadius: 1,
   ...over,
@@ -40,6 +41,11 @@ describe('hudModel', () => {
     expect(fuelWarnLevel(0.19)).toBe(0);
     expect(fuelWarnLevel(0.09)).toBe(1);
     expect(fuelWarnLevel(0.04)).toBe(2);
+    // Exactly at a threshold the HUD warns with the sim's beep (INT-13: one rule, `<=`).
+    expect(fuelWarnLevel(0.2)).toBe(0);
+    expect(fuelWarnLevel(0.1)).toBe(1);
+    expect(fuelWarnLevel(0.05)).toBe(2);
+    expect(hudModel(pod({ fuel: 2 }), stats(), wallet()).fuelWarn).toBe(0);
     expect(hudModel(pod({ fuel: 0.4 }), stats(), wallet()).fuelWarn).toBe(2);
   });
 
@@ -58,11 +64,12 @@ describe('hudModel', () => {
     expect(at(60).massTone).toBe('amber');
   });
 
-  it('counts cargo slots for the bar', () => {
-    const cargo = Array.from({ length: 4 }, () => ({ kind: 'mineral' as const, tier: 1 }));
-    const m = hudModel(pod({ cargo }), stats(), wallet());
-    expect(m.cargoText).toBe('4');
-    expect(m.cargoFrac).toBeCloseTo(4 / 7, 6);
+  it('counts bay slots, not items, for the pill and the bar (INT-14)', () => {
+    // A Depot Kit is one item in two slots (canon §3.7).
+    const cargo = [{ kind: 'kit' as const, id: 'depot' }, { kind: 'mineral' as const, tier: 1 }];
+    const m = hudModel(pod({ cargo }), stats({ slotsUsed: 3 }), wallet());
+    expect(m.cargoText).toBe('3');
+    expect(m.cargoFrac).toBeCloseTo(3 / 7, 6);
   });
 
   it('switches the info pill to depth-first underground and flags debt', () => {

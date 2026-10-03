@@ -122,7 +122,7 @@ class FakeWorld implements WorldApi {
     return this.events.splice(0, this.events.length);
   }
   stats(): PodStats {
-    return { maxFuel: 10, maxHull: 10, engineHp: 150, hoverCap: 100, vUp: 7, digSteps: 29, radiator: 1, baySlots: 7, cargoMass: 0, scannerLodeRadius: 1 };
+    return { maxFuel: 10, maxHull: 10, engineHp: 150, hoverCap: 100, vUp: 7, digSteps: 29, radiator: 1, baySlots: 7, slotsUsed: 0, cargoMass: 0, scannerLodeRadius: 1 };
   }
   padUnderPod(): null {
     return null;
@@ -162,6 +162,20 @@ class FakeWorld implements WorldApi {
     return NO;
   }
   setQuickSlot(): void {}
+  discardCargo(): Result {
+    return NO;
+  }
+  undoDiscard(): Result {
+    return NO;
+  }
+  readonly discardsPending = 0;
+  commitDiscards(): void {}
+  returnFuel(): number {
+    return 0;
+  }
+  onRim(): boolean {
+    return this.pod.grounded && this.pod.y > 0;
+  }
   respawn(): { fee: number; debt: number; lost: [] } {
     return { fee: 0, debt: 0, lost: [] };
   }

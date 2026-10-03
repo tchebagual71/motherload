@@ -1,14 +1,17 @@
-// Title screen (03 §6.3, §6.7; canon §3.15): outside standalone the install card leads ("Install for full
-// screen and safe saves", Add-to-Home steps, export code auto-copied) and "Play in browser" is second.
-// The logo and install card scroll in a [data-scroll] area (short Safari viewports); the play / new-game
+// Title screen (03 §6.3, §6.7; canon §3.15; UX review M12): outside standalone the install card leads ("Install
+// for full screen and safe saves", Add-to-Home steps, export code auto-copied) and "Play in browser" is second.
+// The first standalone launch with no save offers one-tap "Paste save" (Import from Safari) with a paste box and
+// file fallback. The logo and cards scroll in a [data-scroll] area (short Safari viewports); the play / new-game
 // actions stay pinned below it, so opening the steps can never push them off screen.
 import type { JSX } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { AppController } from '../../app/types';
-import { copyTextLater } from '../clipboard';
+import { copyTextLater, pasteText } from '../clipboard';
 import { isIOS } from '../env';
+import { checkExportCode } from '../format';
 import { Icon } from '../icons';
 import { Button } from '../widgets';
+import { UpdateChip } from './UpdateChip';
 
 function hasProgress(app: AppController): boolean {
   const w = app.world;
@@ -17,6 +20,8 @@ function hasProgress(app: AppController): boolean {
 
 export function TitleScreen({ app }: { app: AppController }): JSX.Element {
   const install = app.state.canInstall.value && !app.state.standalone.value;
+  // Kept for the title's lifetime once offered, so a successful import can say so (the offer itself ends there).
+  const [offerPaste] = useState(() => app.state.importOffer.peek() && app.state.standalone.peek());
   const progress = hasProgress(app);
   const [steps, setSteps] = useState(false);
   const [copied, setCopied] = useState<boolean | null>(null);
@@ -58,6 +63,7 @@ export function TitleScreen({ app }: { app: AppController }): JSX.Element {
           </h1>
           <p class="hf-tagline">Dig deep. Haul it up. Build the factory.</p>
         </div>
+        {offerPaste && <PasteSave app={app} />}
         {install && (
           <div class="hf-install">
             <div class="hf-install-head">
@@ -78,6 +84,7 @@ export function TitleScreen({ app }: { app: AppController }): JSX.Element {
         )}
       </div>
       <div class="hf-title-panel">
+        <UpdateChip app={app} class="hf-update-title" />
         {install ? (
           <Button kind="secondary" onClick={play}>
             Play in browser
@@ -136,6 +143,86 @@ function InstallSteps({ copied }: { copied: boolean | null }): JSX.Element {
       </ol>
       {copied === true && <p class="hf-note hf-note-good">Your save is copied: paste it in the app.</p>}
       {copied === false && <p class="hf-note">Export your save from Menu → Saves before switching.</p>}
+    </div>
+  );
+}
+
+type PasteState = { step: 'offer' } | { step: 'busy' } | { step: 'box'; error: string | null } | { step: 'done' };
+
+/**
+ * Import from Safari (canon §3.15; 03 §6.3): one tap reads the clipboard (user-activated readText), then the
+ * import dry run. A blocked or empty clipboard opens a paste box (and a file picker for .hfsave files).
+ */
+function PasteSave({ app }: { app: AppController }): JSX.Element | null {
+  const [st, setSt] = useState<PasteState>({ step: 'offer' });
+  const [draft, setDraft] = useState('');
+  const card = useRef<HTMLDivElement>(null);
+  // The paste box opens below the fold on short screens (the title scrolls): bring it into view.
+  useEffect(() => {
+    if (st.step === 'box') card.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [st.step]);
+
+  const importCode = async (raw: string): Promise<void> => {
+    const c = checkExportCode(raw);
+    if (!c.ok) {
+      setSt({ step: 'box', error: c.reason });
+      return;
+    }
+    setSt({ step: 'busy' });
+    const r = await app.importSave(c.code);
+    if (r.ok) {
+      app.toast(r.message ?? 'Save imported', 'good');
+      setSt({ step: 'done' });
+    } else setSt({ step: 'box', error: r.reason });
+  };
+  // readText must start inside the tap (user activation); nothing is awaited before it.
+  const onPaste = (): void => {
+    void pasteText().then((t) => (t ? importCode(t) : setSt({ step: 'box', error: 'Clipboard is empty or blocked: paste the code below.' })));
+  };
+  const onFile = (e: Event): void => {
+    const file = (e.currentTarget as HTMLInputElement).files?.[0];
+    if (file) void file.text().then(importCode);
+  };
+
+  if (st.step === 'done') return <p class="hf-note hf-note-good hf-paste-done">Save imported. Tap Continue.</p>;
+  return (
+    <div class="hf-install hf-paste-save" ref={card}>
+      <div class="hf-install-head">
+        <Icon name="save" size={28} />
+        <span>
+          <b>Coming from Safari?</b>
+          <small>Bring the game you started there</small>
+        </span>
+      </div>
+      {st.step === 'box' ? (
+        <>
+          <textarea
+            class="hf-paste"
+            data-scroll=""
+            rows={3}
+            placeholder="Paste a code that starts with HF1:"
+            value={draft}
+            spellcheck={false}
+            autocapitalize="off"
+            autocomplete="off"
+            onInput={(e) => setDraft((e.currentTarget as HTMLTextAreaElement).value)}
+          />
+          {st.error && <p class="hf-note hf-note-bad">{st.error}</p>}
+          <div class="hf-buy-row">
+            <label class="hf-btn hf-btn-secondary hf-file">
+              From file
+              <input type="file" accept=".hfsave,text/plain" onChange={onFile} />
+            </label>
+            <Button kind="primary" disabled={draft.trim() === ''} onClick={() => void importCode(draft)}>
+              Import
+            </Button>
+          </div>
+        </>
+      ) : (
+        <Button kind="primary" big icon="copy" disabled={st.step === 'busy'} onClick={onPaste}>
+          {st.step === 'busy' ? 'Checking save…' : 'Paste save'}
+        </Button>
+      )}
     </div>
   );
 }

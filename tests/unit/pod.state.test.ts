@@ -65,6 +65,7 @@ describe('podStats (canon §2.6)', () => {
       digSteps: 29,
       radiator: 1,
       baySlots: 7,
+      slotsUsed: 0,
       cargoMass: 0,
       scannerLodeRadius: 1,
     });

@@ -6,6 +6,7 @@
 //   2. In the spawn zone: the stick spawns centred on the touch.
 //   3. Anywhere: a world-tap candidate. Up within 200 ms and < 10 pt → world tap; a stick the tap
 //      spawned is discarded (its output never left the dead zone by more than 2 pt).
+// One-handed mode (canon §3.12) passes a virtual origin: the stick is measured from it, not from the touch.
 import { TOUCH } from '../shared/canon';
 import { FloatingStick, type StickConfig } from './stick';
 import { inRect, type Rect } from './zones';
@@ -59,14 +60,17 @@ export class CanvasArbiter {
     return this.find(id)?.role ?? null;
   }
 
-  down(p: PointerSample, spawnZone: Rect): PointerRole {
+  down(p: PointerSample, spawnZone: Rect, origin?: { x: number; y: number }): PointerRole {
     if (this.find(p.id)) return 'ignored';
     let role: PointerRole;
     if (this.stick.active) role = 'ignored';
     else if (inRect(spawnZone, p.x, p.y)) role = 'stick';
     else role = 'tap';
     this.tracked.push({ id: p.id, role, downX: p.x, downY: p.y, downT: p.t, maxMove2: 0 });
-    if (role === 'stick') this.stick.spawn(p.id, p.x, p.y);
+    if (role === 'stick') {
+      this.stick.spawn(p.id, origin?.x ?? p.x, origin?.y ?? p.y);
+      if (origin) this.stick.move(p.x, p.y);
+    }
     return role;
   }
 

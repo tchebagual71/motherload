@@ -129,6 +129,7 @@ export function podStats(pod: Readonly<PodState>): PodStats {
     digSteps: drillStepsOf(t.drill),
     radiator: radiatorOf(t.radiator),
     baySlots: baySlotsOf(t.bay),
+    slotsUsed: cargoSlotsUsed(pod.cargo),
     cargoMass: cargoMass(pod.cargo),
     scannerLodeRadius: scannerRadiusOf(t.scanner),
   };

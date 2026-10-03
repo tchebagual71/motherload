@@ -62,6 +62,11 @@ export interface ControlRects {
   thrust: Rect | null;
 }
 
+/** Slot size and gap: the THRUST layout and one-handed mode use the 2×2 cluster of 52-pt slots (canon §3.12). */
+export function slotGeometry(size: ControlSize, thrustButton: boolean, oneHanded = false): { slot: number; gap: number } {
+  return thrustButton || oneHanded ? THRUST_LAYOUT : SLOT_GEOMETRY[size];
+}
+
 /** Quick-slot cluster (and optional THRUST button) in the dominant bottom corner. */
 export function controlRects(
   width: number,
@@ -70,8 +75,9 @@ export function controlRects(
   size: ControlSize,
   thrustButton: boolean,
   leftHanded: boolean,
+  oneHanded = false,
 ): ControlRects {
-  const { slot, gap } = thrustButton ? THRUST_LAYOUT : SLOT_GEOMETRY[size];
+  const { slot, gap } = slotGeometry(size, thrustButton, oneHanded);
   const bottom = height - bottomInset - CLUSTER_BOTTOM_MARGIN;
   const rowTop = [bottom - 2 * slot - gap, bottom - slot];
   // Columns measured from the dominant edge: col 0 is the outer column on that side.
@@ -101,4 +107,55 @@ export function restHintCentre(layout: InputLayout, size: ControlSize, leftHande
   const y = layout.height - bottomInsetOf(layout, size) - TOUCH.controlZone[size] / 2;
   const x = leftHanded ? zone.x1 - r - 24 : zone.x0 + r + 24;
   return { x, y };
+}
+
+/** Context button size per control size (03 §1.5: 48 / 52 / 56). */
+export const CONTEXT_SIZE: Record<ControlSize, number> = { S: 48, M: 52, L: 56 };
+
+/**
+ * Context button (03 §3.5; wireframes 03 §2.1–2.2): centred over the slot cluster, one cluster gap above it.
+ * Mirrors with the cluster.
+ */
+export function contextRect(
+  width: number,
+  height: number,
+  bottomInset: number,
+  size: ControlSize,
+  thrustButton: boolean,
+  leftHanded: boolean,
+  oneHanded = false,
+): Rect {
+  const { slots } = controlRects(width, height, bottomInset, size, thrustButton, leftHanded, oneHanded);
+  const { gap } = slotGeometry(size, thrustButton, oneHanded);
+  const c = CONTEXT_SIZE[size];
+  const cx = (Math.min(slots[0].x0, slots[1].x0) + Math.max(slots[0].x1, slots[1].x1)) / 2;
+  const y1 = slots[0].y0 - gap;
+  return { x0: cx - c / 2, y0: y1 - c, x1: cx + c / 2, y1 };
+}
+
+/** One-handed virtual-origin height (canon §3.12): 0.70 H. */
+export const ONE_HANDED_ORIGIN_Y = 0.7;
+/** One-handed stick zone top (03 §3.6): pointer-downs at y ≥ 0.45 H, off the controls. */
+export const ONE_HANDED_ZONE_Y = 0.45;
+
+/**
+ * One-handed stick zone (03 §3.6): y ≥ 0.45 H across the screen, keeping the 24-pt back-swipe exclusion on the
+ * non-dominant edge (03 §1.1).
+ */
+export function oneHandedZone(layout: InputLayout, size: ControlSize, leftHanded: boolean): Rect {
+  const edge = 24;
+  const y1 = layout.height - bottomInsetOf(layout, size);
+  return leftHanded
+    ? { x0: 0, y0: ONE_HANDED_ZONE_Y * layout.height, x1: layout.width - edge, y1 }
+    : { x0: edge, y0: ONE_HANDED_ZONE_Y * layout.height, x1: layout.width, y1 };
+}
+
+/**
+ * One-handed virtual origin (canon §3.12): the pod's screen x at 0.70 H, kept a stick radius inside the screen so
+ * its 40% ring stays visible. With no pod position yet, the screen centre.
+ */
+export function virtualOrigin(layout: InputLayout, size: ControlSize, podX: number | null): { x: number; y: number } {
+  const r = TOUCH.stickRadius[size];
+  const x = podX === null || !Number.isFinite(podX) ? layout.width / 2 : podX;
+  return { x: Math.min(Math.max(x, r), layout.width - r), y: ONE_HANDED_ORIGIN_Y * layout.height };
 }
