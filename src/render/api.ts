@@ -2,6 +2,7 @@
 import type { GameEvent } from '../shared/events';
 import type { Look } from '../shared/types';
 import type { WorldApi } from '../world/api';
+import type { BuildingKind, Cell, Dir, Plane } from '../factory/api';
 
 export type QualityTier = 'low' | 'mid' | 'high';
 export type CameraMode = 'play' | 'build';
@@ -36,6 +37,8 @@ export interface RenderFrame {
   brightMines: boolean;
   /** Accessibility: no camera shake, gentler animation. */
   reducedMotion: boolean;
+  /** Build-mode overlay state (cursor, ghost preview, bulldoze, selection); null in play mode. */
+  build?: BuildFrame | null;
   /**
    * The pod may run (no pause reason, canon §4.5). False: a held pod keeps its thrust/dig state for the save,
    * but its exhaust, drill FX and thruster lamp stop. Omitted = running.
@@ -57,7 +60,7 @@ export interface RenderInfo {
   renderDpr?: number;
 }
 
-export interface Renderer {
+export interface Renderer extends BuildRendererApi {
   render(frame: RenderFrame): void;
   resize(layout: ViewportLayout): void;
   /** Switch look. M0 builds keep both pipelines compiled so this costs ≤ 1 frame (canon §5.1). */
@@ -85,3 +88,52 @@ export interface RendererOptions {
 }
 
 export type CreateRenderer = (canvas: HTMLCanvasElement, layout: ViewportLayout, opts: RendererOptions) => Renderer;
+
+/** What build mode wants drawn this frame (03 §4; written by the build UX, read by render). */
+export interface BuildFrame {
+  plane: Plane;
+  /** Cell under the lifted placement point (44 pt above the finger), or null. */
+  cursor: Cell | null;
+  /** Ghost preview of the armed tool at the cursor, tinted by `valid` (red when invalid). Belts: the painted path. */
+  preview: {
+    kind: BuildingKind;
+    mk: number;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    dir: Dir;
+    valid: boolean;
+    path?: readonly Cell[];
+  } | null;
+  /** Bulldoze tool armed: highlight what a tap would remove. */
+  bulldoze: boolean;
+  /** Selected entity id (inspect), or null. */
+  selectedId: number | null;
+}
+
+/** Build camera (canon §3.4: surface build 45° + n·90° / 55°; underground build 8° / 12°). */
+export interface BuildCamera {
+  plane: Plane;
+  /** View centre in plane cell units (Yard: x, Yard row; mine: x, row). */
+  cx: number;
+  cy: number;
+  /** Points per world unit (Yard ≥ 39, ≥ 44 with a 1×1 tool; mine ≥ 47). */
+  ppu: number;
+  /** Yard yaw snap index (0..3 → 45° + n·90°); ignored underground. */
+  yaw: 0 | 1 | 2 | 3;
+}
+
+/** Build-mode picking and camera control, implemented by the renderer (MVP build wave). */
+export interface BuildRendererApi {
+  /** Enter/update the build camera; null returns to the play camera. */
+  setBuildCamera(cam: BuildCamera | null): void;
+  /** Yard cell under a CSS px point (ray vs the y = 0 plateau plane), or null outside the Yard. */
+  screenToYardCell(px: number, py: number): Cell | null;
+  /** Mine cell under a CSS px point (ray vs the slab front plane), or null. */
+  screenToMineCell(px: number, py: number): Cell | null;
+  /** CSS px position of a plane cell's centre (loupe, ghost labels, status bubbles). */
+  cellToScreen(plane: Plane, x: number, y: number): { x: number; y: number };
+  /** Factory entity id under a CSS px point, or null. */
+  pickEntity(px: number, py: number): number | null;
+}

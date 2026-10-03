@@ -69,7 +69,8 @@ export interface Lode {
 export type CargoItem =
   | { kind: 'mineral'; tier: number }
   | { kind: 'relic'; id: number }
-  | { kind: 'kit'; id: string };
+  /** A Kit; metered Kits (Belt 8, Lamp 4, Chute 16 units; factory KIT_METER) carry their remaining `units` (default full). */
+  | { kind: 'kit'; id: string; units?: number };
 
 // ---------- Re-exports for convenience ----------
 export type { ConsumableId, Line, Purity, RimBuildingId };

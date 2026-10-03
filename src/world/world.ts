@@ -19,6 +19,8 @@ import { PUMP_PAD, PadArming, isNeutral, isOnRim, padIndexAt, padIndexOf } from 
 import { newStory, resetTrip, updateDepth, updateTrip } from './rules';
 import { RECORDER_RELIC, StoryDirector, type StoryContext, type StorySnapshot } from '../story';
 import { scopeAtLeast } from '../shared/scope';
+import { Factory, type FactoryPorts } from '../factory';
+import type { KitShopItem } from './api';
 
 export interface WorldOptions {
   seed: number;
@@ -97,6 +99,8 @@ export class World implements WorldApi {
   readonly pod: PodState;
   readonly wallet: Wallet;
   readonly story: StoryState;
+  /** The hosted factory (MVP+; canon §4.10). Null in M0 builds. */
+  readonly factory: Factory | null;
 
   private steps: number;
   private readonly rng: Rng;
@@ -139,6 +143,8 @@ export class World implements WorldApi {
     this.deathUnreported = s.pod.destroyed;
     this.podCtx = { floorRow: scopeFloorRow(this.scope), deepHeat: this.deepHeat, rng: this.rng, stepNo: this.steps, scope: this.scope };
     this.shop = { pod: this.pod, wallet: this.wallet, scope: this.scope, parts: econ.EMPTY_PARTS, emit: this.emit };
+    this.factory = scopeAtLeast(this.scope, 'mvp') ? this.hostFactory(s.factory) : null;
+    if (this.factory) this.shop.parts = this.factory.partsLedger();
     this.director = new StoryDirector(this.storyContext());
     this.storySnap = { stepNo: 0, row: 0, depthFt: 0, grounded: true, onRim: true, alive: true, magmaPending: 0, trips: 0, cash: 0, tiers: this.pod.tiers };
     // The game-start card fires for a new claim only, never for a restored one (canon §2.12 #1 exception).
@@ -171,7 +177,31 @@ export class World implements WorldApi {
       story: this.story,
       rng: this.rng.s,
       pads: this.pads.snapshot(),
+      factory: this.factory?.serialize(),
     };
+  }
+
+  /** Factory ports over the World's grid, wallet and event queue (04 §3.1). */
+  private hostFactory(bytes: Uint8Array | undefined): Factory {
+    const wallet = this.wallet;
+    const ports: FactoryPorts = {
+      grid: this.terrain,
+      wallet: {
+        cash: () => wallet.cash,
+        debit: (n) => {
+          if (n > wallet.cash) return false;
+          wallet.cash -= n;
+          return true;
+        },
+        credit: (n) => {
+          wallet.cash += n;
+          wallet.lifetimeEarned += n;
+        },
+      },
+      emit: this.emit,
+    };
+    const opts = { scope: this.scope, surveyColumn: this.meta.surveyColumn, scriptedLodeId: this.meta.scriptedLodeId };
+    return bytes ? Factory.deserialize(bytes, ports, opts) : Factory.create(ports, opts);
   }
 
   get stepNo(): number {
@@ -250,7 +280,9 @@ export class World implements WorldApi {
   // ---- Factory hooks (MVP, 02 §10; canon §4.10). The M0 build has no factory. ----
 
   /** 20 Hz factory tick on stepNo % FACTORY_EVERY === FACTORY_PHASE (canon §3.5). MVP: `factory.tick()`. */
-  private tickFactory(): void {}
+  private tickFactory(): void {
+    this.factory?.tick();
+  }
 
   /** Rim arrival after a trip (01 §2.2): MVP re-arms Depot sessions; v1 rolls Shears (canon §4.7). */
   private onTripEnd(): void {}
@@ -436,6 +468,35 @@ export class World implements WorldApi {
    * Put the pod, grounded and still, in a freshly carved 1×1 air cell on `row` near x 7 (never the open survey
    * shaft, INT-12), on a floor: the cell below becomes dirt if it is air.
    */
+  // ---- Factory-facing services (MVP build wave fills these in) ----
+
+  kitShop(): KitShopItem[] {
+    return [];
+  }
+  buyKit(_kitId: string, _n: number, _to: 'cargo' | 'stockpile'): Result {
+    return { ok: false, reason: 'Kits arrive soon' };
+  }
+  loadKit(_kitId: string, _n: number): Result {
+    return { ok: false, reason: 'Kits arrive soon' };
+  }
+  starterKitReady(): boolean {
+    return false;
+  }
+  claimStarterKit(): Result {
+    return { ok: false, reason: 'No Starter Kit waiting' };
+  }
+  stockpileCargo(_item: CargoItem, _n: number | 'all'): Result {
+    return { ok: false, reason: 'The Stockpile opens soon' };
+  }
+  expandYard(): Result {
+    if (!this.factory) return { ok: false, reason: 'No Yard in this build' };
+    const r = this.factory.expandYard();
+    return r.ok ? { ok: true, message: `Yard expanded to ${r.rows} rows` } : { ok: false, reason: r.code };
+  }
+  ghostProgress(): { id: number; progress: number } | null {
+    return null;
+  }
+
   debugTeleport(row: number): void {
     const grid = this.terrain;
     const floorRow = scopeFloorRow(this.scope);

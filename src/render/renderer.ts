@@ -17,12 +17,13 @@ import {
   type ShaderMaterial,
 } from 'three';
 import { CAMERA, MINE_H, MINE_W, POD_H, RIM_BUILDINGS, SEAL_ROW } from '../shared/canon';
+import { YARD_MAX_ROWS, type Cell, type Plane as BuildPlane } from '../factory/api';
 import type { GameEvent } from '../shared/events';
 import { F, type Look, type Lode, type RimBuildingId, type Scope } from '../shared/types';
 import { isLodeVisible, scopeFloorRow } from '../terrain/scope';
 import type { TerrainGrid } from '../terrain/grid';
 import type { WorldApi } from '../world/api';
-import type { CreateRenderer, QualityTier, RenderFrame, RenderInfo, Renderer, RendererOptions, ViewportLayout } from './api';
+import type { BuildCamera, CreateRenderer, QualityTier, RenderFrame, RenderInfo, Renderer, RendererOptions, ViewportLayout } from './api';
 import { CameraRig, DEG, DigDescentTracker, bayerPhase, composeLookAt, pixelScaleK, pixelTargetSize, quantizeDeg, snapPixelPpu, snapToTexels, type CameraPose, type TexelSnap } from './camera';
 import { createFx } from './fx/fx';
 import { addOutlineHulls, applyLookMaterials, disposeMaterialKit, getMaterialKit, setHullsEnabled, setLayerDeep, syncHull, LAYER_LATE, type MaterialKit } from './materials';
@@ -283,6 +284,35 @@ class HfRenderer implements Renderer {
     const r = Math.floor(-hit.y);
     if (x < 0 || x >= MINE_W || r < 0 || r >= MINE_H) return null;
     return { x, r };
+  }
+
+  // ---- Build mode (BuildRendererApi): play-camera fallbacks until the build wave lands ----
+
+  setBuildCamera(_cam: BuildCamera | null): void {}
+
+  screenToYardCell(px: number, py: number): Cell | null {
+    this.setRay(px, py);
+    const ray = this.raycaster.ray;
+    if (Math.abs(ray.direction.y) < 1e-6) return null;
+    const t = -ray.origin.y / ray.direction.y;
+    if (t < 0) return null;
+    const x = Math.floor(ray.origin.x + ray.direction.x * t);
+    const row = Math.floor(-(ray.origin.z + ray.direction.z * t));
+    if (x < 0 || x >= MINE_W || row < 1 || row > YARD_MAX_ROWS) return null;
+    return { x, y: row };
+  }
+
+  screenToMineCell(px: number, py: number): Cell | null {
+    const c = this.screenToCell(px, py);
+    return c ? { x: c.x, y: c.r } : null;
+  }
+
+  cellToScreen(plane: BuildPlane, x: number, y: number): { x: number; y: number } {
+    return plane === 'yard' ? this.worldToScreen(x + 0.5, 0, -y - 0.5) : this.worldToScreen(x + 0.5, -y - 0.5, 0.5);
+  }
+
+  pickEntity(_px: number, _py: number): number | null {
+    return null;
   }
 
   screenToRimBuilding(px: number, py: number): string | null {

@@ -289,6 +289,8 @@ export class GameLoop {
     f.events = events;
     f.layout = this.deps.layout();
     f.touching = this.deps.input.touching;
+    f.mode = st.mode.peek();
+    f.build = st.buildFrame.peek();
     f.brightMines = settings.brightMines;
     const os = this.deps.osReducedMotion;
     f.reducedMotion = settings.reducedMotion || (typeof os === 'function' ? os() : os);

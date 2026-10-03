@@ -11,7 +11,7 @@ import { F, T, mineralCode, relicCode, type Lode, type Look, type Scope } from '
 import { generateWorld } from '../terrain/generate';
 import { TerrainGrid } from '../terrain/grid';
 import type { PodIntent, PodState } from '../pod/types';
-import type { CargoGroup, PodStats, Quote, Result, ShopItem, StoryState, UpgradeCard, Wallet, WorldApi } from '../world/api';
+import type { CargoGroup, KitShopItem, PodStats, Quote, Result, ShopItem, StoryState, UpgradeCard, Wallet, WorldApi } from '../world/api';
 import type { CameraMode, QualityTier, Renderer, ViewportLayout } from './api';
 import { createRenderer } from './renderer';
 
@@ -94,6 +94,33 @@ const ZERO_QUOTE: Quote = { amount: 0, cost: 0, limitedByCash: false };
 const NO: Result = { ok: false, reason: 'harness' };
 
 class FakeWorld implements WorldApi {
+  // ---- factory-facing members (no factory in the fakes) ----
+  readonly factory = null;
+  readonly meta = { surveyColumn: 23, scriptedLodeId: 0 };
+  kitShop(): KitShopItem[] {
+    return [];
+  }
+  buyKit(): Result {
+    return { ok: false, reason: 'No Kits in the harness' };
+  }
+  loadKit(): Result {
+    return { ok: false, reason: 'No Kits in the harness' };
+  }
+  starterKitReady(): boolean {
+    return false;
+  }
+  claimStarterKit(): Result {
+    return { ok: false, reason: 'No Starter Kit' };
+  }
+  stockpileCargo(): Result {
+    return { ok: false, reason: 'No Stockpile' };
+  }
+  expandYard(): Result {
+    return { ok: false, reason: 'No Yard' };
+  }
+  ghostProgress(): null {
+    return null;
+  }
   readonly seed = SEED;
   readonly scope: Scope = SCOPE;
   readonly terrain: TerrainGrid;

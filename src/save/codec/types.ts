@@ -28,4 +28,6 @@ export interface SaveState {
   /** The saved RNG stream (Hop Beacon targets). */
   rng: RngState;
   pads: PadSnapshot;
+  /** Factory bytes (FACT section, MVP+); absent in M0 saves and M0 builds. */
+  factory?: Uint8Array;
 }

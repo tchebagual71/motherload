@@ -3,7 +3,7 @@ import type { Signal } from '@preact/signals';
 import type { PodIntent } from '../pod/types';
 import type { Look, RimBuildingId } from '../shared/types';
 import type { Result, WorldApi } from '../world/api';
-import type { QualityTier } from '../render/api';
+import type { BuildFrame, QualityTier } from '../render/api';
 
 export type Overlay = 'title' | 'interrupt' | 'countdown' | 'upright' | 'death' | 'safemode' | 'ctxlost' | null;
 export type SheetId =
@@ -126,6 +126,8 @@ export interface AppState {
   tripSummary: Signal<TripSummary | null>;
   /** A new service worker is waiting (04 §9.2 "Update ready" chip). */
   updateReady: Signal<boolean>;
+  /** Build-mode overlay for the renderer (written by the build UX; the loop copies it into RenderFrame.build). */
+  buildFrame: Signal<BuildFrame | null>;
   /** performance.now() of the last "Bay full" (03 §3.5, §6.1: pill callout and the Cargo context for 5 s). */
   bayFullAt: Signal<number>;
   /** First standalone launch with no save: the title offers one-tap "Paste save" (canon §3.15; 03 §6.3). */

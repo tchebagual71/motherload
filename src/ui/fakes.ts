@@ -2,6 +2,7 @@
 // exercised without the real simulation. Not used by the game. Economy numbers follow canon §2.6–2.7, §3.8
 // closely enough to look right; physics is a toy.
 import { signal } from '@preact/signals';
+import type { BuildFrame } from '../render/api';
 import type { AppController, AppState, DeathInfo, GoalChip, Overlay, RadioMessage, SafeModeInfo, Settings, SheetId, Toast, TripSummary } from '../app/types';
 import type { PodIntent, PodState } from '../pod/types';
 import {
@@ -36,7 +37,7 @@ import {
 import type { GameEvent } from '../shared/events';
 import type { CargoItem, Look, RimBuildingId, Scope } from '../shared/types';
 import type { TerrainGrid } from '../terrain/grid';
-import type { CargoGroup, PodStats, Quote, Result, ShopItem, StoryState, UpgradeCard, Wallet, WorldApi } from '../world/api';
+import type { CargoGroup, KitShopItem, PodStats, Quote, Result, ShopItem, StoryState, UpgradeCard, Wallet, WorldApi } from '../world/api';
 
 export type FakePreset = 'start' | 'rich' | 'broke' | 'heavy' | 'lowfuel' | 'deep' | 'debt';
 
@@ -134,6 +135,33 @@ const ok = (message?: string, amount?: number): Result => ({ ok: true, message, 
 const fail = (reason: string): Result => ({ ok: false, reason });
 
 export class FakeWorld implements WorldApi {
+  // ---- factory-facing members (no factory in the fakes) ----
+  readonly factory = null;
+  readonly meta = { surveyColumn: 23, scriptedLodeId: 0 };
+  kitShop(): KitShopItem[] {
+    return [];
+  }
+  buyKit(): Result {
+    return { ok: false, reason: 'No Kits in the harness' };
+  }
+  loadKit(): Result {
+    return { ok: false, reason: 'No Kits in the harness' };
+  }
+  starterKitReady(): boolean {
+    return false;
+  }
+  claimStarterKit(): Result {
+    return { ok: false, reason: 'No Starter Kit' };
+  }
+  stockpileCargo(): Result {
+    return { ok: false, reason: 'No Stockpile' };
+  }
+  expandYard(): Result {
+    return { ok: false, reason: 'No Yard' };
+  }
+  ghostProgress(): null {
+    return null;
+  }
   readonly seed = 7;
   /** The harness never reads terrain; a real grid would pull sim code into the UI bundle. */
   readonly terrain = null as unknown as TerrainGrid;
@@ -544,6 +572,7 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     goal: signal<GoalChip | null>(null),
     tripSummary: signal<TripSummary | null>(null),
     updateReady: signal(false),
+    buildFrame: signal<BuildFrame | null>(null),
     bayFullAt: signal(Number.NEGATIVE_INFINITY),
     importOffer: signal(opts.importOffer ?? false),
     safeMode: signal<SafeModeInfo>({ previousOlderByMs: opts.safeModePreviousMs ?? null, error: null }),

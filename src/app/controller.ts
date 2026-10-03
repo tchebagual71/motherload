@@ -4,7 +4,7 @@
 // and saves are attached by boot.ts.
 import { effect, signal } from '@preact/signals';
 import { inScope } from '../config/scope';
-import type { QualityTier, Renderer } from '../render/api';
+import type { BuildFrame, QualityTier, Renderer } from '../render/api';
 import { applyAssists, classifyDigTarget, forcedFloorRow, type AssistFlags } from '../pod';
 import { NO_INTENT, type DigDir, type PodIntent } from '../pod/types';
 import { LINES, MINE_H, MINE_W, RIM_BUILDINGS, SALVAGE_MIN, SALVAGE_RATE, SKY_ROWS, TIER_PRICE, TOUCH } from '../shared/canon';
@@ -208,6 +208,7 @@ export class GameApp implements AppController {
       goal: signal<GoalChip | null>(null),
       tripSummary: signal<TripSummary | null>(null),
       updateReady: signal(false),
+      buildFrame: signal<BuildFrame | null>(null),
       bayFullAt: signal(Number.NEGATIVE_INFINITY),
       importOffer: signal(opts.importOffer ?? false),
       safeMode: signal<SafeModeInfo>({ previousOlderByMs: null, error: null }),

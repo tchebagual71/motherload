@@ -6,6 +6,7 @@ import type { GameEvent } from '../shared/events';
 import type { CargoItem, ConsumableId, RimBuildingId, Scope } from '../shared/types';
 import type { TerrainGrid } from '../terrain/grid';
 import type { PodIntent, PodState } from '../pod/types';
+import type { FactoryApi } from '../factory/api';
 
 export interface Wallet {
   cash: number;
@@ -96,6 +97,22 @@ export interface Quote {
   limitedByCash: boolean;
 }
 
+export interface KitShopItem {
+  /** Cargo Kit id ('belt', 'router', 'autoDrill', 'liftFoot', 'liftRail'). */
+  id: string;
+  name: string;
+  price: number;
+  /** Kits of this id in cargo / in the Stockpile. */
+  inCargo: number;
+  inStockpile: number;
+  /** Cargo slots and mass of one Kit (canon §4.8). */
+  slots: number;
+  mass: number;
+  available: boolean;
+  /** Why it can't be bought now (locked rung, scope), or null. */
+  blocker: string | null;
+}
+
 export interface WorldApi {
   readonly seed: number;
   readonly scope: Scope;
@@ -153,6 +170,27 @@ export interface WorldApi {
   returnFuel(): number;
   /** Grounded on the Rim's top face (canon §2.4): trades and sign-tap auto-drive need it. */
   onRim(): boolean;
+
+  // ---- Factory (MVP; 02, canon §4.8–§4.11) ----
+  /** The hosted factory (null in M0 builds). Build commands and render views go straight to it; World ticks it. */
+  readonly factory: FactoryApi | null;
+  /** Generation facts: Dot's survey column and the scripted Copper lode (canon §3.2). */
+  readonly meta: { readonly surveyColumn: number; readonly scriptedLodeId: number };
+  /** Supply Shed Kits (02 §3.1 prices; MVP: belt, router, autoDrill, liftFoot, liftRail). */
+  kitShop(): KitShopItem[];
+  /** Buy `n` Kits to the pod's cargo or to the Stockpile (02 §3.7). */
+  buyKit(kitId: string, n: number, to: 'cargo' | 'stockpile'): Result;
+  /** Load Kits from the Stockpile into cargo at the Supply Shed. */
+  loadKit(kitId: string, n: number): Result;
+  /** The Starter Kit (canon §2.1) is waiting at the Supply Shed. */
+  starterKitReady(): boolean;
+  claimStarterKit(): Result;
+  /** Assay "Stockpile": put bulk specimens into the factory Stockpile instead of selling them (canon §4.9). */
+  stockpileCargo(item: CargoItem, n: number | 'all'): Result;
+  /** Buy the next Yard Expansion (canon §3.1; Dot's office). */
+  expandYard(): Result;
+  /** Underground ghost job the pod is completing right now (build ring), or null. */
+  ghostProgress(): { id: number; progress: number } | null;
 
   // ---- Failure ----
   /** Salvage after destruction: lose cargo, pay the fee (shortfall → debt), refuel/repair, respawn on the Pump House pad (disarmed). */

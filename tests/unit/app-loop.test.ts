@@ -118,6 +118,7 @@ function loopHarness() {
     arming: signal(null),
     perf: signal(null),
     mode: signal<Mode>('play'),
+    buildFrame: signal(null),
   };
   const app = {
     world,
