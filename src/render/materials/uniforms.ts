@@ -38,6 +38,12 @@ export interface HfUniforms {
   uHfDitherPod: { value: Vector2 };
   /** Leading uHfLamps entries that travel with the pod (the thrust flame), dithered in the pod frame. */
   uHfPodLampCount: { value: number };
+  /** Factory machine breathing amplitude (03 §8.11: 1.00 ↔ 1.03; 0 = still). */
+  uHfFactoryBreath: { value: number };
+  /** 1 = factory outline hulls draw only the selected piece (04 §5.5 low tier: pod + selected). */
+  uHfFactoryHullSel: { value: number };
+  /** Terrain visibility: 1 normal, 0.3 under the Logistics overlay (03 §4.10). */
+  uHfTerrainDim: { value: number };
 }
 
 /** Ambient LUT: one texel per mine row; rgb = band ambient tint (normalised), a = ambient A (03 §8.8). */
@@ -85,6 +91,9 @@ export function createUniforms(): HfUniforms {
     uHfDitherWorld: { value: new Vector2(0, 0) },
     uHfDitherPod: { value: new Vector2(0, 0) },
     uHfPodLampCount: { value: 0 },
+    uHfFactoryBreath: { value: 0.03 },
+    uHfFactoryHullSel: { value: 0 },
+    uHfTerrainDim: { value: 1 },
   };
 }
 

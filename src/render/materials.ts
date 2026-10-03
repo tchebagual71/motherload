@@ -35,6 +35,16 @@ export class MaterialKit {
     return this.shaded('hull', 'toon', true);
   }
 
+  /** Instanced factory pieces (render/factory): one program per look for every building, belt and item. */
+  factory(look: Look): Material {
+    return this.shaded('factory', look, true);
+  }
+
+  /** Outline hulls of the instanced factory pieces (Toon only). */
+  factoryHull(): Material {
+    return this.shaded('factoryHull', 'toon', true);
+  }
+
   sky(look: Look): Material {
     const key = `sky:${look}`;
     let m = this.cache.get(key);
@@ -61,7 +71,7 @@ export class MaterialKit {
 
   /** Every material of a look (for precompiling). */
   materialsFor(look: Look): Material[] {
-    const out: Material[] = [this.terrain(look), this.sky(look), this.hull()];
+    const out: Material[] = [this.terrain(look), this.sky(look), this.hull(), this.factory(look), this.factoryHull()];
     for (const role of ROLES) out.push(this.role(look, role as MatRole, true));
     return out;
   }

@@ -41,6 +41,8 @@ export interface HfTestApi {
   start(): void;
   setLook(look: Look): void;
   renderInfo(): RenderInfo;
+  /** The renderer (build cameras, picking: setBuildCamera, screenToYardCell, cellToScreen, pickEntity). */
+  readonly renderer: Renderer;
   contextLost(): boolean;
   perfReport(): Promise<string>;
   /** AudioContext state ('none' before the first unlock gesture). */
@@ -130,6 +132,7 @@ export function installTestHook(d: TestHookDeps): HfTestApi {
     start: () => app.start(),
     setLook: (look) => app.setLook(look),
     renderInfo: () => ({ ...renderer.info }),
+    renderer,
     contextLost: () => renderer.contextLost,
     perfReport: d.perfReport,
     audioState: d.audioState,

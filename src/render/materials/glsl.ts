@@ -4,11 +4,39 @@
 //   HF_TERRAIN     custom attributes hfColor (sRGB u8 + AO) and hfExtra (emissive, flags, phase)
 //   HF_HULL        model outline hull (BackSide, expanded in clip space)
 //   HF_ROLE_*      METAL, GLASS, EMISSIVE
-import { MINE_H } from '../../shared/canon';
-import { LIGHT, SHADING } from '../palette';
+//   HF_FACTORY     instanced factory pieces: per-vertex hfPart (emissive, flags, chevron phase) and per-instance
+//                  hfInst (working / rusted / tint / status; chevrons: tail fade, head fade, tint, turn)
+import { Color } from 'three';
+import { BELT_SPEED_TILES_PER_S, MINE_H } from '../../shared/canon';
+import { LIGHT, ROLE, SHADING, UI } from '../palette';
 import { MAX_LAMPS } from '../quality';
 
 const f = (x: number): string => (Number.isInteger(x) ? `${x}.0` : `${x}`);
+/** A palette colour as a linear-space GLSL vec3 (three's working colour space). */
+const vec3Of = (hex: number): string => {
+  const c = new Color(hex);
+  return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
+};
+
+/** hfPart.y flag bits of factory geometry (render/factory/models.ts). */
+export const PART_FLAG = {
+  /** Specular sun glint (the 'metal' role). */
+  METAL: 1,
+  /** Rust decal: drawn only on the survey set's rusted skin (EntityView.rusted). */
+  RUST: 2,
+  /** Furnace glow: emissive from hfPart.x (idle) to 1 while the machine works. */
+  GLOW: 4,
+  /** Status LED: colour from the instance status (03 §8.11: starved = amber). */
+  LED: 8,
+  /** Vertex-shader breathing 1.00 ↔ 1.03 while working (03 §8.11). */
+  BREATHE: 16,
+  /** Belt chevron: scrolls at the belt speed, hfPart.z = phase (03 §8.7). */
+  CHEVRON: 32,
+  /** Never outlined (decals, LEDs). */
+  NOHULL: 64,
+} as const;
+/** hfInst.z tint modes. */
+export const INST_TINT = { NONE: 0, BULLDOZE: 1, SELECTED: 2 } as const;
 
 export const VERTEX_PARS = /* glsl */ `
 varying vec3 vHfWorld;
@@ -25,12 +53,67 @@ vec3 hfSrgbToLinear(vec3 c) {
   return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
 }
 #endif
-/** Push the vertex outward in screen space by uHfOutlinePx along its view-space normal. */
-void hfExpandOutline(vec3 nView) {
+/** Push the vertex outward in screen space by uHfOutlinePx × k along its view-space normal. */
+void hfExpandOutline(vec3 nView, float k) {
   vec2 d = (projectionMatrix * vec4(nView, 0.0)).xy * uHfResolution;
   float l = length(d);
-  if (l > 1e-5) gl_Position.xy += (d / l) * (uHfOutlinePx * 2.0 / uHfResolution) * gl_Position.w;
+  if (l > 1e-5) gl_Position.xy += (d / l) * (uHfOutlinePx * k * 2.0 / uHfResolution) * gl_Position.w;
 }
+#ifdef HF_FACTORY
+attribute vec4 hfPart;
+attribute vec4 hfInst;
+varying vec4 vHfPart;
+varying vec4 vHfInst;
+uniform float uHfTime;
+/** Breathing amplitude (0.03; 0 with reduced motion, battery mode or > 40 visible machines). */
+uniform float uHfFactoryBreath;
+/** 1 = factory hulls outline only the selected piece (low-tier outline scope "pod + selected", 04 §5.5). */
+uniform float uHfFactoryHullSel;
+#endif
+`;
+
+/**
+ * Factory piece deformation in local space (after begin_vertex): rust skin, chevron scroll along a straight
+ * tile or a corner's quarter arc, machine breathing. A dropped vertex is moved outside the clip volume later.
+ */
+export const VERTEX_BEGIN = /* glsl */ `
+  float hfDrop = 0.0;
+  #ifdef HF_FACTORY
+  int hfFl = int(hfPart.y + 0.5);
+  vHfPart = hfPart;
+  vHfInst = hfInst;
+  if ((hfFl & ${PART_FLAG.RUST}) != 0 && hfInst.y < 0.5) hfDrop = 1.0;
+  #ifdef HF_HULL
+  if ((hfFl & ${PART_FLAG.NOHULL}) != 0) hfDrop = 1.0;
+  if (uHfFactoryHullSel > 0.5 && hfInst.z < 1.5) hfDrop = 1.0;
+  #endif
+  if ((hfFl & ${PART_FLAG.BREATHE}) != 0 && hfInst.x > 0.5 && uHfFactoryBreath > 0.0) {
+    #ifdef USE_INSTANCING
+    float hfPh = instanceMatrix[3].x * 1.7 + instanceMatrix[3].z * 2.3 + instanceMatrix[3].y;
+    #else
+    float hfPh = 0.0;
+    #endif
+    transformed.y *= 1.0 + uHfFactoryBreath * (0.5 + 0.5 * sin(uHfTime * 4.4 + hfPh));
+  }
+  if ((hfFl & ${PART_FLAG.CHEVRON}) != 0) {
+    float hfS = fract(uHfTime * ${f(BELT_SPEED_TILES_PER_S)} + hfPart.z);
+    float hfFade = 1.0;
+    if (hfInst.x > 0.5) hfFade = min(hfFade, hfS / 0.16);
+    if (hfInst.y > 0.5) hfFade = min(hfFade, (1.0 - hfS) / 0.16);
+    vec3 hfC = transformed * clamp(hfFade, 0.0, 1.0);
+    float hfTurn = hfInst.w;
+    if (abs(hfTurn) < 0.5) {
+      hfC.x += hfS - 0.5;
+    } else {
+      // Quarter arc about the corner shared by the entry edge (x = −0.5) and the exit edge (z = −turn·0.5).
+      vec3 hfQ = hfC + vec3(0.0, 0.0, hfTurn * 0.5);
+      float hfA = hfTurn * hfS * 1.5707963;
+      float hfCa = cos(hfA), hfSa = sin(hfA);
+      hfC = vec3(-0.5 + hfQ.x * hfCa + hfQ.z * hfSa, hfQ.y, -hfTurn * 0.5 - hfQ.x * hfSa + hfQ.z * hfCa);
+    }
+    transformed = hfC;
+  }
+  #endif
 `;
 
 export const VERTEX_MAIN = /* glsl */ `
@@ -53,13 +136,18 @@ export const VERTEX_MAIN = /* glsl */ `
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
     #else
     if (uHfOreHulls < 0.5) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-    else hfExpandOutline(hfNv);
+    else hfExpandOutline(hfNv, 1.0);
     #endif
   }
   #endif
   #ifdef HF_HULL
-  hfExpandOutline(hfNv);
+  #ifdef HF_FACTORY
+  hfExpandOutline(hfNv, hfInst.z > 1.5 ? 2.2 : 1.0);
+  #else
+  hfExpandOutline(hfNv, 1.0);
   #endif
+  #endif
+  if (hfDrop > 0.5) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 `;
 
 export const FRAGMENT_PARS = /* glsl */ `
@@ -94,6 +182,19 @@ uniform float uHfTime;
 uniform vec2 uHfDitherWorld;
 uniform vec2 uHfDitherPod;
 uniform int uHfPodLampCount;
+uniform float uHfTerrainDim;
+#ifdef HF_FACTORY
+varying vec4 vHfPart;
+varying vec4 vHfInst;
+/** Status LED colours by EntStatus index: working, idle, blocked, noRecipe, noOutput (03 §8.11). */
+vec3 hfLedColor(float status) {
+  if (status < 0.5) return ${vec3Of(0x7cff6b)};
+  if (status < 1.5) return ${vec3Of(UI.amber)};
+  if (status < 2.5) return ${vec3Of(UI.danger)};
+  if (status < 3.5) return ${vec3Of(UI.amber)};
+  return ${vec3Of(UI.danger)};
+}
+#endif
 #ifdef PIXEL_LAB
 layout(location = 1) out highp vec4 hfNormalOut;
 #endif
@@ -211,9 +312,34 @@ export const FRAGMENT_LIGHTS = /* glsl */ `
     hfN = vec3(0.0, 0.0, 1.0);
   }
   #endif
+  #ifdef HF_FACTORY
+  int hfPf = int(vHfPart.y + 0.5);
+  hfEm = vHfPart.x;
+  if ((hfPf & ${PART_FLAG.GLOW}) != 0) hfEm = mix(vHfPart.x, 1.0, clamp(vHfInst.x, 0.0, 1.0));
+  if ((hfPf & ${PART_FLAG.LED}) != 0) {
+    hfAlbedo = hfLedColor(vHfInst.w);
+    hfEm = 0.9;
+  }
+  if (vHfInst.z > 0.5 && vHfInst.z < 1.5) {
+    hfAlbedo = mix(hfAlbedo, ${vec3Of(0xff4d5e)}, 0.72);
+    hfEm = max(hfEm, 0.4);
+  } else if (vHfInst.z > 1.5) {
+    hfAlbedo = mix(hfAlbedo, vec3(1.0), 0.2);
+  }
+  #endif
   #ifdef HF_HULL
   hfAlbedo = mix(hfAlbedo * HF_OUTLINE_K, uHfOutlineInk, 0.35);
   hfN = vec3(0.0, 0.0, 1.0);
+  #ifdef HF_FACTORY
+  hfEm = 0.0;
+  if (vHfInst.z > 1.5) {
+    hfAlbedo = ${vec3Of(ROLE.chevron)};
+    hfEm = 1.0;
+  } else if (vHfInst.z > 0.5) {
+    hfAlbedo = ${vec3Of(0xb3263a)};
+    hfEm = 1.0;
+  }
+  #endif
   #endif
   #ifdef HF_ROLE_EMISSIVE
   hfEm = 1.0;
@@ -228,7 +354,19 @@ export const FRAGMENT_LIGHTS = /* glsl */ `
   float hfSunK = 1.0 - smoothstep(0.0, 6.5, -vHfWorld.y);
   hfLit += hfAlbedo * 0.35 * hfEdge(0.86, hfSpec) * hfSunK;
   #endif
+  #if defined(HF_FACTORY) && !defined(HF_HULL)
+  if ((hfPf & ${PART_FLAG.METAL}) != 0) {
+    vec3 hfView = normalize(cameraPosition - vHfWorld);
+    float hfSpec = dot(reflect(-uHfSunDir, hfN), hfView);
+    float hfSunK = 1.0 - smoothstep(0.0, 6.5, -vHfWorld.y);
+    hfLit += hfAlbedo * 0.35 * hfEdge(0.86, hfSpec) * hfSunK;
+  }
+  #endif
   reflectedLight.directDiffuse = mix(hfLit, hfAlbedo, clamp(hfEm, 0.0, 1.0)) + hfAlbedo * max(hfEm - 1.0, 0.0) * 0.5;
+  #ifdef HF_TERRAIN
+  // Logistics overlay (03 §4.10): the terrain recedes to 30% toward the plum ink so belts and lifts read.
+  reflectedLight.directDiffuse = mix(uHfOutlineInk * 0.3, reflectedLight.directDiffuse, uHfTerrainDim);
+  #endif
   reflectedLight.indirectDiffuse = vec3(0.0);
 `;
 
