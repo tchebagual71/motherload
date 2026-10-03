@@ -6,6 +6,9 @@ import { NO_INTENT, type PodIntent } from '../../src/pod/types';
 import { POD_H, START_CASH } from '../../src/shared/canon';
 import type { GameEvent } from '../../src/shared/events';
 import { F, T, type CargoItem } from '../../src/shared/types';
+import { DIR, type FactoryApi, type GhostView, type KitSource } from '../../src/factory/api';
+import type { PodState } from '../../src/pod/types';
+import { GhostBuilder } from '../../src/world/ghostJob';
 import { World } from '../../src/world/world';
 
 const intent = (p: Partial<PodIntent>): PodIntent => ({ ...NO_INTENT, ...p });
@@ -84,6 +87,24 @@ describe('hosting: world events reach the factory (04 §3.1)', () => {
     run(w2, 1);
     expect(spy2).toHaveBeenCalledWith(rolled2.id, true);
     expect(w2.factory!.isUnlocked('U2')).toBe(true);
+  });
+
+  it('a lode found with Tin Ear shows its purity after a later Dowser-or-better scan in range (02 §3.6)', () => {
+    const w = newWorld();
+    const f = w.factory!;
+    const rolled = w.terrain.lodes.find((l) => !l.scripted && l.metal === 'hematite')!;
+    standAt(w, rolled.x0 - 1, rolled.top);
+    run(w, 2);
+    expect(rolled.discovered).toBe(true);
+    expect(f.purityKnown(rolled.id)).toBe(false);
+    w.debugSetTier('scanner', 3); // Dowser: radius 6
+    standAt(w, rolled.x0, rolled.top - 7);
+    run(w, 1);
+    expect(f.purityKnown(rolled.id)).toBe(false); // out of the scan's reach
+    standAt(w, rolled.x0, rolled.top - 6);
+    run(w, 1);
+    expect(f.purityKnown(rolled.id)).toBe(true);
+    expect(World.deserialize(w.serialize(), 'mvp').factory!.purityKnown(rolled.id)).toBe(true);
   });
 
   it('the scripted lode offers the Starter Kit once (starter-kit event, starterKitReady)', () => {
@@ -221,6 +242,122 @@ describe('ghost completion from the pod (02 §2.6)', () => {
     expect(done).toContainEqual({ t: 'ghost-complete', kind: 'autoDrill' });
     expect(kits(w)).toEqual([]);
   });
+
+  it('a dig under a planned belt drops that job, so newer jobs in reach still build (tileChanged re-checks support)', () => {
+    const w = newWorld();
+    const f = w.factory!;
+    f.discoverLode(w.meta.scriptedLodeId, true);
+    corridor(w, 12, 24, 10);
+    expect(f.placeGhost({ kind: 'belt', x: 16, y: 10, dir: 0, length: 1 }).ok).toBe(true);
+    expect(f.placeGhost({ kind: 'belt', x: 18, y: 10, dir: 0, length: 1 }).ok).toBe(true);
+    // No Kit aboard yet: the pod digs out the floor under the older job (only a ghost: nothing anchors it).
+    standAt(w, 16, 10);
+    let dug = false;
+    for (let i = 0; i < 80 && !dug; i++) dug = run(w, 1, intent({ sy: -1 })).some((e) => e.t === 'dug');
+    expect(dug).toBe(true);
+    expect(w.terrain.get(16, 11)).toBe(T.AIR);
+    expect(f.ghosts().map((g) => g.x)).toEqual([18]);
+    // With a Belt Kit aboard, in reach of both cells, the remaining job builds.
+    w.pod.cargo.push({ kind: 'kit', id: 'belt' });
+    standAt(w, 17, 10);
+    w.terrain.set(17, 11, T.DIRT);
+    const ev = run(w, 120);
+    expect(ev.filter((e) => e.t === 'toast')).toEqual([]);
+    expect(ev).toContainEqual({ t: 'ghost-complete', kind: 'belt' });
+    expect(f.ghosts()).toEqual([]);
+    expect(f.beltWords('mine')[10 * 48 + 18]).not.toBe(0);
+  });
+
+  it('a belt completed beside the pod mid-dig cancels the dig into its floor (02 §2.3)', () => {
+    const w = newWorld();
+    const f = w.factory!;
+    f.discoverLode(w.meta.scriptedLodeId, true);
+    corridor(w, 12, 24, 10);
+    expect(f.placeGhost({ kind: 'belt', x: 16, y: 10, dir: 0, length: 1 }).ok).toBe(true);
+    w.pod.cargo.push({ kind: 'kit', id: 'belt' });
+    standAt(w, 16, 10);
+    run(w, 45); // most of the 60-step hold, standing still
+    const ev = run(w, 120, intent({ sy: -1 })); // then push down into the job's floor
+    const at = (t: GameEvent['t']): number => ev.findIndex((e) => e.t === t);
+    expect(at('dig-start')).toBeGreaterThanOrEqual(0);
+    expect(at('ghost-complete')).toBeGreaterThan(at('dig-start')); // completed while the dig ran
+    expect(at('dug')).toBe(-1);
+    expect(ev.filter((e) => e.t === 'dig-refused')).toEqual([{ t: 'dig-refused', x: 16, r: 11, reason: 'anchored' }]);
+    expect(f.beltWords('mine')[10 * 48 + 16]).not.toBe(0);
+    expect(w.terrain.get(16, 11)).toBe(T.DIRT);
+    expect(w.terrain.hasFlag(16, 11, F.ANCHORED)).toBe(true);
+  });
+
+  it('deconstructing a built lift foot leaves no rail job waiting for it', () => {
+    const w = newWorld();
+    const f = w.factory!;
+    f.discoverLode(w.meta.scriptedLodeId, true);
+    const c = w.meta.surveyColumn;
+    for (let r = 0; r <= 45; r++) w.terrain.flags[w.terrain.idx(c, r)] |= F.SEEN;
+    expect(f.placeGhost({ kind: 'lift', x: c, foot: 45, top: 0 }).ok).toBe(true);
+    w.pod.cargo.push({ kind: 'kit', id: 'liftFoot' }, { kind: 'kit', id: 'liftRail' });
+    standAt(w, c, 45);
+    run(w, 60);
+    expect(f.ghosts().map((g) => g.part)).toEqual(['rail']);
+    const lift = f.entities().find((e) => e.kind === 'lift')!;
+    expect(w.deconstructUnderground(lift.id).ok).toBe(true);
+    expect(f.ghosts()).toEqual([]);
+    expect(kits(w).map((k) => (k.kind === 'kit' ? k.id : ''))).toEqual(['liftRail', 'liftFoot']);
+  });
+
+  it('a Lift Rail job with no lift under it yet says so, and the job under it still builds', () => {
+    const w = newWorld();
+    const f = w.factory!;
+    f.discoverLode(w.meta.scriptedLodeId, true);
+    const c = w.meta.surveyColumn;
+    for (let r = 0; r <= 45; r++) w.terrain.flags[w.terrain.idx(c, r)] |= F.SEEN;
+    expect(f.placeGhost({ kind: 'lift', x: c, foot: 45, top: 0 }).ok).toBe(true);
+    w.pod.cargo.push({ kind: 'kit', id: 'liftRail' });
+    const ev: GameEvent[] = [];
+    for (let i = 0; i < 150; i++) {
+      standAt(w, c, 13); // beside the rail (rows 0–13) and the foot's top (row 14): only the rail's Kit is aboard
+      ev.push(...run(w, 1));
+    }
+    expect(ev.filter((e) => e.t === 'toast')).toEqual([{ t: 'toast', text: 'Build the lift below first', tone: 'warn' }]);
+    w.pod.cargo.push({ kind: 'kit', id: 'liftFoot' });
+    for (let i = 0; i < 130; i++) {
+      standAt(w, c, 13);
+      ev.push(...run(w, 1));
+    }
+    expect(ev.filter((e) => e.t === 'ghost-complete')).toHaveLength(2);
+    expect(f.entities().find((e) => e.kind === 'lift')).toMatchObject({ y: 0, h: 46 });
+  });
+});
+
+describe('GhostBuilder: one job that cannot complete never holds up the rest (02 §2.6)', () => {
+  const view = (id: number, x: number): GhostView => ({ id, order: id, kind: 'belt', mk: 1, x, y: 10, w: 1, h: 1, dir: 0, part: null, kit: 'belt', kitUnits: 1 });
+
+  it('a refused job yields to the next oldest in reach; alone, it is retried; each refusal toasts once', () => {
+    let jobs = [view(1, 16), view(2, 18)];
+    const fake = {
+      topologyVersion: 0,
+      ghosts: () => jobs,
+      completeGhost(id: number) {
+        if (id === 1) return { ok: false, code: 'E_FLOOR', x: 16, y: 10 };
+        jobs = jobs.filter((j) => j.id !== id);
+        this.topologyVersion++;
+        return { ok: true, id: 0 };
+      },
+    };
+    const f = fake as unknown as FactoryApi;
+    const pod = { x: 17.5, y: -10.5 } as PodState;
+    const cargo: KitSource = { count: () => 8, take: () => {} };
+    const toasts: string[] = [];
+    const b = new GhostBuilder();
+    const done: number[] = [];
+    for (let i = 0; i < 300; i++) {
+      const r = b.step(f, pod, cargo, (e) => e.t === 'toast' && toasts.push(e.text));
+      if (r.done) done.push(r.job.id);
+    }
+    expect(done).toEqual([2]); // job 2 built 60 steps after job 1's refusal
+    expect(toasts).toEqual(['Needs a floor']);
+    expect(b.progress()?.id).toBe(1); // alone in reach, job 1 keeps being retried
+  });
 });
 
 describe('deconstructUnderground (02 §2.7 refunds)', () => {
@@ -299,6 +436,20 @@ describe('the Starter Kit at the Supply Shed (canon §2.1)', () => {
     w.pod.cargo.length = 0;
     expect(w.claimStarterKit().ok).toBe(true);
     expect(kits(w).map((k) => (k.kind === 'kit' ? k.id : ''))).toEqual(['autoDrill', 'liftFoot', 'liftRail', 'belt', 'belt']);
+  });
+
+  it('counts as collected for the goal chip only when claimed (ob:kit), also for older saves', () => {
+    const w = readyWorld();
+    expect(w.story.flags['ob:kit']).toBeUndefined(); // "Collect your Starter Kit at the Shed" still shows
+    expect(w.claimStarterKit().ok).toBe(true);
+    w.drainEvents();
+    expect(w.story.flags['ob:kit']).toBe(true);
+    // A save from before the fix marked it at discovery; while it still waits at the Shed, the goal returns.
+    const old = readyWorld();
+    old.story.flags['ob:kit'] = true;
+    const back = World.deserialize(old.serialize(), 'mvp');
+    expect(back.story.flags['ob:kit']).toBeUndefined();
+    expect(World.deserialize(w.serialize(), 'mvp').story.flags['ob:kit']).toBe(true);
   });
 
   it('survives a save: ready and claimed are story flags', () => {
@@ -388,6 +539,60 @@ describe('Assay "Stockpile" (canon §4.9; 02 §4.3)', () => {
     expect(w.stockpileCargo({ kind: 'mineral', tier: 2 }, 'all')).toEqual({ ok: true, message: '2 to the Stockpile · Bins full', amount: 2 });
     expect(w.pod.cargo).toHaveLength(3);
     expect(w.stockpileCargo({ kind: 'mineral', tier: 2 }, 'all')).toEqual({ ok: false, reason: 'Stockpile full: build a Bin' });
+  });
+
+  it('Stockpiled tier 1–4 specimens unloaded from a Bin smelt into ingots (S7–S10), and an Assembler makes Hull Plates', () => {
+    const w = newWorld();
+    const f = w.factory!;
+    f.discoverLode(w.meta.scriptedLodeId, true); // U2
+    w.debugGiveCash(10_000);
+    expect(w.expandYard().ok).toBe(true); // 16 rows
+    const survey = f.entities().find((e) => e.kind === 'bin')!;
+    const x = survey.x; // the survey Bin (rows 7–8) faces S, unloading at (x + 1, 9)
+    const must = <T extends { ok: boolean }>(r: T): T => {
+      if (!r.ok) throw new Error(JSON.stringify(r));
+      return r;
+    };
+    // Survey Bin → belt → Smelter (rows 10–11, S) → belt → Bin B (rows 13–14, E) → belts → Assembler → belts → Bin C.
+    must(f.paintBelts([{ x: x + 1, y: 9 }], 1, DIR.S));
+    const smelter = (must(f.place('smelter', 1, x, 10, DIR.S)) as { id: number }).id;
+    must(f.paintBelts([{ x: x + 1, y: 12 }], 1, DIR.S));
+    const binB = (must(f.place('bin', 1, x, 13, DIR.E)) as { id: number }).id;
+    // Specimens bought nothing: they came up in the bay and the Assay's toggle stockpiles them into the survey Bin.
+    for (const tier of [1, 1, 2, 3, 4]) w.pod.cargo.push({ kind: 'mineral', tier });
+    for (const tier of [1, 2, 3, 4]) expect(w.stockpileCargo({ kind: 'mineral', tier }, 'all').ok).toBe(true);
+    expect(f.inspect(survey.id)!.contents.map((c) => [c.item, c.n])).toEqual([
+      ['spec1', 2],
+      ['spec2', 1],
+      ['spec3', 1],
+      ['spec4', 1],
+    ]);
+    const held = (id: number, item: string): number => f.inspect(id)?.contents.find((c) => c.item === item)?.n ?? 0;
+    for (const tier of [1, 2, 3, 4]) {
+      must(f.setUnloadFilter(survey.id, `spec${tier}`));
+      for (let i = 0; i < 3_000 && held(survey.id, `spec${tier}`) > 0; i++) w.step(NO_INTENT, true);
+    }
+    // 5 crafts of 6 s, one recipe at a time (the next specimen waits at the line head until the buffer empties).
+    for (let i = 0; i < 6_000 && held(binB, 'goldIngot') < 2; i++) w.step(NO_INTENT, true);
+    // 1 specimen → 2 ingots of its metal (the lossy path, 02 §4.2).
+    expect(['ironIngot', 'copperIngot', 'cobaltIngot', 'goldIngot'].map((i) => held(binB, i))).toEqual([4, 2, 2, 2]);
+    expect(f.entity(smelter)!.status).toBe('idle');
+    // The first ingot opened U3: an Assembler on A3 (2 Iron Ingots + 1 Cobalt Ingot → Hull Plate).
+    expect(f.isUnlocked('U3')).toBe(true);
+    must(f.paintBelts([{ x: x + 2, y: 14 }, { x: x + 3, y: 14 }], 1, DIR.E));
+    const asm = (must(f.place('assembler', 1, x + 4, 13, DIR.E)) as { id: number }).id;
+    must(f.setRecipe(asm, 'A3'));
+    must(f.paintBelts([{ x: x + 6, y: 14 }, { x: x + 7, y: 14 }], 1, DIR.E));
+    const binC = (must(f.place('bin', 1, x + 8, 13, DIR.E)) as { id: number }).id;
+    for (const ingot of ['ironIngot', 'cobaltIngot']) {
+      must(f.setUnloadFilter(binB, ingot));
+      for (let i = 0; i < 3_000 && held(binB, ingot) > 0; i++) w.step(NO_INTENT, true);
+    }
+    for (let i = 0; i < 6_000 && held(binC, 'hullPlate') < 2; i++) w.step(NO_INTENT, true);
+    expect(held(binC, 'hullPlate')).toBe(2);
+    expect(f.stockpileCount('hullPlate')).toBe(2);
+    expect(w.garageCards().length).toBeGreaterThan(0);
+    expect(f.debug.conservationOk()).toBe(true);
   });
 
   it('sellAll keeps rows the toggle holds back', () => {

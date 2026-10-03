@@ -120,6 +120,10 @@ const clamp01 = (t: number): number => (t < 0 ? 0 : t > 1 ? 1 : t);
 export function advanceDig(pod: PodState, grid: TerrainGrid, floor: number, heat: number, out: GameEvent[], gate = DIG_ENGAGE_STEPS): void {
   const d = pod.dig;
   if (!d) return;
+  if (!d.cleared && isClaimed(grid, d.x, d.r)) {
+    refuseDig(pod, d, out, gate);
+    return;
+  }
   d.progress++;
   pod.digging = true;
   pod.grounded = true;
@@ -152,6 +156,24 @@ function finishDig(pod: PodState, grid: TerrainGrid, d: DigState, tx: number, ty
   // Chained digs skip the engage wait: holding the same push digs the next cell on the next step.
   pod.engageDir = d.dir;
   pod.engageSteps = gate - 1;
+}
+
+/** The target became anchored under a floor mount or occupant, or holds an occupant, since the dig began. */
+function isClaimed(grid: TerrainGrid, x: number, r: number): boolean {
+  const i = r * MINE_W + x;
+  return (grid.flags[i] & F.ANCHORED) !== 0 || grid.occupant[i] !== 0;
+}
+
+/**
+ * 02 §2.3: a dig in progress on a cell that becomes anchored (a ghost completed beside the pod mid-dig) is
+ * cancelled before it breaks through. Refused once: the held push stays past the engage gate, so it does
+ * not refuse again until it is released.
+ */
+function refuseDig(pod: PodState, d: DigState, out: GameEvent[], gate: number): void {
+  cancelDig(pod);
+  pod.engageDir = d.dir;
+  pod.engageSteps = gate + 1;
+  out.push({ t: 'dig-refused', x: d.x, r: d.r, reason: 'anchored' });
 }
 
 /** Abort a dig (explosion, teleport); the pod resumes normal physics where it is. */

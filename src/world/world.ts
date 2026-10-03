@@ -7,7 +7,7 @@ import { T, type CargoItem, type ConsumableId, type Lode, type RimBuildingId, ty
 import { generateWorld, type GenMeta } from '../terrain/generate';
 import type { TerrainGrid } from '../terrain/grid';
 import { applyScopeOverlay, scopeFloorRow } from '../terrain/scope';
-import { PUMP_PAD_X, createPod, destructionCause, podStats, returnTickLiters, stepPod, type PodStepCtx } from '../pod';
+import { PUMP_PAD_X, createPod, destructionCause, inScannerRange, podStats, returnTickLiters, stepPod, type PodStepCtx } from '../pod';
 import type { PodIntent, PodState } from '../pod/types';
 import * as econ from '../economy';
 import type { EconomyCtx, PartsLedger } from '../economy';
@@ -17,7 +17,7 @@ import { DiscardLog, takeCargo } from './discard';
 import { loadScope } from './loadScope';
 import { PUMP_PAD, PadArming, isNeutral, isOnRim, padIndexAt, padIndexOf } from './pads';
 import { newStory, resetTrip, updateDepth, updateTrip } from './rules';
-import { RECORDER_RELIC, StoryDirector, rungFlag, type StoryContext, type StorySnapshot } from '../story';
+import { RECORDER_RELIC, StoryDirector, obFlag, rungFlag, type StoryContext, type StorySnapshot } from '../story';
 import { scopeAtLeast } from '../shared/scope';
 import { Factory, FactoryLoadError, RUNGS, YARD_EXPANSIONS, type Cell, type FactoryPorts, type Res } from '../factory';
 import { LODE_TABLE } from '../terrain/lodes';
@@ -165,6 +165,9 @@ export class World implements WorldApi {
       // A fresh session is never away, whatever the last save caught (MVP: the factory sleeps while hidden).
       this.factory.setAway(false);
       if (restored && !s.factory) this.migrateToFactory();
+      // Earlier MVP saves marked the Starter Kit collected when the lode was found: while it still waits at the
+      // Shed, the goal chip asks for it again.
+      if (restored && kits.starterKitReady(this.story.flags)) delete this.story.flags[obFlag('kit')];
       this.u1Done = this.factory.isUnlocked('U1');
     }
     this.director = new StoryDirector(this.storyContext());
@@ -211,10 +214,10 @@ export class World implements WorldApi {
   }
 
   /**
-   * An older save without a FACT section (an M0 claim, or a save from an M0-scope build) under an MVP build:
-   * the fresh factory (survey set placed) learns what the claim already knows: discovered lodes (U2, the
-   * Starter Kit), the r32 pass (U1). Pod, wallet and story stay as saved; the rungs land in the story flags
-   * quietly, since the claim crossed those triggers long ago.
+   * A save without a FACT section (an M0-scope build's version 1 save, INT-6; M0's own version 0 saves never load,
+   * canon §3.15) under an MVP build: the fresh factory (survey set placed) learns what the claim already knows:
+   * discovered lodes (U2, the Starter Kit), the r32 pass (U1). Pod, wallet and story stay as saved; the rungs
+   * land in the story flags quietly, since the claim crossed those triggers long ago.
    */
   private migrateToFactory(): void {
     const f = this.factory;
@@ -222,7 +225,7 @@ export class World implements WorldApi {
     const mark = this.events.length;
     for (const lode of this.terrain.lodes) {
       if (!lode.discovered) continue;
-      f.discoverLode(lode.id, this.purityKnown(lode));
+      f.discoverLode(lode.id, this.purityShown(lode));
       if (lode.id === this.meta.scriptedLodeId) kits.offerStarterKit(this.story.flags);
     }
     if (this.story.deepestRow >= SURVEY_PING_ROW) f.unlockRung('U1');
@@ -231,8 +234,21 @@ export class World implements WorldApi {
   }
 
   /** Purity shows at discovery for fixed-purity lodes or with a Dowser or better (02 §3.6). */
-  private purityKnown(lode: Lode): boolean {
+  private purityShown(lode: Lode): boolean {
     return (LODE_TABLE[lode.id]?.purity ?? null) !== null || this.pod.tiers.scanner >= DOWSER_TIER;
+  }
+
+  /**
+   * 02 §3.6: a lode found with Tin Ear shows "?" until a Dowser-or-better scan: once the Scanner reaches Dowser,
+   * each discovered lode whose purity is unknown is assayed when it comes within the Scanner radius.
+   */
+  private scanPurity(f: Factory): void {
+    if (this.pod.tiers.scanner < DOWSER_TIER) return;
+    const lodes = this.terrain.lodes;
+    for (let i = 0; i < lodes.length; i++) {
+      const lode = lodes[i];
+      if (lode.discovered && !f.purityKnown(lode.id) && inScannerRange(this.pod, lode)) f.discoverLode(lode.id, true);
+    }
   }
 
   /** Factory ports over the World's grid, wallet and event queue (04 §3.1). */
@@ -270,7 +286,10 @@ export class World implements WorldApi {
       const mark = this.events.length;
       this.podCtx.stepNo = this.steps;
       stepPod(pod, this.terrain, intent, this.podCtx, this.events);
-      if (this.factory) this.factoryHooks(this.factory, mark);
+      if (this.factory) {
+        this.factoryHooks(this.factory, mark);
+        this.scanPurity(this.factory);
+      }
       if (pod.destroyed) this.story.destructions++;
       else {
         this.applyRules(intent, mark);
@@ -360,7 +379,7 @@ export class World implements WorldApi {
         case 'lode-discovered': {
           const lode = this.terrain.lodes[e.lodeId];
           if (!lode) break;
-          f.discoverLode(e.lodeId, this.purityKnown(lode));
+          f.discoverLode(e.lodeId, this.purityShown(lode));
           if (e.lodeId === this.meta.scriptedLodeId && kits.offerStarterKit(this.story.flags)) this.emit({ t: 'starter-kit' });
           break;
         }

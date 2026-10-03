@@ -53,6 +53,7 @@ function Root({ app, vp, build }: { app: AppController; vp: Signal<Viewport>; bu
       <div class="hf-status-scrim" aria-hidden="true" />
       {inGame && building && build && (
         <>
+          <Ruler app={app} vp={vp} build={build} />
           <BuildLayer app={app} build={build} vp={vp} />
           {settings.showPerf && <PerfHud app={app} />}
           <Toasts app={app} />

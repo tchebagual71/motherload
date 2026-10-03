@@ -1,5 +1,5 @@
 // Story module public API (01 §7–8; canon §2.12, §3.9). PURE MODULE.
-export { StoryDirector } from './director';
+export { STARTER_KIT_PURCHASE, StoryDirector } from './director';
 export { StoryLedger, obFlag, pingFlag, type LedgerEntry } from './ledger';
 export { MILESTONES, milestone, isMilestoneId, type MilestoneDef, type MilestoneId } from './milestones';
 export { MVP_RUNGS, isRungUnlocked, rungFlag, type RungDef, type RungId } from './plans';

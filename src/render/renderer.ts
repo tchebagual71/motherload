@@ -24,7 +24,7 @@ import { isLodeVisible, scopeFloorRow } from '../terrain/scope';
 import type { TerrainGrid } from '../terrain/grid';
 import type { WorldApi } from '../world/api';
 import type { BuildCamera, CreateRenderer, QualityTier, RenderFrame, RenderInfo, Renderer, RendererOptions, ViewportLayout } from './api';
-import { CameraRig, DEG, DigDescentTracker, bayerPhase, cameraBasis, composeLookAt, pixelScaleK, pixelTargetSize, quantizeDeg, snapPixelPpu, snapToTexels, type CameraPose, type TexelSnap, type Vec3 } from './camera';
+import { CameraRig, DEG, DigDescentTracker, bayerPhase, composeLookAt, pixelScaleK, pixelTargetSize, quantizeDeg, snapPixelPpu, snapToTexels, type CameraPose, type TexelSnap, type Vec3 } from './camera';
 import { ITEM_CAP, FactoryView, type FactoryFrame } from './factory/view';
 import {
   BuildCameraRig,
@@ -37,9 +37,10 @@ import {
   screenRay,
   screenToMinePoint,
   screenToYardPoint,
-  snapBuildPpu,
+  snapBuildPixelPose,
   yardCellOf,
 } from './factory/projection';
+import { GHOST_EDGE_PX } from './factory/overlayMaterials';
 import { createFx } from './fx/fx';
 import { addOutlineHulls, applyLookMaterials, disposeMaterialKit, getMaterialKit, setHullsEnabled, setLayerDeep, syncHull, LAYER_LATE, type MaterialKit } from './materials';
 import type { FxSystem, PodModel, PodVisualState, RimBuildingsModel, YardPropsModel } from './models/api';
@@ -294,6 +295,13 @@ class HfRenderer implements Renderer {
     u.uHfResolution.value.set(toonW, toonH);
     if (this.perspCam) this.perspCam.aspect = width / height;
     this.infoData.renderDpr = this.look === 'toon' ? toonD : dpr;
+    this.syncGhostEdge();
+  }
+
+  /** Ghost outlines (03 §4.3): GHOST_EDGE_PX CSS px in Toon, one low-res texel in Pixel Lab (the target drawn into). */
+  private syncGhostEdge(): void {
+    if (this.look === 'pixel') this.factoryView.setGhostEdge(1, this.pixel.width, this.pixel.height);
+    else this.factoryView.setGhostEdge(GHOST_EDGE_PX * this.toonScale, this.kit.uniforms.uHfResolution.value.x, this.kit.uniforms.uHfResolution.value.y);
   }
 
   /** Follow the frame's layout: insets/HUD changes re-anchor the camera; size or render-DPR changes resize. */
@@ -527,18 +535,10 @@ class HfRenderer implements Renderer {
 
   /**
    * Pixel Lab build cameras (03 §9.3): settled, the zoom rounds UP to whole RT px per tile face (floors hold);
-   * tweening, angles step 2.5° and the zoom snaps like the play camera.
+   * tweening, angles step 2.5° and the zoom snaps against the face the rig blends between its two poses.
    */
   private snapBuildPose(p: CameraPose): void {
-    const cam = this.buildRig.camera;
-    if (cam && this.buildRig.settled) {
-      p.ppu = snapBuildPpu(p.ppu, cam.plane, this.layout.dpr, this.k);
-      return;
-    }
-    p.yaw = quantizeDeg(p.yaw, PIXEL_ANGLE_STEP);
-    p.pitch = quantizeDeg(p.pitch, PIXEL_ANGLE_STEP);
-    p.ppu = snapPixelPpu(p.ppu, this.layout.dpr, this.k, Math.cos(p.yaw * DEG));
-    cameraBasis(p.yaw, p.pitch, p.dir, p.right, p.up);
+    snapBuildPixelPose(p, this.buildRig, this.layout.dpr, this.k, PIXEL_ANGLE_STEP);
   }
 
   private placeCameras(pose: CameraPose): void {
@@ -740,6 +740,7 @@ class HfRenderer implements Renderer {
     ff.pose = pose;
     ff.yardRect = yardOn ? this.yardRect : null;
     ff.mineRect = mineOn ? this.mineRect : null;
+    ff.viewport = this.perspCam ? null : layout;
     ff.build = frame.mode === 'build' || this.buildRig.active ? (frame.build ?? null) : null;
     ff.ghostProgress = world.ghostProgress();
     ff.texel = this.look === 'pixel' && !this.perspCam ? this.texel : 0;
@@ -781,6 +782,7 @@ class HfRenderer implements Renderer {
     this.surface.setMaterials(this.kit.terrain(look), this.kit.sky(look));
     for (const root of this.modelRoots()) applyLookMaterials(root, look, this.kit);
     this.factoryView.setLook(look);
+    this.syncGhostEdge();
     this.applyQualityScope();
   }
 
@@ -820,6 +822,8 @@ class HfRenderer implements Renderer {
   private precompile(): void {
     const looks: Look[] = this.precompileBoth ? [this.look === 'toon' ? 'pixel' : 'toon', this.look] : [this.look];
     const current = this.look;
+    // Factory pieces, ghosts (prepass, outline, body), bubbles and overlays too: three compiles visible objects only.
+    this.factoryView.setCompileVisible(true);
     for (const look of looks) {
       this.look = look;
       this.applyLook();
@@ -830,6 +834,7 @@ class HfRenderer implements Renderer {
       else this.toon.compilePasses(this.gl);
     }
     this.look = current;
+    this.factoryView.setCompileVisible(false);
     this.applyLook();
     this.gl.setRenderTarget(null);
   }

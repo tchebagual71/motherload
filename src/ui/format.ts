@@ -49,6 +49,16 @@ export function formatLitres(l: number): string {
   return `${formatInt(Math.floor(v))} L`;
 }
 
+/**
+ * Litres in a quote or a receipt (Pump House tiles, Fill, the "Filled up" toast): rounded down to 0.1 L like the
+ * gauge (03 §6.1), whole amounts without ".0" ("5 L", "4.6 L"). The quote and the receipt share it, so the toast
+ * never names more fuel than the button offered.
+ */
+export function formatLitresAmount(l: number): string {
+  const v = Math.floor(Math.max(0, l) * 10 + 1e-6) / 10;
+  return `${Number.isInteger(v) ? formatInt(v) : v.toFixed(1)} L`;
+}
+
 /** Hull points: the ceiling of the 0.1-HP value (01 §3.6). */
 export function formatHp(hp: number): string {
   return String(Math.max(0, Math.ceil(hp - 1e-6)));

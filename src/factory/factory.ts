@@ -194,8 +194,9 @@ export class Factory implements FactoryApi {
       case 'unplace': {
         const create = (u.t === 'place') === forward;
         if (!create) {
+          // Same rules as Deconstruct (02 §2.7): blocked without Stockpile room, so an undo never scraps contents.
           const e = this.live(u.id, u.serial);
-          return e ? this.yardRemove(e, true) : fail('E_INVALID');
+          return e ? this.yardRemove(e) : fail('E_INVALID');
         }
         const r = this.yardPlace(u.kind, u.mk, u.x, u.y, u.dir);
         if (!r.ok) return r;
@@ -259,18 +260,25 @@ export class Factory implements FactoryApi {
     return ok({ id });
   }
 
-  /** Surface deconstruct (02 §2.7): 100% cash back, parts and contents to the Stockpile; blocked without room. */
-  private yardRemove(e: Ent, force: boolean): Res<{ refund: number }> {
+  /**
+   * Surface deconstruct (02 §2.7): 100% cash back, parts and contents to the Stockpile; blocked without room.
+   * Contents include the inputs of a craft in progress (consumed at its start, nodes.startCraft): they come back
+   * whole and stop counting as consumed.
+   */
+  private yardRemove(e: Ent): Res<{ refund: number }> {
     const s = this.s;
     const back = contentsOf(e);
+    const craft = craftInputsOf(e);
     const parts = BUILDINGS[e.kind].mks[e.mk - 1].parts;
-    let need = back.length;
+    let need = back.length + craft.length;
     for (const p of parts) need += p.n;
-    if (!force && need > this.freeExcept(e)) return fail('E_STOCKPILE_FULL', { need: need - this.freeExcept(e) });
+    if (need > this.freeExcept(e)) return fail('E_STOCKPILE_FULL', { need: need - this.freeExcept(e) });
     if (e.inv) for (let i = 0; i < e.inv.runs; i++) s.stockTotals[e.inv.items[i]] -= e.inv.counts[i];
     destroyEnt(s, e);
     if (e.paid > 0) s.wallet.credit(e.paid, 'refund');
     for (const it of back) s.displace(it);
+    s.count.consumed -= craft.length;
+    for (const it of craft) s.displace(it);
     for (const p of parts) {
       const num = item(p.item).num;
       for (let k = 0; k < p.n; k++) s.displace(num);
@@ -487,15 +495,37 @@ export class Factory implements FactoryApi {
     return ok({ ids: refs.map((x) => x.ghost) });
   }
 
+  /** Drop a pending job; a lift job takes the Lift Rail jobs stacked on it along (they could never complete). */
   removeGhost(id: number): Res {
     const g = this.s.ghosts[id];
     if (!g) return fail('E_INVALID');
     const refs = this.sharedRefs((r) => r.ghost === id, [g.shape()]);
+    if (g.kind === 'lift') refs.push(...this.dropRailsAbove(g.x, g.y));
     dropGhost(this.s, g);
     for (const r of refs) r.ghost = 0;
     this.s.topologyVersion++;
     this.record({ t: 'jobs', adds: false, refs });
     return OK;
+  }
+
+  /**
+   * Drop the pending Lift Rail jobs stacked on a lift section whose top is row `top` in column x (each rail's
+   * bottom sits on the next one's top), returning refs that re-add them on undo (02 §2.6: a rail needs a lift
+   * below). Callers bump topologyVersion.
+   */
+  private dropRailsAbove(x: number, top: number): JobRef[] {
+    const s = this.s;
+    const out: JobRef[] = [];
+    while (top >= 1) {
+      const g = s.ghosts[s.ghostAt[MINE][(top - 1) * W + x]];
+      if (!g || g.kind !== 'lift' || g.partCode !== PART_RAIL || g.x !== x || g.y + g.h !== top) break;
+      const refs = this.sharedRefs((r) => r.ghost === g.id, [g.shape()]);
+      for (const r of refs) r.ghost = 0;
+      for (const r of refs) if (!out.includes(r)) out.push(r);
+      dropGhost(s, g);
+      top = g.y;
+    }
+    return out;
   }
 
   completeGhost(id: number, pod: PodBox, cargo: KitSource): Res<{ id: number }> {
@@ -609,7 +639,7 @@ export class Factory implements FactoryApi {
     if (!e) return fail('E_INVALID');
     if (e.plane === 'yard') {
       const cfg = readConfig(e);
-      const r = this.yardRemove(e, false);
+      const r = this.yardRemove(e);
       if (r.ok) this.record({ t: 'unplace', kind: e.kind, mk: e.mk, x: e.x, y: e.y, dir: e.dir, id, serial: e.serial, cfg });
       return r;
     }
@@ -619,6 +649,8 @@ export class Factory implements FactoryApi {
     const plan = this.planKits(kits, held, opts?.toCargo);
     if (!plan.ok) return plan;
     const refs = this.sharedRefs((r) => r.ent === id && r.serial === e.serial, entShapes(e));
+    // Pending rails stacked on a lift go with it (one undo step re-adds foot and rails together).
+    if (e.kind === 'lift') refs.push(...this.dropRailsAbove(e.x, e.y));
     this.removeMineEnt(e);
     this.commitKits(plan.toCargo, plan.toStock, opts?.toCargo);
     for (const it of held) this.s.stockAdd(it, 1);
@@ -746,17 +778,32 @@ export class Factory implements FactoryApi {
     if (lode.metal === 'kerogen') this.s.unlock('U7');
   }
 
-  /** After digs, blasts or Realign: drop ghosts that now sit on solid cells (02 §10.10). */
+  purityKnown(id: number): boolean {
+    return this.s.purityKnown[id] === 1;
+  }
+
+  /**
+   * After digs, blasts or Realign (02 §10.10): drop ghosts that now sit on solid cells, and re-check the support
+   * of the job above each changed cell. A floor mount whose floor was dug or blasted away (E_FLOOR) could never
+   * complete, and as the oldest job in reach it would hold up every newer one.
+   */
   tileChanged(cells: readonly Cell[]): void {
     const s = this.s;
+    const at = s.ghostAt[MINE];
     for (const { x, y } of cells) {
-      if (x < 0 || x >= MINE_W || y < 0 || y * W + x >= s.ghostAt[MINE].length) continue;
-      const g = s.ghosts[s.ghostAt[MINE][y * W + x]];
-      if (!g || s.grid.terrain[y * W + x] === T.AIR) continue;
-      for (const r of findRefs([this.undos, this.redos], (k) => k.ghost === g.id)) r.ghost = 0;
-      dropGhost(s, g);
-      s.topologyVersion++;
+      if (x < 0 || x >= MINE_W || y < 0 || y * W + x >= at.length) continue;
+      const g = s.ghosts[at[y * W + x]];
+      if (g && s.grid.terrain[y * W + x] !== T.AIR) this.dropStaleGhost(g);
+      const up = y >= 1 ? s.ghosts[at[(y - 1) * W + x]] : null;
+      if (up && BUILDINGS[up.kind].mine !== 'wall' && checkJob(s, up.shape(), up.id) !== null) this.dropStaleGhost(up);
     }
+  }
+
+  /** Drop a ghost the world made impossible; records that tracked it keep its shape (undo re-checks it). */
+  private dropStaleGhost(g: Ghost): void {
+    for (const r of findRefs([this.undos, this.redos], (k) => k.ghost === g.id)) r.ghost = 0;
+    dropGhost(this.s, g);
+    this.s.topologyVersion++;
   }
 
   unlockRung(rung: Rung): void {
@@ -957,6 +1004,7 @@ function addSpec(p: Price, spec: MkSpec, sign: 1 | -1): void {
   for (const part of spec.parts) addStack(p.parts, part.item, sign * part.n);
 }
 
+/** Items an entity holds (inventory, output, input buffers). A running craft's inputs: craftInputsOf. */
 function contentsOf(e: Ent): number[] {
   const out: number[] = [];
   if (e.inv) for (let i = 0; i < e.inv.runs; i++) for (let k = 0; k < e.inv.counts[i]; k++) out.push(e.inv.items[i]);
@@ -966,6 +1014,14 @@ function contentsOf(e: Ent): number[] {
     const r = RECIPES[e.recipeNum];
     for (let i = 0; i < r.inputs.length; i++) for (let k = 0; k < e.inCount[i]; k++) out.push(r.inputs[i].num);
   }
+  return out;
+}
+
+/** Inputs of the craft in progress (also one done but blocked on a full output buffer), or none. */
+function craftInputsOf(e: Ent): number[] {
+  const out: number[] = [];
+  if (e.craftNum < 0) return out;
+  for (const x of RECIPES[e.craftNum].inputs) for (let k = 0; k < x.n; k++) out.push(x.num);
   return out;
 }
 

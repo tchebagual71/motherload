@@ -114,6 +114,43 @@ describe('build gestures: taps, long-press and the lifted point', () => {
     expect(m.state).toBe('idle');
   });
 
+  it('with a tool armed, holding still never long-presses: a hold then a drag still strokes (BUILD-1)', () => {
+    const { m, sink } = rig({ tool: true });
+    m.down({ id: 1, x: 100, y: 300, t: 0 });
+    for (let t = 50; t <= 600; t += 50) m.tick(t);
+    expect(sink.has('longPress')).toBe(false);
+    expect(m.state).toBe('pending');
+    m.move(1, 130, 300, 620);
+    expect(m.state).toBe('stroke');
+    expect(sink.calls.filter((c) => c[0] !== 'cursor')).toEqual([
+      ['strokeStart', 100, 300 - LIFT],
+      ['strokeMove', 130, 300 - LIFT],
+    ]);
+    m.up(1, 130, 300, 700);
+    expect(sink.names().at(-1)).toBe('strokeEnd');
+  });
+
+  it('with a tool armed, a slow deliberate tap (480 ms) still taps; Bulldoze counts as a tool (BUILD-1)', () => {
+    const { m, sink } = rig({ tool: true });
+    m.down({ id: 1, x: 40, y: 400, t: 0 });
+    for (let t = 50; t <= 450; t += 50) m.tick(t);
+    m.up(1, 42, 401, 480);
+    expect(sink.calls.at(-1)).toEqual(['tap', 40, 400 - LIFT]);
+    expect(sink.has('longPress')).toBe(false);
+    // Even a release long after the long-press time.
+    m.down({ id: 2, x: 40, y: 400, t: 1000 });
+    m.tick(2000);
+    m.up(2, 40, 400, 2100);
+    expect(sink.calls.at(-1)).toEqual(['tap', 40, 400 - LIFT]);
+  });
+
+  it('with no tool, a release after the long-press time is not a tap (the long-press already inspected)', () => {
+    const { m, sink } = rig({ tool: false });
+    m.down({ id: 1, x: 40, y: 400, t: 0 });
+    m.up(1, 40, 400, GESTURE.longPressMs + 10);
+    expect(sink.has('tap')).toBe(false);
+  });
+
   it('no long-press once the finger moved 10 pt', () => {
     const { m, sink } = rig({ tool: false });
     m.down({ id: 1, x: 10, y: 400, t: 0 });

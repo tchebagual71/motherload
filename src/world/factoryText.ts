@@ -1,6 +1,6 @@
 // Player-facing text for factory refusals (03 §6.2 toast table, ≤ 40 characters) and rung triggers (02 §9).
 // PURE MODULE.
-import { RUNGS, type Err, type Rung } from '../factory/api';
+import { RUNGS, type Err, type GhostView, type Rung } from '../factory/api';
 import { hasItem, item, kitItemId } from '../factory/items';
 import { grouped } from '../economy/format';
 
@@ -57,4 +57,13 @@ export function errText(e: Err): string {
     default:
       return "Can't do that here";
   }
+}
+
+/**
+ * The toast when the pod's proximity build of job `g` is refused. A Lift Rail section refused at the row just
+ * below it has no lift under it yet (02 §2.6): that is not a blocked shaft.
+ */
+export function ghostRefusalText(g: Pick<GhostView, 'part' | 'y' | 'h'>, e: Err): string {
+  if (e.code === 'E_COLUMN' && g.part === 'rail' && e.y === g.y + g.h) return 'Build the lift below first';
+  return errText(e);
 }

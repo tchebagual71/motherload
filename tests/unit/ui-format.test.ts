@@ -10,10 +10,13 @@ import {
   formatHp,
   formatInt,
   formatLitres,
+  formatLitresAmount,
   formatMass,
   formatSteps,
 } from '../../src/ui/format';
 import { hudColumns, hudDigitPt, HUD_GAP, HUD_MARGIN } from '../../src/ui/layout';
+import { buyFuelReceipt } from '../../src/ui/sheets/PumpSheet';
+import { World } from '../../src/world/world';
 
 describe('number formats', () => {
   it('groups thousands', () => {
@@ -56,6 +59,28 @@ describe('number formats', () => {
     expect(formatLitres(99.99)).toBe('99.9 L');
     expect(formatLitres(150)).toBe('150 L');
     expect(formatLitres(-1)).toBe('0.0 L');
+  });
+
+  it('formats quote and receipt litres: rounded down like the gauge, whole amounts without ".0"', () => {
+    expect(formatLitresAmount(4.684)).toBe('4.6 L');
+    expect(formatLitresAmount(5)).toBe('5 L');
+    expect(formatLitresAmount(4.99999999)).toBe('5 L');
+    expect(formatLitresAmount(0.04)).toBe('0 L');
+    expect(formatLitresAmount(1_250)).toBe('1,250 L');
+  });
+
+  it('the Pump receipt names the quoted litres (PLAYER-11: "Fill 4.6 L · $5" then "Filled up: 4.6 L for $5")', () => {
+    const w = new World({ seed: 7, scope: 'mvp' });
+    w.pod.fuel = 10 - 4.684;
+    w.wallet.cash = 20;
+    const q = w.fuelQuote('fill');
+    expect(`Fill ${formatLitresAmount(q.amount)} · $${q.cost}`).toBe('Fill 4.6 L · $5');
+    const r = buyFuelReceipt(w, 'fill');
+    expect(r).toMatchObject({ ok: true, message: 'Filled up: 4.6 L for $5' });
+    w.pod.fuel = 2;
+    expect(buyFuelReceipt(w, 5)).toMatchObject({ ok: true, message: 'Bought 5 L for $5' });
+    expect(buyFuelReceipt(w, 'fill')).toMatchObject({ ok: true, message: 'Filled up: 3 L for $3' });
+    expect(buyFuelReceipt(w, 'fill').ok).toBe(false); // already full: the world's own reason
   });
 
   it('shows the ceiling of the 0.1-HP hull', () => {

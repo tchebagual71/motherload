@@ -1,8 +1,10 @@
 // Dot's office (canon §2.4; 03 §6.3; 01 §7.4 "each beat … is logged in Dot's office", §8): the transmission
 // log (every beat and milestone, newest first, replayed in full), the milestone board, Co-op Plans (02 §9 rungs
-// U0–U3) and claim stats. Everything is read back from World.story.flags, so it survives saves.
+// U0–U3) and claim stats, tagged "Assisted" while any assist is on (01 §6.4). Everything else is read back from
+// World.story.flags, so it survives saves.
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
+import { assistsOn } from '../../app/settings';
 import type { AppController } from '../../app/types';
 import {
   MILESTONES,
@@ -176,15 +178,25 @@ function ClaimStats({ app, ledger }: { app: AppController; ledger: StoryLedger }
     ['Deepreach logs', `${ledger.logsHeard()} of ${RECORDER_LOGS}`],
     ['Milestones', `${ledger.milestoneCount} of ${MILESTONES.length}`],
   ];
+  // 01 §6.4: any assist adds an "Assisted" tag to the stats card; nothing is locked.
+  const assists = assistsOn(app.state.settings.value);
   return (
-    <dl class="hf-office-stats">
-      {rows.map(([k, v]) => (
-        <div key={k}>
-          <dt>{k}</dt>
-          <dd class="hf-digits">{v}</dd>
-        </div>
-      ))}
-    </dl>
+    <>
+      {assists.length > 0 && (
+        <p class="hf-office-assisted">
+          <span class="hf-chip hf-chip-assist">Assisted</span>
+          <span class="hf-office-assisted-what">{assists.join(' · ')}</span>
+        </p>
+      )}
+      <dl class="hf-office-stats">
+        {rows.map(([k, v]) => (
+          <div key={k}>
+            <dt>{k}</dt>
+            <dd class="hf-digits">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </>
   );
 }
 

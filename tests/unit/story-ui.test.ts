@@ -157,6 +157,20 @@ describe('story slot in the HUD layer', () => {
     await flush(() => card.click());
     expect(app.state.tripSummary.value).toBeNull();
   });
+
+  it('the trip summary shows Next Goals as they are now; a refreshed list is still the same card (PLAYER-7)', async () => {
+    const summary = { trip: 4, deepestRow: 25, collected: 6, value: 600, fuelUsed: 4.1, hullLost: 0, nextGoals: ['Sell at the Assay Office', 'Corkscrew Drill: $630 to go'] };
+    app.state.tripSummary.value = summary;
+    await mount();
+    expect(text(dom.root.querySelector('.hf-trip')!)).toContain('Sell at the Assay Office');
+    app.state.tripSummary.value = { ...summary, nextGoals: ['Upgrade at the Garage', 'Corkscrew Drill: $30 to go'] };
+    await tick(50);
+    const card = dom.root.querySelector('.hf-trip')!;
+    expect(text(card)).not.toContain('Sell at the Assay Office');
+    expect(text(card)).toContain('Corkscrew Drill: $30 to go');
+    await flush(() => card.click());
+    expect(app.state.tripSummary.value).toBeNull();
+  });
 });
 
 describe("Dot's office", () => {
@@ -199,6 +213,19 @@ describe("Dot's office", () => {
     expect(plans[2]).toContain('Open');
     await flush(() => tab('Stats').click());
     expect(text(dom.root.querySelector('.hf-office-stats'))).toContain('Deepreach logs0 of 6');
+  });
+
+  it('tags the stats card "Assisted" while any assist is on (01 §6.4)', async () => {
+    app.state.sheet.value = 'office';
+    await mount();
+    await flush(() => tab('Stats').click());
+    expect(dom.root.querySelector('.hf-office-assisted')).toBeNull();
+    await flush(() => (app.state.settings.value = { ...app.state.settings.value, steadyDrill: true }));
+    expect(text(dom.root.querySelector('.hf-office-assisted'))).toBe('AssistedSteady Drill');
+    await flush(() => (app.state.settings.value = { ...app.state.settings.value, landingAssist: true }));
+    expect(text(dom.root.querySelector('.hf-office-assisted'))).toBe('AssistedLanding Assist · Steady Drill');
+    await flush(() => (app.state.settings.value = { ...app.state.settings.value, landingAssist: false, steadyDrill: false }));
+    expect(dom.root.querySelector('.hf-office-assisted')).toBeNull();
   });
 
   it('is reachable from the menu and the Assay Office', async () => {

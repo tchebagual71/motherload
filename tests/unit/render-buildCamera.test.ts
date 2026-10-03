@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { CAMERA, MINE_H } from '../../src/shared/canon';
 import type { BuildCamera, ViewportLayout } from '../../src/render/api';
 import type { ViewRect } from '../../src/factory/api';
-import { cameraBasis, type CameraPose } from '../../src/render/camera';
+import { DEG, cameraBasis, pixelScaleK, snapPixelPpu, type CameraPose } from '../../src/render/camera';
 import {
   BUILD_ENTER_S,
   BUILD_PLANE_S,
@@ -25,7 +25,9 @@ import {
   screenRay,
   screenToMinePoint,
   screenToYardPoint,
+  snapBuildPixelPose,
   snapBuildPpu,
+  snapFacePpu,
   yardCellOf,
 } from '../../src/render/factory/projection';
 
@@ -324,6 +326,56 @@ describe('build camera tweens (03 §4.1, §5)', () => {
     expect(rig.pose.pitch).toBeCloseTo(35, 9);
     rig.set(null, rig.pose);
     expect(rig.active).toBe(false);
+  });
+
+  it('snaps Pixel Lab zoom through every yaw snap, plane swap and exit against the blended tile face (03 §9.3)', () => {
+    // The renderer's frame loop in Pixel Lab: the play pose snapped by the play rule, the build pose shown snapped by
+    // snapBuildPixelPose, and every tween starting from the pose last shown.
+    for (const layout of [SE, I15]) {
+      const k = pixelScaleK(layout);
+      const play = playPose();
+      play.ppu = snapPixelPpu(play.ppu, layout.dpr, k, Math.cos(play.yaw * DEG));
+      const rig = new BuildCameraRig();
+      const shown = copyPose(play, newPose());
+      const seen: { tag: string; ppu: number }[] = [];
+      const fly = (cam: BuildCamera | null, tag: string, seconds: number): void => {
+        rig.set(cam, shown);
+        for (let i = 0; i < Math.round(seconds * 60); i++) {
+          copyPose(rig.update(1 / 60, play), shown);
+          if (rig.active) snapBuildPixelPose(shown, rig, layout.dpr, k, 2.5);
+          else copyPose(play, shown);
+          seen.push({ tag, ppu: shown.ppu });
+        }
+      };
+      fly(yard(24, 5, 0), 'enter', 0.5);
+      for (const yaw of [1, 2, 3, 0, 2, 1] as const) fly(yard(24, 5, yaw), `yaw→${yaw}`, 0.4);
+      fly(mine(26, 45), 'Yard 135° → Mine', 0.7);
+      fly(yard(24, 5, 2), 'Mine → Yard 225°', 0.7);
+      fly(null, 'exit from 225°', 0.5);
+      const settled = [play.ppu, snapBuildPpu(39, 'yard', layout.dpr, k), snapBuildPpu(47, 'mine', layout.dpr, k)];
+      const lo = Math.min(...settled) * 0.9;
+      const hi = Math.max(...settled) * 1.1;
+      for (let i = 0; i < seen.length; i++) {
+        const { tag, ppu } = seen[i];
+        expect(Number.isFinite(ppu) && ppu > 0, `${layout.width} ${tag} #${i}: ${ppu}`).toBe(true);
+        expect(ppu, `${layout.width} ${tag} #${i}`).toBeGreaterThanOrEqual(lo);
+        expect(ppu, `${layout.width} ${tag} #${i}`).toBeLessThanOrEqual(hi);
+        // No frame-to-frame jump beyond one RT pixel per face and the tween's own zoom change.
+        if (i > 0) expect(Math.abs(ppu - seen[i - 1].ppu), `${layout.width} ${tag} #${i}`).toBeLessThan(ppu * 0.12);
+      }
+      // Settled on each plane, the floors hold; back in play, the play snap is untouched.
+      expect(seen[seen.length - 1].ppu).toBe(play.ppu);
+    }
+  });
+
+  it('never flips or explodes a Pixel Lab zoom snap at a degenerate face', () => {
+    for (const face of [Math.cos(90 * DEG), Math.cos(135 * DEG), -1, 0]) {
+      for (const f of [snapPixelPpu(39, 2, 2, face), snapFacePpu(39, face, 3, 4)]) {
+        expect(Number.isFinite(f)).toBe(true);
+        expect(f).toBeGreaterThan(30);
+        expect(f).toBeLessThan(50);
+      }
+    }
   });
 
   it('blends poses componentwise and copies them whole', () => {

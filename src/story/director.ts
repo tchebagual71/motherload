@@ -30,6 +30,12 @@ const BUILD_FACTS: readonly [RegExp, string][] = [
   [/assembler/i, 'assembler'],
 ];
 
+/**
+ * `purchase.kit` of the Starter Kit handed over at the Shed (world/kitShop claimStarterKit). The 'starter-kit'
+ * event only says it is waiting there (the scripted lode was found): the goal chip then still asks to collect it.
+ */
+export const STARTER_KIT_PURCHASE = 'starter';
+
 /** Plated polls the Stockpile this often (steps): a part count may walk every Bin. */
 const PLATED_POLL_STEPS = 30;
 /** Hardrock cells remembered for Pop Goes the Shale. */
@@ -158,6 +164,7 @@ export class StoryDirector {
       case 'purchase':
         if (e.kind === 'fuel') this.earn(L, 'toppedOff', emit);
         else if (e.kind === 'upgrade') this.onUpgrade(e.line, e.tier, L, emit);
+        else if (e.kind === 'kit' && e.kit === STARTER_KIT_PURCHASE) L.set(obFlag('kit')); // collected at the Shed
         return;
       case 'first-lift-delivery':
         this.fire(L, 'S6', emit);
@@ -169,9 +176,6 @@ export class StoryDirector {
         return;
       case 'unlock':
         L.set(rungFlag(e.rung));
-        return;
-      case 'starter-kit':
-        L.set(obFlag('kit'));
         return;
       case 'ghost-complete':
         for (const [re, fact] of BUILD_FACTS) if (re.test(e.kind)) L.set(obFlag(fact));

@@ -499,6 +499,22 @@
   background: var(--hf-danger);
   color: #fff;
 }
+/* Invalid ghost mark (03 §4.3): ink on cream, readable whatever the piece's role colour (coral ≈ invalid red). */
+.hf-ghost-badge {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: var(--bw) solid var(--hf-ink);
+  border-radius: 50%;
+  background: var(--hf-cream);
+  color: var(--hf-ink);
+  pointer-events: none;
+  will-change: transform;
+}
 .hf-bubble {
   position: absolute;
   left: 0;
@@ -648,6 +664,7 @@
   box-shadow: 3px 3px 0 var(--hf-ink);
 }
 .hf-pixel .hf-bcard-icon,
+.hf-pixel .hf-ghost-badge,
 .hf-pixel .hf-pending,
 .hf-pixel .hf-ghost-label,
 .hf-pixel .hf-loupe canvas {

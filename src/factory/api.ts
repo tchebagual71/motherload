@@ -459,6 +459,11 @@ export interface FactoryApi {
 
   // ---- world hooks ----
   discoverLode(id: number, purityKnown: boolean): void;
+  /**
+   * Is lode `id`'s purity known (02 §3.6)? Set at discovery for fixed-purity lodes or with a Dowser-or-better
+   * scan (World), and by the lode's first drilled ore. Until then the map and inspect show "?".
+   */
+  purityKnown(id: number): boolean;
   tileChanged(cells: readonly Cell[]): void;
   /** World-driven rungs (U1 at r32; v1 depth rungs). Idempotent. */
   unlockRung(rung: Rung): void;

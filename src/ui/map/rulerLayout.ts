@@ -1,9 +1,11 @@
 // Depth ruler geometry (canon §3.12; 03 §2.1–2.2, §4.11). Pure. All values in pt (CSS px), y down.
 // A 24-pt rail on the dominant edge (one-handed: the non-dominant one) with a 44-pt hit strip extending inward,
 // from 8 pt below the clear rect's top to 12 pt above the context button. A rail on the left edge sits 24 pt in,
-// clear of the back-swipe edge (03 §1.5).
+// clear of the back-swipe edge (03 §1.5). In build mode the strip shrinks to the rail and ends above the dock
+// band and the build controls stacked over it on the rail's side (chips, or the zoom stack one-handed).
 import { BANDS, TOUCH } from '../../shared/canon';
 import { CLUSTER_BOTTOM_MARGIN, SLOT_GEOMETRY, THRUST_LAYOUT, type ControlSize } from '../../input/zones';
+import { BTN, DOCK_H, TRAY_H } from '../build/tools';
 
 export const RULER_RAIL = 24;
 export const RULER_HIT = TOUCH.minHit;
@@ -68,10 +70,35 @@ export function rulerGeometry(v: RulerViewport, s: RulerSettings, railOnly = fal
   return { side: 'left', railX0: x0, railX1: x0 + RULER_RAIL, hitX0: x0, hitX1: x0 + hit, top, bottom };
 }
 
+/** Build layout gaps (ui/build/BuildLayer: 8-pt gaps between the stacked controls). */
+const BUILD_GAP = 8;
+/**
+ * Height over the dock band the build controls on the rail's side can take: the dominant side stacks the pending
+ * chip (28 pt) and the Shopping list and Route to surface chips (44 pt, 16 pt overhang each); the non-dominant side
+ * (one-handed rail) stacks Pan, ⟳, + and − (44 pt each).
+ */
+export const BUILD_CHIP_STACK = BUILD_GAP + 28 + 2 * (BTN + BUILD_GAP - 16) + 16 + BUILD_GAP;
+export const BUILD_SIDE_STACK = 4 * (BTN + BUILD_GAP) + BUILD_GAP;
+
+/** Build mode (03 §4.11): the rail-only geometry, ending above the dock band and the controls on its side. */
+export function buildRulerGeometry(v: RulerViewport, s: RulerSettings): RulerGeometry {
+  const g = rulerGeometry(v, s, true);
+  const dockTop = v.h - v.ib - TRAY_H - DOCK_H;
+  const bottom = Math.max(g.top + RULER_HIT, Math.min(g.bottom, dockTop - (s.oneHanded ? BUILD_SIDE_STACK : BUILD_CHIP_STACK)));
+  return { ...g, bottom };
+}
+
 /** Rail y of a mine row: the rail maps rows 0 … floorRow onto its height (03 §4.11). */
 export function rowToRail(row: number, floorRow: number, top: number, bottom: number): number {
   const t = Math.max(0, Math.min(1, row / floorRow));
   return top + t * (bottom - top);
+}
+
+/** Mine row at rail y (the inverse of rowToRail), clamped to 0 … floorRow. */
+export function railToRow(y: number, floorRow: number, top: number, bottom: number): number {
+  const h = bottom - top;
+  if (h <= 0) return 0;
+  return Math.max(0, Math.min(1, (y - top) / h)) * floorRow;
 }
 
 /** Band segments of the rail (canon §2.5) down to the floor: [top row, bottom row exclusive, band index]. */

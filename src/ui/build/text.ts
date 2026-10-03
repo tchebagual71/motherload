@@ -1,22 +1,16 @@
-// Build-mode copy (03 §6.2 toast table, ≤ 40 characters; 02 §9 rung triggers; 03 §4 chips). Pure.
-import { BUILDINGS, KIT_METER, RUNGS, kitUnits, type BuildingKind, type Err, type Rung } from '../../factory/api';
-import { hasItem, item, kitItemId } from '../../factory/items';
+// Build-mode copy (03 §6.2 toast table, ≤ 40 characters; 02 §9 rung triggers; 03 §4 chips). Pure. The refusal
+// texts, Kit names and rung triggers have one source, world/factoryText.ts (the pod's ghost refusals use it too);
+// this module only adds what build mode knows on top: the piece in hand, whole Kits, the undo wording.
+import { BUILDINGS, KIT_METER, kitUnits, type BuildingKind, type Err, type Rung } from '../../factory/api';
+import { hasItem, item } from '../../factory/items';
+import { errText as refusalText, kitName, rungTrigger } from '../../world/factoryText';
 import { formatCash, formatInt } from '../format';
 
-/** "Discover a lode" for U2 (02 §9 trigger column). */
-export function rungTrigger(rung: Rung | undefined): string {
-  return RUNGS.find((r) => r.id === rung)?.trigger ?? 'a later update';
-}
+export { kitName, rungTrigger };
 
 /** "Unlocks: Discover a lode" (03 §6.2 E_LOCKED). */
 export function unlockText(rung: Rung | undefined): string {
   return `Unlocks: ${rungTrigger(rung)}`;
-}
-
-/** Display name of a cargo Kit id ('belt' → 'Belt Kit', 'liftRail' → 'Lift Rail'). */
-export function kitName(kitId: string): string {
-  const id = kitItemId(kitId);
-  return hasItem(id) ? item(id).name : kitId;
 }
 
 /** Item display name ('copperIngot' → 'Copper Ingot'). */
@@ -48,46 +42,27 @@ export interface ErrContext {
   lodeHasDrill?: boolean;
 }
 
-/** 03 §6.2: the toast (and ghost label) for a 02 §2.5 code. */
+/** 03 §6.2: the toast (and ghost label) for a 02 §2.5 code; world/factoryText.ts words it, `ctx` sharpens it. */
 export function errText(e: Err, ctx: ErrContext = {}): string {
   switch (e.code) {
-    case 'E_LOCKED':
-      return unlockText(e.rung);
-    case 'E_YARD':
-      return 'Outside your Yard';
-    case 'E_OCCUPIED':
-      return "Something's already here";
-    case 'E_SOLID':
-      return 'Dig this out first';
-    case 'E_UNSEEN':
-      return 'Explore here first';
-    case 'E_FLOOR':
-      return 'Needs a floor';
     case 'E_LODE':
-      return ctx.lodeHasDrill ? 'This lode has a drill' : 'Drills sit on a discovered lode';
-    case 'E_HEAT':
-      return 'Too hot here: needs Mk III';
-    case 'E_POD':
-      return 'Pip is in the way';
+      if (ctx.lodeHasDrill) return 'This lode has a drill';
+      break;
     case 'E_COLUMN':
-      return ctx.kind === 'headframe' || e.y === undefined ? 'No Headframe column here' : `Shaft blocked at row ${e.y}`;
-    case 'E_ARENA':
-      return 'Not in the Hollow Heart';
-    case 'E_FUNDS':
-      return `Need ${formatCash(e.need ?? 0)} more`;
-    case 'E_PARTS':
-      return `Need ${formatInt(e.need ?? 0)} ${itemName(e.item) || 'parts'}`;
+      if (ctx.kind === 'headframe') return 'No Headframe column here';
+      break;
     case 'E_KIT':
+      // The factory counts metered units short; the player buys whole Kits (9 belt tiles → 2 Belt Kits).
       return `Need ${formatInt(kitsForUnits(e.item ?? '', e.need ?? 0))} ${e.item ? kitName(e.item) : 'Kit'} in cargo`;
-    case 'E_STOCKPILE_FULL':
-      return 'Stockpile full: build a Bin';
     case 'E_LIMIT':
-      return ctx.kind ? 'Too many ghosts (256 max)' : 'That is the limit';
+      if (ctx.kind) return 'Too many ghosts (256 max)';
+      break;
     case 'E_EMPTY':
       return 'Nothing to undo';
     default:
-      return "Can't build that here";
+      break;
   }
+  return refusalText(e);
 }
 
 /** Whole Kits that hold `units` of a (metered) Kit: 9 belt tiles → 2 Belt Kits. */

@@ -19,8 +19,11 @@ export default defineConfig({
     reuseExistingServer: true,
     timeout: 180_000,
   },
+  // iPhone SE (1st gen, 320 × 568: the narrowest layout), SE (3rd gen, 375 × 667 at DPR 2: the smallest current
+  // target, 03 §1.5) and 15 (393 pt wide at DPR 3).
   projects: [
     { name: 'iphone-se', use: { ...devices['iPhone SE'], browserName: 'chromium', defaultBrowserType: 'chromium' } },
+    { name: 'iphone-se-3', use: { ...devices['iPhone SE (3rd gen)'], browserName: 'chromium', defaultBrowserType: 'chromium' } },
     { name: 'iphone-15', use: { ...devices['iPhone 15'], browserName: 'chromium', defaultBrowserType: 'chromium' } },
   ],
 });

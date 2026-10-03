@@ -1,5 +1,5 @@
-// HFSV version 1 (04 §4.9, §4.11; canon §3.15): the FACT section, Kit meter units and the ghost timer in PODS,
-// and the version 0 (M0) migration rule — no FACT means a fresh factory with the survey set.
+// HFSV version 1 (04 §4.9, §4.11; canon §3.15): the FACT section, Kit meter units and the ghost timer in PODS;
+// M0's version 0 files never migrate, and an M0-scope build's version 1 file (no FACT) gets a fresh factory.
 import { describe, expect, it } from 'vitest';
 import { NO_INTENT, type PodIntent } from '../../src/pod/types';
 import { POD_H } from '../../src/shared/canon';
@@ -159,7 +159,7 @@ describe('factory round trip (02 §10.11 test 6, through the World)', () => {
   });
 });
 
-describe('migration: version 0 (M0) saves (04 §4.11, MVP rule)', () => {
+describe('M0 saves (canon §3.15; 04 §4.11)', () => {
   function playedM0(): World {
     const w = new World({ seed: 7, scope: 'm0' });
     w.debugGiveCash(3_210);
@@ -174,12 +174,26 @@ describe('migration: version 0 (M0) saves (04 §4.11, MVP rule)', () => {
     return w;
   }
 
-  it('loads with a fresh factory (survey set placed), keeping pod, wallet and story', () => {
-    const m0 = playedM0();
-    const v0 = asVersion0(m0);
+  it('an M0 (version 0) file never migrates: "This test save can\'t be loaded"', () => {
+    const v0 = asVersion0(playedM0());
     expect(new DataView(v0.buffer).getUint16(4, true)).toBe(0);
-    expect(deserialize(v0).factory).toBeUndefined();
-    const w = World.deserialize(v0, 'mvp');
+    for (const load of [() => deserialize(v0), () => World.deserialize(v0, 'mvp')]) {
+      expect(load).toThrow(SaveError);
+      try {
+        load();
+      } catch (e) {
+        expect((e as SaveError).code).toBe('version');
+        expect((e as SaveError).message).toBe("This test save can't be loaded");
+      }
+    }
+  });
+
+  it('an M0-scope version 1 file (no FACT) loads with a fresh factory (survey set placed), keeping pod, wallet and story', () => {
+    const m0 = playedM0();
+    const bytes = m0.serialize();
+    expect(new DataView(bytes.buffer).getUint16(4, true)).toBe(1);
+    expect(deserialize(bytes).factory).toBeUndefined();
+    const w = World.deserialize(bytes, 'mvp');
     expect(w.scope).toBe('mvp');
     const f = w.factory!;
     expect(f.entities().map((e) => [e.kind, e.rusted])).toEqual([
@@ -200,25 +214,17 @@ describe('migration: version 0 (M0) saves (04 §4.11, MVP rule)', () => {
     expect(flags['rung:U2']).toBe(true);
     expect(w.starterKitReady()).toBe(true);
     expect(w.drainEvents()).toEqual([]);
-    // It saves as version 1 with FACT from now on, and reloads unchanged.
+    // It saves with FACT from now on, and reloads unchanged.
     const v1 = w.serialize();
     expect(new DataView(v1.buffer).getUint16(4, true)).toBe(1);
     expect(World.deserialize(v1, 'mvp').serialize()).toEqual(v1);
   });
 
-  it('an untouched M0 claim migrates to a factory equal to a new game’s', () => {
+  it('an untouched M0-scope claim migrates to a factory equal to a new game’s', () => {
     const fresh = new World({ seed: 7, scope: 'mvp' });
-    const migrated = World.deserialize(asVersion0(new World({ seed: 7, scope: 'm0' })), 'mvp');
+    const migrated = World.deserialize(new World({ seed: 7, scope: 'm0' }).serialize(), 'mvp');
     expect(migrated.factory!.stateHash()).toBe(fresh.factory!.stateHash());
     expect(migrated.factory!.isUnlocked('U2')).toBe(false);
     expect(migrated.starterKitReady()).toBe(false);
-  });
-
-  it('an M0 build’s version 1 file (no FACT) migrates the same way', () => {
-    const m0 = playedM0();
-    const w = World.deserialize(m0.serialize(), 'mvp');
-    expect(w.factory!.entities()).toHaveLength(3);
-    expect(w.factory!.isUnlocked('U2')).toBe(true);
-    expect(w.pod).toEqual(m0.pod);
   });
 });

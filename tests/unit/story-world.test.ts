@@ -1,7 +1,11 @@
 // The story hosted by the real World (01 §7.4; canon §2.12 #1): the game-start card on new games only, depth
 // pings, the scripted lode, Recorder sales, and flags that survive a save.
-import { describe, expect, it } from 'vitest';
+import { signal } from '@preact/signals';
+import { describe, expect, it, vi } from 'vitest';
+import { StoryFeed } from '../../src/app/storyFeed';
+import type { GoalChip, RadioMessage, TripSummary } from '../../src/app/types';
 import { NO_INTENT } from '../../src/pod/types';
+import { POD_H, RIM_BUILDINGS } from '../../src/shared/canon';
 import type { GameEvent } from '../../src/shared/events';
 import type { Scope } from '../../src/shared/types';
 import { RECORDER_RELIC } from '../../src/story/script';
@@ -55,6 +59,40 @@ describe('the World hosts the story', () => {
     expect(ev).toContainEqual({ t: 'lode-pinged', lodeId: w.meta.scriptedLodeId });
     expect(ev.filter((e) => e.t === 'milestone').map((e) => (e as { id: string }).id)).toEqual(expect.arrayContaining(['fiveHundredClub', 'oldPing']));
     expect(w.terrain.lodes[w.meta.scriptedLodeId].discovered).toBe(true);
+  });
+
+  it('the goal chip asks to collect the Starter Kit from lode discovery until the claim at the Shed (PLAYER-1)', () => {
+    const w = world();
+    w.drainEvents();
+    const state = { radio: signal<RadioMessage[]>([]), goal: signal<GoalChip | null>(null), tripSummary: signal<TripSummary | null>(null) };
+    const feed = new StoryFeed({ state, world: () => w, toast: vi.fn() });
+    // Beats 1–3 done (the early steps would otherwise take the chip), then down Dot's shaft to the lode.
+    const L = new StoryLedger(w.story.flags);
+    for (const m of ['toppedOff', 'payday', 'basketCase']) L.recordMilestone(m);
+    const pod = w.pod as { x: number; y: number; vx: number; vy: number; prevX: number; prevY: number; grounded: boolean };
+    pod.x = pod.prevX = w.meta.surveyColumn + 0.5;
+    pod.y = pod.prevY = -30.5;
+    pod.vx = pod.vy = 0;
+    pod.grounded = false;
+    feed.onEvents(run(w, 600), 0);
+    expect(w.terrain.lodes[w.meta.scriptedLodeId].discovered).toBe(true);
+    expect(w.starterKitReady()).toBe(true);
+    feed.tick(1_000);
+    expect(state.goal.value?.text).toBe('Collect your Starter Kit at the Shed');
+    // Back on the Rim before the claim: still the Shed, never the access dig.
+    const shed = RIM_BUILDINGS[3];
+    pod.x = pod.prevX = (shed.x0 + shed.x1 + 1) / 2;
+    pod.y = pod.prevY = POD_H / 2;
+    pod.grounded = true;
+    feed.onEvents(run(w, 2), 2_000);
+    feed.tick(3_000);
+    expect(state.goal.value?.text).toBe('Collect your Starter Kit at the Shed');
+    expect(w.claimStarterKit().ok).toBe(true);
+    feed.onEvents(w.drainEvents(), 4_000);
+    feed.tick(5_000);
+    // Beat 6 begins: the access dig (its wording may change with the chevrons, 03 §4.6).
+    expect(state.goal.value?.text).not.toBe('Collect your Starter Kit at the Shed');
+    expect(state.goal.value?.text).toMatch(/^Dig down|drill/);
   });
 
   it('flags carry the story through a save: nothing repeats after a reload', () => {

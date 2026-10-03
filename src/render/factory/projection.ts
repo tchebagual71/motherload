@@ -8,7 +8,7 @@
 import { CAMERA, MINE_H, MINE_W } from '../../shared/canon';
 import { YARD_MAX_ROWS, type Cell, type Plane, type ViewRect } from '../../factory/api';
 import type { BuildCamera, ViewportLayout } from '../api';
-import { DEG, cameraBasis, clamp, lerp, smoothstep, type CameraPose, type Vec3 } from '../camera';
+import { DEG, cameraBasis, clamp, lerp, quantizeDeg, smoothstep, type CameraPose, type Vec3 } from '../camera';
 
 /** Yard pick plane (02 §2.1): the plateau top. */
 export const YARD_PLANE_Y = 0;
@@ -120,14 +120,52 @@ export function blendPose(a: CameraPose, b: CameraPose, k: number, out: CameraPo
 }
 
 /**
+ * Pixel Lab tile-face foreshortening of a settled build camera (03 §9.3): the plateau tile seen from above on the
+ * Yard (1, at every yaw snap), the slab front foreshortened by the pitch underground.
+ */
+export function buildFaceCos(plane: Plane): number {
+  return plane === 'yard' ? 1 : Math.cos(buildPitchDeg('mine') * DEG);
+}
+
+/** The play camera's face: the slab front foreshortened by its yaw (the play rule, renderer.updateCamera). */
+export function playFaceCos(pose: Pick<CameraPose, 'yaw'>): number {
+  return Math.cos(pose.yaw * DEG);
+}
+
+/** Smallest face cosine a snap accepts: a degenerate face (a view along it) must never flip or explode the zoom. */
+const MIN_FACE_COS = 0.25;
+
+/** Whole RT pixels per tile face (ppu × faceCos), rounded UP so a canon zoom floor holds. */
+export function snapFacePpu(ppu: number, faceCos: number, dpr: number, k: number): number {
+  const face = Math.max(MIN_FACE_COS, faceCos);
+  const px = Math.max(1, Math.ceil((ppu * face * dpr) / k - 1e-6));
+  return (px * k) / (dpr * face);
+}
+
+/**
  * Pixel Lab zoom snap for a settled build camera (03 §9.3): whole RT pixels per tile face, rounded UP so the
- * canon floor holds. The face is the plateau tile seen from above on the Yard (SE 39, iPhone 15 30 px → 40.0 ppu)
- * and the slab front foreshortened by the pitch underground (SE 46, iPhone 15 35 px → 47.7 ppu).
+ * canon floor holds (Yard: SE 39, iPhone 15 30 px → 40.0 ppu; Mine: SE 46, iPhone 15 35 px → 47.7 ppu).
  */
 export function snapBuildPpu(ppu: number, plane: Plane, dpr: number, k: number): number {
-  const faceCos = plane === 'yard' ? 1 : Math.cos(buildPitchDeg('mine') * DEG);
-  const px = Math.max(1, Math.ceil((ppu * faceCos * dpr) / k - 1e-6));
-  return (px * k) / (dpr * faceCos);
+  return snapFacePpu(ppu, buildFaceCos(plane), dpr, k);
+}
+
+/**
+ * Pixel Lab snap of the pose the build rig shows (03 §9.3). Settled: the zoom rounds UP to whole RT px per tile
+ * face. Tweening: angles step `angleStep`° and the zoom snaps against the face the rig blends between the poses it
+ * flies from and to — never against cos(yaw): a Yard camera at yaw 135° or 225° looks down on the plateau, and
+ * cos(yaw) ≤ 0 there would mirror or explode the frustum mid-tween.
+ */
+export function snapBuildPixelPose(p: CameraPose, rig: BuildCameraRig, dpr: number, k: number, angleStep: number): void {
+  const cam = rig.camera;
+  if (cam && rig.settled) {
+    p.ppu = snapBuildPpu(p.ppu, cam.plane, dpr, k);
+    return;
+  }
+  p.yaw = quantizeDeg(p.yaw, angleStep);
+  p.pitch = quantizeDeg(p.pitch, angleStep);
+  p.ppu = snapFacePpu(p.ppu, rig.faceCos(), dpr, k);
+  cameraBasis(p.yaw, p.pitch, p.dir, p.right, p.up);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -227,11 +265,13 @@ const MINE_SPAN_Z = [-1, MINE_PLANE_Z] as const;
 
 /**
  * Cells of `plane` the viewport can show, grown by `margin` cells and clamped to the plane; false when none.
- * The four screen corners are carried along the view direction onto the plane's near and far layers.
+ * The four screen corners are carried along the view direction onto the plane's near and far layers. The mine
+ * shows only through the slab's front face: a camera behind it (a Yard yaw of 135° or 225°) sees none of it.
  */
 export function planeViewRect(pose: CameraPose, layout: Pick<ViewportLayout, 'width' | 'height'>, plane: Plane, margin: number, out: ViewRect): boolean {
   let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
   const d = pose.dir;
+  if (plane === 'mine' && d.z <= 1e-6) return false;
   const spans = plane === 'yard' ? YARD_SPAN_Y : MINE_SPAN_Z;
   for (let k = 0; k < CORNERS.length; k++) {
     const p = screenPoint(pose, layout, CORNERS[k][0] * layout.width, CORNERS[k][1] * layout.height, _p);
@@ -315,6 +355,10 @@ export class BuildCameraRig {
   private exiting = false;
   private k = 1;
   private dur = BUILD_ENTER_S;
+  /** Pixel Lab tile faces the tween flies from and to (null = the live play camera's) and the play face last seen. */
+  private fromFace = 1;
+  private toFace: number | null = 1;
+  private playFace = 1;
 
   /** The build camera, or null (in play, or leaving build). */
   get camera(): Readonly<BuildCamera> | null {
@@ -333,12 +377,24 @@ export class BuildCameraRig {
     return this.k;
   }
 
+  /**
+   * Tile-face foreshortening of the pose shown (Pixel Lab zoom snap, 03 §9.3): the settled plane's face, or during a
+   * tween the eased blend of the faces it flies between (the play camera's when entering or leaving). Always > 0.
+   */
+  faceCos(): number {
+    const to = this.toFace ?? this.playFace;
+    return this.k >= 1 ? to : lerp(this.fromFace, to, ease(this.k));
+  }
+
   /** `shown` is the pose on screen now (the tween starts from it). */
   set(cam: BuildCamera | null, shown: CameraPose): void {
+    const face = this.active ? this.faceCos() : playFaceCos(shown);
     if (!cam) {
       if (!this.hasCam) return;
       this.hasCam = false;
       this.exiting = true;
+      this.fromFace = face;
+      this.toFace = null;
       this.start(shown, BUILD_ENTER_S);
       return;
     }
@@ -354,6 +410,8 @@ export class BuildCameraRig {
     this.hasCam = true;
     this.exiting = false;
     buildPose(prev, this.target);
+    if (entering || planeSwap || yawSnap) this.fromFace = face;
+    this.toFace = buildFaceCos(cam.plane);
     if (entering) this.start(shown, BUILD_ENTER_S);
     else if (planeSwap) this.start(shown, BUILD_PLANE_S);
     else if (yawSnap) this.start(shown, BUILD_YAW_S);
@@ -362,6 +420,7 @@ export class BuildCameraRig {
 
   /** Advance the tween by dt seconds; `play` is the live play-camera pose (the exit target). */
   update(dt: number, play: CameraPose): CameraPose {
+    this.playFace = playFaceCos(play);
     if (this.k < 1) this.k = Math.min(1, this.k + dt / this.dur);
     const e = ease(this.k);
     if (this.exiting) {

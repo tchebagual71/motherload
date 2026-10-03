@@ -4,9 +4,10 @@
 //
 //   IDLE    ─down p1→ PENDING (cursor on the lifted point, 44 pt above the finger, from touch-down)
 //   PENDING ─p2 down → CAMERA (nothing committed; inside the 120-ms grace or not, PENDING holds nothing)
-//   PENDING ─up before the long-press, < 10 pt → TAP at the lifted point (time alone never leaves PENDING)
-//   PENDING ─450 ms, < 10 pt → LONGPRESS (MVP: inspect), then LONG until the finger lifts
-//   PENDING ─moved ≥ 10 pt → STROKE (tool armed, ✋ Pan off) | PAN
+//   PENDING ─up < 10 pt → TAP at the lifted point (no tool: only before the long-press; time alone never leaves
+//            PENDING with a tool armed, so a finger resting to aim still taps or strokes)
+//   PENDING ─450 ms, < 10 pt, no tool → LONGPRESS (MVP: inspect), then LONG until the finger lifts (03 §4.2)
+//   PENDING ─moved ≥ 10 pt, after any hold → STROKE (tool armed, ✋ Pan off) | PAN
 //   STROKE  ─p2 ≤ 120 ms after p1 down → discard the stroke → CAMERA;  later p2 → freeze it as a ghost → CAMERA
 //   CAMERA  : two fingers pan + pinch; a twist past 30° snaps the yaw ±90° (Yard); one finger up → HOLD
 //   HOLD    : the remaining finger pans until all lift
@@ -215,7 +216,8 @@ export class GestureMachine {
     switch (this.st) {
       case 'pending': {
         const lift = this.a.lift;
-        const tap = this.moved < GESTURE.movePt && t - this.t0 < GESTURE.longPressMs;
+        // With a tool armed a slow, deliberate tap still places: only "no tool" has a long-press (03 §4.2).
+        const tap = this.moved < GESTURE.movePt && (this.cfg.toolArmed() || t - this.t0 < GESTURE.longPressMs);
         this.st = 'idle';
         this.clear();
         if (tap) this.sink.tap(this.x0, this.y0 - lift);
@@ -267,9 +269,12 @@ export class GestureMachine {
     this.clear();
   }
 
-  /** Clocks: the long-press in PENDING, the loupe in STROKE. Call at least every ~50 ms while a pointer is down. */
+  /**
+   * Clocks: the long-press in PENDING (no tool armed: 03 §4.2 LONGPRESS is "No tool" only; with a tool the finger
+   * may rest to aim before it paints or taps), the loupe in STROKE. Call at least every ~50 ms while a pointer is down.
+   */
   tick(t: number): void {
-    if (this.st === 'pending' && this.moved < GESTURE.movePt && t - this.t0 >= GESTURE.longPressMs) {
+    if (this.st === 'pending' && this.moved < GESTURE.movePt && t - this.t0 >= GESTURE.longPressMs && !this.cfg.toolArmed()) {
       this.st = 'long';
       this.sink.longPress(this.x0, this.y0 - this.a.lift);
       return;

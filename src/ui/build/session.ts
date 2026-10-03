@@ -28,6 +28,7 @@ import { BUILD_ZOOM, clampCamera, clampPpu, defaultCamera, entryPlane, isOneByOn
 import { buildingName, errText, kitBill, undoText } from './text';
 import {
   W,
+  beltPathUnchanged,
   drillSites,
   extendPath,
   footprintAt,
@@ -40,9 +41,11 @@ import {
   sameCell,
   snapDrill,
   snapEndDir,
+  tabOf,
   takesInput,
   toolOnPlane,
   yardBeltCost,
+  yardBeltRefund,
   type MineRun,
   type Rect,
   type Tool,
@@ -119,7 +122,10 @@ export class BuildSession implements GestureSink {
 
   private readonly undoLabels: string[] = [];
   private readonly redoLabels: string[] = [];
+  /** The other plane's camera within one session ([Yard│Mine] swaps); cleared when the session ends. */
   private readonly camByPlane: Partial<Record<Plane, BuildCamera>> = {};
+  /** Zoom and yaw remembered across sessions; the centre is framed afresh on every entry (03 §4.1, §5). */
+  private readonly viewByPlane: Partial<Record<Plane, Pick<BuildCamera, 'ppu' | 'yaw'>>> = {};
   private strokeStartCell: Cell | null = null;
   /** Last cell of the stroke (Bulldoze paints every cell it crossed). */
   private strokeLast: Cell | null = null;
@@ -153,7 +159,7 @@ export class BuildSession implements GestureSink {
   }
   /** ✓ is live: something is pending and it passes the validator. */
   get canConfirm(): boolean {
-    return this.pending !== null && this.error === null && !(this.pending.t === 'lift' && this.pending.top === null) && !this.emptyRemove();
+    return this.pending !== null && this.error === null && !(this.pending.t === 'lift' && this.pending.top === null) && !this.emptyRemove() && !this.unchangedPath();
   }
   get area(): Rect {
     return this.ports.area();
@@ -167,7 +173,10 @@ export class BuildSession implements GestureSink {
     this.active = true;
     const pod = this.world.pod;
     this.plane = plane ?? entryPlane(pod.y);
-    this.cam = this.camByPlane[this.plane] ?? this.defaultCam(this.plane);
+    this.camByPlane.yard = this.camByPlane.mine = undefined;
+    if (this.tool && !toolOnPlane(this.tool, this.plane)) this.tool = null;
+    // Framed on the pod (Mine) or the Headframe near it (Yard) every time: the pod may have moved since.
+    this.cam = this.defaultCam(this.plane);
     this.pending = null;
     this.error = null;
     this.cursorCell = null;
@@ -176,7 +185,6 @@ export class BuildSession implements GestureSink {
     this.inspectGhost = null;
     this.routeFrom = null;
     this.panLatch = false;
-    if (this.tool && !toolOnPlane(this.tool, this.plane)) this.tool = null;
     this.pushCamera();
     this.publish();
     return true;
@@ -186,7 +194,8 @@ export class BuildSession implements GestureSink {
   end(): void {
     if (!this.active) return;
     this.active = false;
-    this.camByPlane[this.plane] = this.cam;
+    this.rememberView();
+    this.camByPlane.yard = this.camByPlane.mine = undefined;
     this.pending = null;
     this.error = null;
     this.cursorCell = null;
@@ -205,6 +214,7 @@ export class BuildSession implements GestureSink {
   setPlane(p: Plane): void {
     if (!this.active || p === this.plane) return;
     this.camByPlane[this.plane] = this.cam;
+    this.rememberView();
     this.plane = p;
     this.cam = this.camByPlane[p] ?? this.defaultCam(p);
     this.pending = null;
@@ -240,6 +250,11 @@ export class BuildSession implements GestureSink {
       this.error = null;
     }
     this.tool = next;
+    // The armed card stays in view (Place drill, Route to surface): its tab opens. Bulldoze shows on the dock's ✗.
+    if (next !== null && next !== 'bulldoze') {
+      const tab = tabOf(this.plane, next, this.tab[this.plane]);
+      if (tab) this.tab[this.plane] = tab;
+    }
     this.inspectId = null;
     this.inspectGhost = null;
     this.applyZoomFloor();
@@ -283,6 +298,7 @@ export class BuildSession implements GestureSink {
 
   toggleOverlay(): void {
     this.overlay = !this.overlay;
+    this.writeFrame(); // the renderer dims the terrain and marks jam heads (BuildFrame.overlay)
     this.bump();
   }
 
@@ -370,6 +386,11 @@ export class BuildSession implements GestureSink {
       this.fail(this.error);
       return false;
     }
+    // Nothing to commit yet (a lift without its top, an empty mark, belts already there): ✓ is off.
+    if (!this.canConfirm) {
+      this.publish();
+      return false;
+    }
     const ok = this.commit(f, p);
     if (ok) {
       this.pending = null;
@@ -408,6 +429,8 @@ export class BuildSession implements GestureSink {
   }
 
   setRecipe(id: number, recipe: string | null): void {
+    // The current recipe again is not a step (the factory records nothing): no undo label for it.
+    if ((this.factory?.inspect(id)?.recipe ?? null) === recipe) return;
     this.run(() => this.factory?.setRecipe(id, recipe) ?? err('E_INVALID'), recipe ? `Recipe ${recipe}` : 'Recipe off');
   }
 
@@ -553,7 +576,7 @@ export class BuildSession implements GestureSink {
       }
     }
     this.validate();
-    if (this.error) this.fail(this.error, false);
+    if (this.error) this.refuse(this.error);
     else if (this.instant && this.instantCommits()) {
       this.confirm();
       return;
@@ -655,7 +678,7 @@ export class BuildSession implements GestureSink {
     this.strokeStartCell = null;
     this.beforeStroke = null;
     this.validate();
-    if (this.error && this.pending) this.fail(this.error, false);
+    if (this.error && this.pending) this.refuse(this.error);
     else if (this.instant && this.instantCommits()) {
       this.confirm();
       return;
@@ -747,6 +770,7 @@ export class BuildSession implements GestureSink {
         return { text: `${buildingName(p.kind)} · ${kitBill(BUILDINGS[p.kind].mks[0].kit ?? '', 1)}`, tone: 'info' };
       }
       case 'path': {
+        if (this.unchangedPath()) return { text: 'Belts already there', tone: 'info' };
         const dirs = pathDirs(p.cells, p.endDir ?? this.endSnap(p.cells));
         const cost = yardBeltCost(p.cells, dirs, f.beltWords('yard'), BUILDINGS.belt.mks[0].cash);
         return { text: `${formatCash(cost)} · ${p.cells.length} tile${p.cells.length === 1 ? '' : 's'}`, tone: 'info' };
@@ -766,12 +790,37 @@ export class BuildSession implements GestureSink {
     return p?.t === 'remove' && p.id === null && p.ghost === null && p.cells.length === 0;
   }
 
-  /** Screen anchor (CSS px) of the pending ghost's label, or null. */
+  /** A Yard path that repaints belts exactly as they are: the factory would record no step (02 §2.1). */
+  private unchangedPath(): boolean {
+    const p = this.pending;
+    const f = this.factory;
+    if (p?.t !== 'path' || !f) return false;
+    const dirs = pathDirs(p.cells, p.endDir ?? this.endSnap(p.cells));
+    const ids = f.yardBuildings();
+    return beltPathUnchanged(
+      p.cells,
+      dirs,
+      f.beltWords('yard'),
+      MK,
+      (x, y) => (x >= 0 && x < W && y >= 0 ? (ids[y * W + x] ?? 0) : 0),
+      (id) => f.entity(id)?.kind === 'router',
+      f.isUnlocked(BUILDINGS.router.mks[0].rung),
+    );
+  }
+
+  /** Screen anchor (CSS px) of the pending ghost's label: the middle of its far row (the top on screen), or null. */
   ghostAnchor(): { x: number; y: number } | null {
     const r = this.ports.renderer();
-    const fp = this.previewRect();
+    const fp = this.ghostRect();
     if (!r || !fp) return null;
     return r.cellToScreen(this.plane, fp.x + (fp.w - 1) / 2, fp.y + (this.plane === 'yard' ? fp.h - 1 : 0));
+  }
+
+  /** The pending ghost's label anchor is inside the world area: its red reason shows on the ghost (03 §6.2). */
+  ghostOnScreen(): boolean {
+    const a = this.ghostAnchor();
+    const r = this.area;
+    return !!a && Number.isFinite(a.x) && Number.isFinite(a.y) && a.x >= r.x0 && a.x <= r.x1 && a.y >= r.y0 && a.y <= r.y1;
   }
 
   /** CSS px of a (fractional) cell centre on the current plane, or null before the renderer exists. */
@@ -1055,17 +1104,23 @@ export class BuildSession implements GestureSink {
     const parts: string[] = [];
     let refund = 0;
     const e = p.id !== null ? f?.entity(p.id) : null;
+    // The rusted survey set was free (02 §2.2): nothing comes back, and getting it again costs the list price.
+    const survey = e?.plane === 'yard' && e.rusted ? e : null;
     if (e) {
-      parts.push(buildingName(e.kind));
+      parts.push(survey ? `survey ${buildingName(e.kind)}` : buildingName(e.kind));
       if (e.plane === 'yard' && !e.rusted) refund += BUILDINGS[e.kind].mks[e.mk - 1]?.cash ?? 0;
     }
     if (p.ghost !== null) parts.push('ghost');
-    if (p.cells.length > 0) {
-      parts.push(`${p.cells.length} belt${p.cells.length === 1 ? '' : 's'}`);
-      if (this.plane === 'yard') refund += p.cells.length * BUILDINGS.belt.mks[0].cash;
+    if (p.cells.length > 0 && f) {
+      if (this.plane === 'yard') {
+        // The factory's own diff (02 §2.7): a Junction pays back both tiles, and its crossing line goes too.
+        const r = yardBeltRefund(p.cells, f.beltWords('yard'), (t) => BUILDINGS.belt.mks[t - 1]?.cash ?? 0);
+        refund += r.refund;
+        parts.push(`${r.tiles} belt${r.tiles === 1 ? '' : 's'}${r.crossings > 0 ? `, ${r.crossings} crossing${r.crossings === 1 ? '' : 's'}` : ''}`);
+      } else parts.push(`${p.cells.length} belt${p.cells.length === 1 ? '' : 's'}`);
     }
     if (parts.length === 0) return { text: 'Tap to mark, drag over belts', tone: 'info' };
-    const back = this.plane === 'yard' ? `refund ${formatCash(refund)}` : 'Kits back';
+    const back = survey ? `rebuild ${formatCash(BUILDINGS[survey.kind].mks[survey.mk - 1]?.cash ?? 0)}` : this.plane === 'yard' ? `refund ${formatCash(refund)}` : 'Kits back';
     return { text: `Remove ${parts.join(' + ')} · ${back}`, tone: 'bad' };
   }
 
@@ -1082,10 +1137,11 @@ export class BuildSession implements GestureSink {
       }
       case 'path': {
         const endDir = p.endDir ?? this.endSnap(p.cells);
-        let label = `Belt ×${p.cells.length}`;
+        let label: string | null = `Belt ×${p.cells.length}`;
         return this.run(() => {
           const r = f.paintBelts(p.cells, MK, endDir);
-          if (r.ok) label = `Belt ×${r.tiles}`;
+          // 0 tiles changed: the factory recorded no step, so no label (the toasts stay in step with undo).
+          if (r.ok) label = r.tiles > 0 ? `Belt ×${r.tiles}` : null;
           return r;
         }, () => label);
       }
@@ -1103,10 +1159,9 @@ export class BuildSession implements GestureSink {
         if (p.ghost !== null) any = this.run(() => f.removeGhost(p.ghost as number), 'Removed ghost') || any;
         const e = p.id !== null ? f.entity(p.id) : null;
         if (e) any = this.run(() => this.removeEntity(e), `Removed ${buildingName(e.kind)}`) || any;
-        if (p.cells.length > 0) {
-          const n = p.cells.length;
-          any = this.run(() => this.removeBelts(p.cells), `Removed belt ×${n}`) || any;
-        }
+        // Only cells that still hold a belt: an empty removal records no step (and so takes no label).
+        const cells = p.cells.filter((c) => this.beltAt(c));
+        if (cells.length > 0) any = this.run(() => this.removeBelts(cells), `Removed belt ×${cells.length}`) || any;
         return any;
       }
     }
@@ -1130,8 +1185,11 @@ export class BuildSession implements GestureSink {
     return f.removeBelts('mine', cells);
   }
 
-  /** Run a recorded factory command: toast and error sound on failure; an undo label on success. */
-  private run(cmd: () => Res, label: string | (() => string)): boolean {
+  /**
+   * Run a recorded factory command: toast and error sound on failure; an undo label on success. A label function
+   * returning null means the command was a no-op the factory did not record (03 §4.8: toasts name the real step).
+   */
+  private run(cmd: () => Res, label: string | (() => string | null)): boolean {
     let r: Res;
     try {
       r = cmd();
@@ -1142,7 +1200,9 @@ export class BuildSession implements GestureSink {
       this.fail(r);
       return false;
     }
-    this.undoLabels.push(typeof label === 'function' ? label() : label);
+    const text = typeof label === 'function' ? label() : label;
+    if (text === null) return true;
+    this.undoLabels.push(text);
     if (this.undoLabels.length > UNDO_LABELS) this.undoLabels.shift();
     this.redoLabels.length = 0;
     this.app.afterAction({ ok: true });
@@ -1174,13 +1234,28 @@ export class BuildSession implements GestureSink {
     else this.app.toast(text, 'warn');
   }
 
+  /**
+   * A red ghost after a tap or stroke: its reason is on the ghost label and in the pending chip, so it is toasted
+   * only when the ghost is off screen (03 §6.2: at most one transient text).
+   */
+  private refuse(e: Err): void {
+    if (!this.ghostOnScreen()) this.fail(e, false);
+  }
+
   // ---------------------------------------------------------------- internals: camera
 
-  private defaultCam(plane: Plane): BuildCamera {
+  /** The entry framing for a plane (03 §4.1, §5), with the zoom and Yard yaw the player last left it at. */
+  defaultCam(plane: Plane): BuildCamera {
     const f = this.factory;
     const pod = this.world.pod;
-    const cam = defaultCamera(plane, { podX: pod.x, podY: pod.y, entities: f ? f.entities() : [] });
-    return clampCamera({ ...cam, ppu: clampPpu(plane, cam.ppu, plane === 'yard' && isOneByOne(this.tool)) }, this.bounds(plane));
+    const view = this.viewByPlane[plane];
+    const cam = defaultCamera(plane, { podX: pod.x, podY: pod.y, entities: f ? f.entities() : [] }, plane === 'yard' ? (view?.yaw ?? 0) : 0);
+    const ppu = view?.ppu ?? cam.ppu;
+    return clampCamera({ ...cam, ppu: clampPpu(plane, ppu, plane === 'yard' && isOneByOne(this.tool)) }, this.bounds(plane));
+  }
+
+  private rememberView(): void {
+    this.viewByPlane[this.plane] = { ppu: this.cam.ppu, yaw: this.cam.yaw };
   }
 
   private bounds(plane: Plane = this.plane): ReturnType<typeof planeBounds> {
@@ -1214,7 +1289,8 @@ export class BuildSession implements GestureSink {
 
   // ---------------------------------------------------------------- internals: publishing
 
-  private previewRect(): { x: number; y: number; w: number; h: number } | null {
+  /** Plane cells the pending ghost covers (a path: its last tile), or null. */
+  ghostRect(): { x: number; y: number; w: number; h: number } | null {
     const p = this.pending;
     if (!p) return null;
     switch (p.t) {
@@ -1283,12 +1359,16 @@ export class BuildSession implements GestureSink {
     if (!this.active) return;
     const p = this.pending;
     const marked = p?.t === 'remove' ? p.id : null;
-    const frame: BuildFrame = {
+    // `tool`: the armed building (null for none or Bulldoze), so the underground placement highlight can show
+    // where it may go before the first tap (03 §4.12). The renderer reads it once BuildFrame carries the field.
+    const frame: BuildFrame & { tool: BuildingKind | null } = {
       plane: this.plane,
       cursor: this.cursorCell ? { x: this.cursorCell.x, y: this.cursorCell.y } : null,
       preview: this.preview(),
       bulldoze: this.tool === 'bulldoze',
       selectedId: this.inspectId ?? marked,
+      overlay: this.overlay ? 'logistics' : null,
+      tool: this.tool === 'bulldoze' ? null : this.tool,
     };
     this.ports.app.state.buildFrame.value = frame;
   }

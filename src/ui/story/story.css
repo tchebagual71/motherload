@@ -439,6 +439,23 @@
   margin: 0;
   font: 900 16px/1.2 var(--hf-font-digits);
 }
+/* 01 §6.4: the "Assisted" tag over the claim stats while any assist is on. */
+.hf-office-assisted {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 4px 2px;
+}
+.hf-chip-assist {
+  color: var(--hf-ink);
+  background: #f6c343;
+  border-color: var(--hf-ink);
+}
+.hf-office-assisted-what {
+  font: 700 calc(13px * var(--hf-ts, 1))/1.2 var(--hf-font);
+  color: var(--hf-ink-soft);
+}
 
 /* ------------------------------------------------------------------ Pixel Lab skin (03 §9.3) */
 .hf-pixel .hf-radio,

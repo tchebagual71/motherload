@@ -13,6 +13,7 @@ import {
   type Plane,
   type Rung,
 } from '../../factory/api';
+import { isJunction, slotTier, wordDirA, wordTierA, wordTierB } from '../../factory/topology';
 import type { CargoItem, Lode } from '../../shared/types';
 import { formatCash } from '../format';
 import { shortName, unlockText } from './text';
@@ -137,6 +138,67 @@ export function yardBeltCost(path: readonly Cell[], dirs: readonly Dir[], words:
     else if (((w >> 10) & 1) !== (dirs[i] & 1) && (w & 0x4000) === 0) cost += tileCash; // perpendicular → Junction
   }
   return cost;
+}
+
+/**
+ * Would painting `path` (facing `dirs`, tier `mk`) leave the Yard as it is? The factory's paint rule (02 §2.1)
+ * keeps a cell whose belt already runs that way at that tier and a Router a stroke passes through; a stroke ending
+ * into the side of a belt still adds its T-Router (when Routers are unlocked). Such a stroke records no undo
+ * step, so ✓ stays off. `buildingAt(x, y)`: a Yard building id there (0 = none); `isRouter(id)`.
+ */
+export function beltPathUnchanged(
+  path: readonly Cell[],
+  dirs: readonly Dir[],
+  words: Readonly<Uint16Array>,
+  mk: number,
+  buildingAt: (x: number, y: number) => number,
+  isRouter: (id: number) => boolean,
+  routerOk: boolean,
+): boolean {
+  if (path.length === 0) return false;
+  for (let i = 0; i < path.length; i++) {
+    const { x, y } = path[i];
+    const b = buildingAt(x, y);
+    if (b !== 0) {
+      if (isRouter(b)) continue;
+      return false;
+    }
+    if (slotTier(words[y * W + x] ?? 0, dirs[i]) !== mk) return false;
+  }
+  const last = path[path.length - 1];
+  const d = dirs[path.length - 1];
+  const nx = last.x + DX[d];
+  const ny = last.y + DY[d];
+  if (routerOk && nx >= 0 && nx < W && ny >= 0 && buildingAt(nx, ny) === 0) {
+    const w = words[ny * W + nx] ?? 0;
+    if (w !== 0 && !isJunction(w) && (wordDirA(w) & 1) !== (d & 1)) return false;
+  }
+  return true;
+}
+
+/**
+ * Yard Bulldoze refund for belt cells (02 §2.7: the price paid back, as the factory's removal diff): each belt
+ * tile's tier price, plus the second tile of a Junction, whose crossing line goes too. Router cells hold no belt.
+ */
+export function yardBeltRefund(cells: readonly Cell[], words: Readonly<Uint16Array>, tierCash: (tier: number) => number): { refund: number; tiles: number; crossings: number } {
+  let refund = 0;
+  let tiles = 0;
+  let crossings = 0;
+  const seen = new Set<number>();
+  for (const { x, y } of cells) {
+    const c = y * W + x;
+    if (seen.has(c)) continue;
+    seen.add(c);
+    const w = words[c] ?? 0;
+    if (w === 0) continue;
+    tiles++;
+    refund += tierCash(wordTierA(w));
+    if (isJunction(w)) {
+      crossings++;
+      refund += tierCash(wordTierB(w));
+    }
+  }
+  return { refund, tiles, crossings };
 }
 
 // ---------------------------------------------------------------- underground
@@ -342,6 +404,16 @@ export function planeTools(plane: Plane): Tool[] {
   const out: Tool[] = [];
   for (const t of TABS[plane]) for (const k of TAB_TOOLS[plane][t.id] ?? []) if (!out.includes(k)) out.push(k);
   return out;
+}
+
+/**
+ * The tray tab that holds `tool` on `plane` (Extract for the Auto-Drill, Logistics for the Lift); `current` when it
+ * already does (Bulldoze sits on Tools only), null when no tab has it.
+ */
+export function tabOf(plane: Plane, tool: Tool, current?: TrayTab): TrayTab | null {
+  if (current && TAB_TOOLS[plane][current]?.includes(tool)) return current;
+  for (const t of TABS[plane]) if (TAB_TOOLS[plane][t.id]?.includes(tool)) return t.id;
+  return null;
 }
 
 export function toolOnPlane(tool: Tool, plane: Plane): boolean {

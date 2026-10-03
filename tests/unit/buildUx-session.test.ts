@@ -96,10 +96,61 @@ describe('build session: entering, the camera and the frame', () => {
     expect(r.s.active).toBe(true);
     expect(r.s.plane).toBe('yard');
     expect(r.renderer.cams.at(-1)).toEqual({ plane: 'yard', cx: 27, cy: 4, ppu: 39, yaw: 0 });
-    expect(r.state.buildFrame.value).toEqual({ plane: 'yard', cursor: null, preview: null, bulldoze: false, selectedId: null });
+    expect(r.state.buildFrame.value).toEqual({ plane: 'yard', cursor: null, preview: null, bulldoze: false, selectedId: null, overlay: null, tool: null });
     r.app.exitBuild();
     expect(r.s.active).toBe(false);
     expect(r.state.buildFrame.value).toBeNull();
+  });
+
+  it('re-entering frames the pod afresh, keeping only the zoom and yaw (BUILD-2)', () => {
+    const r = rig();
+    const pod = r.world.pod as { x: number };
+    pod.x = 24;
+    r.app.enterBuild();
+    expect(r.s.cam).toMatchObject({ cx: 27, cy: 4 });
+    r.s.zoomIn();
+    r.s.yawStep(1);
+    const ppu = r.s.cam.ppu;
+    r.s.pan(-5 * P, 0);
+    r.app.exitBuild();
+    // Pip drives 19 columns west, past the Headframe's 12-column reach: the Yard opens on Pip.
+    pod.x = 8.6;
+    r.app.enterBuild();
+    expect(r.s.cam).toMatchObject({ plane: 'yard', cx: 8.6, cy: 4, ppu, yaw: 1 });
+    expect(r.renderer.cams.at(-1)).toEqual(r.s.cam);
+    // Within one session the [Yard│Mine] swap still returns to where the Yard view was left.
+    r.s.pan(-2 * P, 0);
+    const yardCam = { ...r.s.cam };
+    r.s.setPlane('mine');
+    r.s.setPlane('yard');
+    expect(r.s.cam).toEqual(yardCam);
+  });
+
+  it('the mine opens on the pod every time, wherever it was left (BUILD-2)', () => {
+    const r = mineRig();
+    (r.world.story as { deepestRow: number }).deepestRow = r.lode.top; // the pan bounds reach the seen rows
+    r.app.enterBuild();
+    expect(r.s.plane).toBe('mine');
+    expect(r.s.cam.cy).toBeCloseTo(-r.world.pod.y, 6);
+    r.app.exitBuild();
+    r.world.debugTeleport(20);
+    r.app.enterBuild();
+    expect(r.s.cam).toMatchObject({ plane: 'mine', cx: r.world.pod.x });
+    expect(r.s.cam.cy).toBeCloseTo(-r.world.pod.y, 6);
+    expect(r.s.cam.cy).toBeLessThan(22);
+  });
+
+  it('writes the ◫ overlay and the armed building into the build frame', () => {
+    const r = rig();
+    r.app.enterBuild();
+    r.s.arm('belt');
+    expect(r.state.buildFrame.value).toMatchObject({ tool: 'belt', overlay: null });
+    r.s.toggleOverlay();
+    expect(r.state.buildFrame.value).toMatchObject({ tool: 'belt', overlay: 'logistics' });
+    r.s.arm('bulldoze');
+    expect(r.state.buildFrame.value).toMatchObject({ tool: null, bulldoze: true, overlay: 'logistics' });
+    r.s.toggleOverlay();
+    expect(r.state.buildFrame.value?.overlay).toBeNull();
   });
 
   it('a 1×1 tool eases the Yard zoom to 44 ppu; zoom and yaw stay in range; the mine has no yaw', () => {
@@ -166,6 +217,54 @@ describe('build session: Yard belts (02 §2.1; 03 §4.4)', () => {
     expect(r.toasts.at(-1)).toBe('Redid: Belt ×3 (−$15)');
     r.s.redo();
     expect(r.toasts.at(-1)).toBe('Nothing to redo');
+  });
+
+  it('repainting belts exactly as they are is no step: ✓ stays off and the undo toasts stay in step (BUILD-5)', () => {
+    const r = rig();
+    r.app.enterBuild();
+    r.s.arm('belt');
+    const path = [r.yard(20, 2), r.yard(21, 2), r.yard(22, 2)];
+    stroke(r.s, path);
+    expect(r.s.confirm()).toBe(true);
+    r.s.arm('bin');
+    tapAt(r.s, r.yard(23, 5));
+    expect(r.s.confirm()).toBe(true);
+    r.s.arm('belt');
+    stroke(r.s, path);
+    expect(r.s.chip()).toEqual({ text: 'Belts already there', tone: 'info' });
+    expect(r.s.canConfirm).toBe(false);
+    expect(r.s.confirm()).toBe(false);
+    // The same cells the other way round do change something.
+    stroke(r.s, path.slice().reverse());
+    expect(r.s.canConfirm).toBe(true);
+    r.s.clear();
+    const cash = r.world.wallet.cash;
+    r.s.undo();
+    expect(r.toasts.at(-1)).toBe('Undid: Storage Bin (+$250)');
+    r.s.undo();
+    expect(r.toasts.at(-1)).toBe('Undid: Belt ×3 (+$15)');
+    expect(r.world.wallet.cash).toBe(cash + 265);
+    r.s.redo();
+    expect(r.toasts.at(-1)).toBe('Redid: Belt ×3 (−$15)');
+  });
+
+  it('picking the recipe a machine already runs is no step (BUILD-5)', () => {
+    const r = rig();
+    r.f.unlockRung('U3');
+    r.app.enterBuild();
+    r.s.arm('assembler');
+    tapAt(r.s, r.yard(20, 5));
+    expect(r.s.confirm()).toBe(true);
+    const id = r.f.entities().find((e) => e.kind === 'assembler')!.id;
+    r.s.setRecipe(id, 'A1');
+    expect(r.f.inspect(id)?.recipe).toBe('A1');
+    r.s.setRecipe(id, 'A1');
+    r.s.undo();
+    expect(r.toasts.at(-1)).toBe('Undid: Recipe A1');
+    expect(r.f.inspect(id)?.recipe).toBeNull();
+    r.s.undo();
+    expect(r.toasts.at(-1)).toBe('Undid: Assembler (+$500)');
+    expect(r.f.entity(id)).toBeNull();
   });
 
   it('L mode draws an L from the stroke start; ⇋ flips its legs', () => {
@@ -240,17 +339,25 @@ describe('build session: Yard buildings (03 §4.3)', () => {
     expect(r.s.pending).toMatchObject({ dir: DIR.W });
   });
 
-  it('an invalid spot is red, toasts its reason and cannot be confirmed', () => {
+  it('an invalid spot is red and cannot be confirmed; its reason is toasted only when the ghost is off screen', () => {
     const r = rig();
     r.app.enterBuild();
     r.s.arm('smelter');
-    tapAt(r.s, r.yard(26, 5)); // on the survey Smelter
+    tapAt(r.s, r.yard(26, 5)); // on the survey Smelter, off this 375-px screen (x 795)
     expect(r.s.error?.code).toBe('E_OCCUPIED');
+    expect(r.s.ghostOnScreen()).toBe(false);
     expect(r.toasts.at(-1)).toBe("Something's already here");
     expect(r.s.canConfirm).toBe(false);
     tapAt(r.s, r.yard(12, 2)); // under the Assay Office
     expect(r.s.error?.code).toBe('E_YARD');
     expect(r.toasts.at(-1)).toBe('Outside your Yard');
+    // On screen, the label on the ghost and the pending chip say it: no third copy in a toast (BUILD-7).
+    const n = r.toasts.length;
+    tapAt(r.s, r.yard(5, 20)); // past the purchased Yard rows, inside the world area
+    expect(r.s.error?.code).toBe('E_YARD');
+    expect(r.s.ghostOnScreen()).toBe(true);
+    expect(r.s.chip()).toEqual({ text: 'Outside your Yard', tone: 'bad' });
+    expect(r.toasts).toHaveLength(n);
   });
 
   it('short of cash: "Need $n more"', () => {
@@ -319,6 +426,35 @@ describe('build session: Bulldoze, inspect and Esc (03 §4.7, §6.3)', () => {
     expect(r.f.entities().some((e) => e.kind === 'bin' && !e.rusted)).toBe(true);
   });
 
+  it('the Bulldoze chip refunds a crossing as the factory does, and says the crossing line goes (BUILD-8)', () => {
+    const r = rig();
+    r.app.enterBuild();
+    r.s.arm('belt');
+    stroke(r.s, [r.yard(22, 3), r.yard(22, 6)]);
+    expect(r.s.confirm()).toBe(true);
+    stroke(r.s, [r.yard(21, 4), r.yard(23, 4)]);
+    expect(r.s.confirm()).toBe(true);
+    expect(r.belts()).toBe(6);
+    r.s.arm('bulldoze');
+    stroke(r.s, [r.yard(22, 3), r.yard(22, 6)]);
+    expect(r.s.chip()).toEqual({ text: 'Remove 4 belts, 1 crossing · refund $25', tone: 'bad' });
+    const cash = r.world.wallet.cash;
+    expect(r.s.confirm()).toBe(true);
+    expect(r.world.wallet.cash).toBe(cash + 25);
+    expect(r.belts()).toBe(2);
+  });
+
+  it('bulldozing the rusted survey set warns that it is not free to get back (BUILD-4)', () => {
+    const r = rig();
+    r.app.enterBuild();
+    r.s.arm('bulldoze');
+    tapAt(r.s, r.yard(26, 1));
+    expect(r.s.chip()).toEqual({ text: 'Remove survey Headframe · rebuild $200', tone: 'bad' });
+    tapAt(r.s, r.yard(26, 1)); // a second tap unmarks it
+    tapAt(r.s, r.yard(26, 4));
+    expect(r.s.chip()).toEqual({ text: 'Remove survey Smelter · rebuild $300', tone: 'bad' });
+  });
+
   it('with no tool a tap inspects; Esc closes, clears, disarms, then lets build mode exit', () => {
     const r = rig();
     r.app.enterBuild();
@@ -337,10 +473,9 @@ describe('build session: Bulldoze, inspect and Esc (03 §4.7, §6.3)', () => {
     expect(r.s.back()).toBe(false);
   });
 
-  it('long-press inspects even with a tool armed', () => {
+  it('a long-press inspects (the gesture machine sends one only with no tool armed, BUILD-1)', () => {
     const r = rig();
     r.app.enterBuild();
-    r.s.arm('belt');
     const p = r.yard(26, 1);
     r.s.longPress(p.x, p.y);
     expect(r.f.entity(r.s.inspectId ?? -1)?.kind).toBe('headframe');
@@ -380,13 +515,16 @@ describe('build session: underground (02 §2.3–2.6; 03 §4.4–4.6)', () => {
     expect(r.s.plane).toBe('mine');
     expect(r.s.tool).toBe('autoDrill');
     expect(r.s.pending).toEqual({ t: 'piece', kind: 'autoDrill', ...r.f.surveyPlan().drill, dir: DIR.S });
+    expect(r.s.tab.mine).toBe('extract'); // the armed Drill card is in view (BUILD-11)
     expect(r.s.error).toBeNull();
     expect(r.s.chip()?.text).toBe('Auto-Drill · 1 Auto-Drill Kit');
     expect(r.s.confirm()).toBe(true);
     expect(r.f.ghosts().map((g) => g.kind)).toEqual(['autoDrill']);
     expect(r.s.routeFrom).not.toBeNull();
+    r.s.setTab('tools');
     expect(r.s.routeToSurface()).toBe(true);
     expect(r.s.tool).toBe('lift');
+    expect(r.s.tab.mine).toBe('logistics');
     expect(r.s.pending).toEqual({ t: 'lift', x: r.c, foot: r.lode.top - 1, top: 0, headframe: { state: 'existing', x0: 26 } });
     expect(r.s.chip()?.text).toBe('H 45 · Foot Kit + 1 Rail · 30/min · 30 s');
     expect(r.s.confirm()).toBe(true);

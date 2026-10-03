@@ -1,9 +1,11 @@
-// Build mode (03 §4; canon §4.11) on a fresh MVP claim, driven by real CDP touch events (04 §11.3): BUILD on the
-// Rim, a 3-tile belt painted from the rusted Headframe toward the Smelter, a Storage Bin placed and confirmed, undo
-// and redo from the dock, ✕ Done; plus the 03 §13 two-pointer test (a second finger turns a stroke into the camera,
-// nothing committed). Touches aim at cells through the renderer's cellToScreen, 44 pt below the lifted point.
+// Build mode (03 §4; canon §4.11) on a fresh MVP claim, driven by real CDP touch events (04 §11.3): BUILD where
+// the claim starts (no parking: the Yard opens on Pip, 03 §4.1), one-finger pans to the rusted survey set, a 3-tile
+// belt painted from the Headframe toward the Smelter, a Storage Bin placed and confirmed, undo and redo from the
+// dock, ✕ Done; the 03 §13 two-pointer test (a second finger turns a stroke into the camera, nothing committed);
+// and the BUILD-1 / BUILD-3 regressions (a finger resting before it paints; a pinch with one finger on the dock band).
+// Touches aim at cells through the renderer's cellToScreen, 44 pt below the lifted point.
 import { expect, test, type CDPSession, type Page } from '@playwright/test';
-import { bootGame, driveTo, pressPlay } from './helpers';
+import { bootGame, pressPlay } from './helpers';
 
 const LIFT = 44;
 
@@ -28,9 +30,10 @@ async function tapSelector(cdp: CDPSession, page: Page, selector: string): Promi
   await tap(cdp, page, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
 }
 
-/** Drag through `pts` in ≤ 14-pt moves: the first leaves the 10-pt tap slop at once. */
-async function drag(cdp: CDPSession, page: Page, pts: Pt[]): Promise<void> {
+/** Drag through `pts` in ≤ 14-pt moves: the first leaves the 10-pt tap slop at once (after `holdMs` resting still). */
+async function drag(cdp: CDPSession, page: Page, pts: Pt[], holdMs = 0): Promise<void> {
   await touch(cdp, 'touchStart', [pts[0]]);
+  if (holdMs > 0) await page.waitForTimeout(holdMs);
   for (let k = 1; k < pts.length; k++) {
     const a = pts[k - 1];
     const b = pts[k];
@@ -48,9 +51,9 @@ async function drag(cdp: CDPSession, page: Page, pts: Pt[]): Promise<void> {
  * Finger points (44 pt under each Yard cell's centre) for the first candidate whose fingers all land on the canvas,
  * inside the world area and clear of the dock; null when none does.
  */
-async function fingersFor(page: Page, candidates: [number, number][][]): Promise<{ cells: [number, number][]; pts: Pt[] } | null> {
+async function fingersFor(page: Page, candidates: [number, number][][], margin = 8): Promise<{ cells: [number, number][]; pts: Pt[] } | null> {
   return page.evaluate(
-    ({ candidates, lift }) => {
+    ({ candidates, lift, m }) => {
       const hf = window.__hf!;
       const area = hf.build!.area;
       for (const cells of candidates) {
@@ -58,20 +61,49 @@ async function fingersFor(page: Page, candidates: [number, number][][]): Promise
           const s = hf.cellToScreen('yard', x, y);
           return { x: s.x, y: s.y + lift };
         });
-        const ok = pts.every((p) => p.x > 8 && p.x < area.x1 - 8 && p.y > area.y0 + 8 && p.y < area.y1 - 12 && document.elementFromPoint(p.x, p.y)?.id === 'game');
+        const ok = pts.every(
+          (p) => p.x > area.x0 + m && p.x < area.x1 - m && p.y > area.y0 + m && p.y < area.y1 - Math.max(12, m) && document.elementFromPoint(p.x, p.y)?.id === 'game',
+        );
         if (ok) return { cells, pts };
       }
       return null;
     },
-    { candidates, lift: LIFT },
+    { candidates, lift: LIFT, m: margin },
   );
 }
+
+/** Clear of the 40-pt edge auto-pan margin (canon §3.12): a stroke there would scroll the view under the finger. */
+const NO_EDGE_PAN = 48;
 
 const beltTiles = (page: Page): Promise<number> => page.evaluate(() => Array.from(window.__hf!.world.factory!.beltWords('yard')).filter((w) => w !== 0).length);
 const bins = (page: Page): Promise<number> => page.evaluate(() => window.__hf!.world.factory!.entities().filter((e) => e.kind === 'bin').length);
 
-/** A fresh claim with Belts and Bins unlocked (U2 stands in for the first lode), $2,020, in build mode on the Rim. */
-async function enterBuildOnRim(page: Page, cdp: CDPSession): Promise<number> {
+/**
+ * Pan the build view with one-finger drags (no tool armed: a drag pans, 03 §4.2) until Yard cell (x, y) sits near
+ * the middle of the world area.
+ */
+async function panToCell(page: Page, cdp: CDPSession, x: number, y: number): Promise<void> {
+  for (let i = 0; i < 16; i++) {
+    const g = await page.evaluate(
+      ([x, y]) => {
+        const hf = window.__hf!;
+        const a = hf.build!.area;
+        return { s: hf.cellToScreen('yard', x, y), c: { x: (a.x0 + a.x1) / 2, y: (a.y0 + a.y1) / 2 } };
+      },
+      [x, y] as const,
+    );
+    const dx = g.c.x - g.s.x;
+    const dy = g.c.y - g.s.y;
+    if (Math.hypot(dx, dy) < 40) return;
+    const k = Math.min(1, 120 / Math.max(Math.abs(dx), Math.abs(dy)));
+    const from = { x: g.c.x - (dx * k) / 2, y: g.c.y - (dy * k) / 2 };
+    await drag(cdp, page, [from, { x: from.x + dx * k, y: from.y + dy * k }]);
+  }
+  throw new Error(`could not pan Yard cell ${x},${y} into view`);
+}
+
+/** A fresh claim with Belts and Bins unlocked (U2 stands in for the first lode), $2,020, in build mode where it starts. */
+async function enterBuild(page: Page, cdp: CDPSession): Promise<number> {
   await pressPlay(page);
   const set = await page.evaluate(() => window.__hf!.world.factory!.entities().map((e) => ({ kind: e.kind, x: e.x, y: e.y, rusted: e.rusted })));
   // U0: the rusted survey set over Dot's shaft (02 §2.2): Headframe rows 1–2, Smelter rows 4–5, Bin rows 7–8.
@@ -86,23 +118,55 @@ async function enterBuildOnRim(page: Page, cdp: CDPSession): Promise<number> {
     hf.giveCash(2_000);
   });
   const x0 = set[0].x;
-  // Park beside the Headframe (the play camera follows the pod; the build camera centres on the Headframe).
-  await driveTo(page, x0 + 2);
+  // BUILD where the claim starts, far from the Headframe: no parking.
   const context = page.locator('.hf-context[data-context="build"]');
   await expect(context).toBeVisible({ timeout: 10_000 });
   await tapSelector(cdp, page, '.hf-context[data-context="build"]');
   await expect.poll(() => page.evaluate(() => window.__hf!.mode())).toBe('build');
   await expect(page.locator('.hf-dock')).toBeVisible();
   await expect(page.locator('.hf-hud')).toHaveCount(0);
+  // 03 §4.1: the Yard opens on the Headframe within 12 columns of Pip, else on Pip.
+  const view = await page.evaluate(() => ({ cam: window.__hf!.build!.cam, pod: window.__hf!.pod() }));
+  const hfCentre = x0 + 1;
+  expect(view.cam.plane).toBe('yard');
+  expect(view.cam.cx).toBeCloseTo(Math.abs(hfCentre - view.pod.x) <= 12 ? hfCentre : view.pod.x, 3);
   // Build controls ignore the opening tap's trailing click for 400 ms.
   await page.waitForTimeout(450);
+  await panToCell(page, cdp, x0 + 1, 4);
   return x0;
 }
 
-test('build mode on the Rim: paint belts, place a Bin, undo, redo and exit with real touches', async ({ page, context }) => {
+/** A point in the dock band between its buttons (the band shows the world through it but is not the canvas). */
+async function dockGap(page: Page): Promise<Pt> {
+  const gap = await page.evaluate(() => {
+    const d = document.querySelector('.hf-dock')!.getBoundingClientRect();
+    const y = d.top + d.height / 2;
+    for (let x = 4; x < d.right - 4; x += 2) if (document.elementFromPoint(x, y)?.classList.contains('hf-dock')) return { x, y };
+    return null;
+  });
+  expect(gap, 'a gap in the dock band').not.toBeNull();
+  return gap!;
+}
+
+/** Two fingers spreading apart: `a` on the canvas, `b` wherever it lands. */
+async function pinchOut(cdp: CDPSession, page: Page, a: Pt, b: Pt): Promise<void> {
+  await touch(cdp, 'touchStart', [{ ...a, id: 1 }, { ...b, id: 2 }]);
+  await page.waitForTimeout(30);
+  for (let i = 1; i <= 8; i++) {
+    await touch(cdp, 'touchMove', [
+      { x: a.x + i * 3, y: a.y - i * 6, id: 1 },
+      { x: b.x - i * 3, y: b.y + Math.min(i * 2, 10), id: 2 },
+    ]);
+    await page.waitForTimeout(20);
+  }
+  await touch(cdp, 'touchEnd', []);
+  await page.waitForTimeout(200);
+}
+
+test('build mode: pan to the survey set, paint belts, place a Bin, undo, redo and exit with real touches', async ({ page, context }) => {
   const { errors } = await bootGame(page);
   const cdp = await context.newCDPSession(page);
-  const x0 = await enterBuildOnRim(page, cdp);
+  const x0 = await enterBuild(page, cdp);
   expect(await page.evaluate(() => window.__hf!.app.podRunning())).toBe(false);
   expect(await page.evaluate(() => window.__hf!.buildFrame()?.plane)).toBe('yard');
 
@@ -165,7 +229,7 @@ test('build mode on the Rim: paint belts, place a Bin, undo, redo and exit with 
 test('a second finger during a stroke becomes the camera: nothing is committed (03 §13)', async ({ page, context }) => {
   const { errors } = await bootGame(page);
   const cdp = await context.newCDPSession(page);
-  const x0 = await enterBuildOnRim(page, cdp);
+  const x0 = await enterBuild(page, cdp);
   await tapSelector(cdp, page, '[data-tool="belt"]');
   const path = await fingersFor(page, [
     [[x0 + 2, 2], [x0 + 2, 3]],
@@ -187,5 +251,51 @@ test('a second finger during a stroke becomes the camera: nothing is committed (
   expect(await beltTiles(page)).toBe(0);
   expect(await page.evaluate(() => window.__hf!.mode())).toBe('build');
   expect(await page.evaluate(() => window.__hf!.build!.tool)).toBe('belt');
+  expect(errors).toEqual([]);
+});
+
+test('a finger resting before it paints still paints; a pinch with one finger on the dock band commits nothing (BUILD-1, BUILD-3)', async ({ page, context }) => {
+  const { errors } = await bootGame(page);
+  const cdp = await context.newCDPSession(page);
+  const x0 = await enterBuild(page, cdp);
+  await tapSelector(cdp, page, '[data-tool="belt"]');
+  // Free rows 3 and 6 run between the survey Headframe, Smelter and Bin, through the middle of the view.
+  const runs: [number, number][][] = [];
+  for (const y of [3, 6, 2])
+    for (const dx of [-1, 0, 1, -3, 3, -4, 4, -2, 2]) {
+      const x = dx < 0 ? x0 + dx - 2 : x0 + dx;
+      runs.push([[x, y], [x + 1, y], [x + 2, y]]);
+    }
+  const path = await fingersFor(page, runs, NO_EDGE_PAN);
+  expect(path, 'a free 3-tile run on screen').not.toBeNull();
+
+  // ---- BUILD-1: rest 600 ms to aim (past the 450-ms long-press), then drag: a stroke, not an inspect sheet.
+  await drag(cdp, page, path!.pts, 600);
+  expect(await page.evaluate(() => window.__hf!.build!.pending)).toEqual({ t: 'path', cells: path!.cells.map(([x, y]) => ({ x, y })) });
+  expect(await page.evaluate(() => window.__hf!.build!.inspectId)).toBeNull();
+  await tapSelector(cdp, page, '[data-dock="clear"]');
+  expect(await page.evaluate(() => window.__hf!.build!.pending)).toBeNull();
+
+  // ---- BUILD-3: finger 1 on the canvas, finger 2 in the dock band: the camera zooms, nothing is painted.
+  const gap = await dockGap(page);
+  const ppu0 = await page.evaluate(() => window.__hf!.build!.cam.ppu);
+  await pinchOut(cdp, page, path!.pts[1], gap);
+  expect(await page.evaluate(() => window.__hf!.build!.pending)).toBeNull();
+  expect(await page.evaluate(() => window.__hf!.build!.cam.ppu)).toBeGreaterThan(ppu0);
+  expect(await beltTiles(page)).toBe(0);
+
+  // ---- …and under Instant build a Bin is not placed by it either.
+  await page.evaluate(() => window.__hf!.app.updateSettings({ instantBuild: true }));
+  await tapSelector(cdp, page, '.hf-tab:has-text("Storage")');
+  await tapSelector(cdp, page, '[data-tool="bin"]');
+  const cash = await page.evaluate(() => window.__hf!.cash());
+  const at = await page.evaluate(() => {
+    const a = window.__hf!.build!.area;
+    return { x: (a.x0 + a.x1) / 2, y: a.y1 - 80 };
+  });
+  await pinchOut(cdp, page, at, await dockGap(page));
+  expect(await bins(page)).toBe(1);
+  expect(await page.evaluate(() => window.__hf!.cash())).toBe(cash);
+  expect(await page.evaluate(() => window.__hf!.mode())).toBe('build');
   expect(errors).toEqual([]);
 });

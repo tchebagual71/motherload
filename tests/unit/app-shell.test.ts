@@ -221,6 +221,35 @@ describe('Sign-tap auto-drive in the app (01 §3.10; SIM-3, INT-10)', () => {
     expect(app.driveTarget).toBeNull();
   });
 
+  it('a hole Pip cannot skim on the way: no drive, a "Hole in the way" toast, no fall (PLAYER-4)', () => {
+    const w = newWorld();
+    const assay = RIM_BUILDINGS[1];
+    standOnRim(w, (assay.x0 + assay.x1 + 1) / 2);
+    for (const x of [8, 9]) for (let r = 0; r < 3; r++) w.terrain.set(x, r, T.AIR); // the Tutorial Patch, dug
+    const { app, step } = makeApp(w);
+    const hull = w.pod.hull;
+    app.signTap('pump');
+    expect(app.driveTarget).toBeNull();
+    expect(toastTexts(app)).toEqual([NOTICE.holeAhead]);
+    step(120);
+    expect(w.onRim()).toBe(true);
+    expect(w.pod.hull).toBe(hull);
+    expect(app.state.sheet.value).not.toBe('pump');
+  });
+
+  it('a drive that ends with Pip off the Rim says so instead of stopping silently', () => {
+    const w = newWorld();
+    const { app, step } = makeApp(w);
+    app.signTap('garage');
+    step(10);
+    expect(app.driveTarget).toBe('garage');
+    w.debugTeleport(5); // e.g. knocked into a hole
+    step(1);
+    expect(app.driveTarget).toBeNull();
+    expect(toastTexts(app)).toContain(NOTICE.driveLeftRim);
+    for (const t of [NOTICE.holeAhead, NOTICE.driveLeftRim, NOTICE.driveStuck]) expect(t.length).toBeLessThanOrEqual(40);
+  });
+
   it('any stick or THRUST input cancels the drive; so do a sheet or an interrupt', () => {
     const w = newWorld();
     const { app, step } = makeApp(w);

@@ -1,5 +1,6 @@
 // Trip summary on Rim arrival (01 §2.3; 03 §6.3): "312ft · $1,240 · 4.1 L · −0 HP · 3:22", then ≤ 3 Next Goals
-// chips. Leaves after 4 s or on a tap; while a sheet covers it the clock restarts when it shows again.
+// chips. Leaves after 4 s or on a tap; while a sheet covers it the clock restarts when it shows again. The story
+// feed keeps its Next Goals current (a new object, same trip): that neither restarts the clock nor survives a tap.
 import type { JSX } from 'preact';
 import { useEffect } from 'preact/hooks';
 import type { AppController, TripSummary } from '../../app/types';
@@ -23,12 +24,12 @@ export function tripLine(t: TripSummary): string {
 
 export function TripSummaryCard({ app, summary }: { app: AppController; summary: TripSummary }): JSX.Element {
   const dismiss = (): void => {
-    if (app.state.tripSummary.peek() === summary) app.state.tripSummary.value = null;
+    if (app.state.tripSummary.peek()?.trip === summary.trip) app.state.tripSummary.value = null;
   };
   useEffect(() => {
     const t = setTimeout(dismiss, TRIP_SUMMARY_MS);
     return () => clearTimeout(t);
-  }, [summary]);
+  }, [summary.trip]);
   const haul = `${summary.collected} ${summary.collected === 1 ? 'item' : 'items'}`;
   return (
     <button type="button" class="hf-trip" data-tap="" aria-label={`Trip ${summary.trip} summary: ${tripLine(summary)}. Tap to close`} onClick={dismiss}>

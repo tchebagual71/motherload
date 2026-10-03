@@ -206,21 +206,20 @@ function writeCargo(w: ByteWriter, cargo: readonly CargoItem[]): void {
   }
 }
 
-function readKit(r: ByteReader, version: number): CargoItem {
+function readKit(r: ByteReader): CargoItem {
   const id = r.str('kit id', MAX_KIT_ID);
-  if (version < 1) return { kind: 'kit', id };
   const units = r.int(r.u8('kit units'), 0, kitUnits(id), 'kit units');
   return units === 0 ? { kind: 'kit', id } : { kind: 'kit', id, units };
 }
 
-function readCargo(r: ByteReader, version: number): CargoItem[] {
+function readCargo(r: ByteReader): CargoItem[] {
   const n = r.int(r.u16('cargo count'), 0, MAX_CARGO, 'cargo count');
   const cargo: CargoItem[] = [];
   for (let i = 0; i < n; i++) {
     const kind = r.u8('cargo kind');
     if (kind === CARGO_MINERAL) cargo.push({ kind: 'mineral', tier: r.int(r.u8('mineral tier'), 1, MINERALS.length, 'mineral tier') });
     else if (kind === CARGO_RELIC) cargo.push({ kind: 'relic', id: r.int(r.u8('relic id'), 0, RELICS.length - 1, 'relic id') });
-    else if (kind === CARGO_KIT) cargo.push(readKit(r, version));
+    else if (kind === CARGO_KIT) cargo.push(readKit(r));
     else bounds('cargo kind', kind);
   }
   return cargo;
@@ -309,8 +308,7 @@ function readQuickSlots(r: ByteReader): ConsumableId[] {
   return slots;
 }
 
-/** `version` is the file's HFSV version: 0 (M0) has no Kit units. */
-export function readPod(r: ByteReader, version: number): PodState {
+export function readPod(r: ByteReader): PodState {
   const x = r.finite(0, MINE_W, 'pod x');
   const y = r.finite(Y_MIN, Y_MAX, 'pod y');
   const vx = r.finite(-MAX_SPEED, MAX_SPEED, 'pod vx');
@@ -322,7 +320,7 @@ export function readPod(r: ByteReader, version: number): PodState {
   const fuel = r.finite(0, MAX_TANK_OR_HULL, 'fuel');
   const hull = r.finite(0, MAX_TANK_OR_HULL, 'hull');
   const tiers = readTiers(r);
-  const cargo = readCargo(r, version);
+  const cargo = readCargo(r);
   const consumables = readConsumables(r);
   const quickSlots = readQuickSlots(r);
   const dig = readDig(r);

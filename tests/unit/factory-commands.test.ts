@@ -113,6 +113,18 @@ describe('factory commands: §2.5 placement codes', () => {
     expect(r.f.canPlace('headframe', 1, 25, 1, 0)).toBeNull();
   });
 
+  it('E_COLUMN: a lift reaching row 0 needs a valid Headframe column (02 §2.2, §2.5)', () => {
+    const g = onboardingGrid();
+    carve(g, 0, 0, 0, 6);
+    carve(g, 5, 0, 5, 6);
+    const r = rig({}, g);
+    r.f.discoverLode(0, false);
+    // Column 0: no Headframe fits over it (columns 1–4 lie under the Pump House), so the lift could never deliver.
+    expect(r.f.canPlaceGhost({ kind: 'lift', x: 0, foot: 6, top: 0 })).toEqual({ ok: false, code: 'E_COLUMN', x: 0 });
+    expect(r.f.canPlaceGhost({ kind: 'lift', x: 0, foot: 6, top: 1 })).toBeNull(); // stops short of the Yard
+    expect(r.f.canPlaceGhost({ kind: 'lift', x: 5, foot: 6, top: 0 })).toBeNull();
+  });
+
   it('E_ARENA: nothing at or below the Seal row', () => {
     const g = onboardingGrid();
     carve(g, 10, 583, 12, 590);
@@ -165,6 +177,32 @@ describe('factory commands: completeGhost atomicity (02 §2.6, §10.11 #8)', () 
     r.grid.terrain[r.grid.idx(32, 23)] = T.DIRT;
     r.f.tileChanged([{ x: 32, y: 23 }]);
     expect(r.f.ghosts()).toHaveLength(0);
+  });
+
+  it('re-checks support: a floor mount whose floor is dug or blasted away is dropped (tileChanged, 02 §10.10)', () => {
+    const r = hall();
+    const { f, grid } = r;
+    must(f.placeGhost({ kind: 'belt', x: 30, y: 23, dir: 0, length: 2 }));
+    must(f.placeGhost({ kind: 'router', x: 34, y: 23 }));
+    must(f.placeGhost({ kind: 'belt', x: 36, y: 23, dir: 0, length: 2 }));
+    const v = f.topologyVersion;
+    // A dig clears the floor under the first run's second tile: that job could never complete.
+    grid.terrain[grid.idx(31, 24)] = T.AIR;
+    f.tileChanged([{ x: 31, y: 24 }]);
+    expect(f.ghosts().map((g) => [g.kind, g.x])).toEqual([
+      ['router', 34],
+      ['belt', 36],
+    ]);
+    expect(f.topologyVersion).toBeGreaterThan(v);
+    // A blast square: only the job whose floor went is dropped; jobs beside it keep theirs.
+    grid.terrain[grid.idx(34, 24)] = T.AIR;
+    f.tileChanged([33, 34, 35, 36].flatMap((x) => [22, 23, 24].map((y) => ({ x, y }))));
+    expect(f.ghosts().map((g) => [g.kind, g.x])).toEqual([['belt', 36]]);
+    // The records keep the dropped jobs' shapes, re-checked on redo: the floor is still gone.
+    must(f.undo()); // the run at x 36
+    must(f.undo()); // the Router: already dropped, nothing to remove
+    expect(f.redo()).toMatchObject({ ok: false, code: 'E_FLOOR', x: 34, y: 23 });
+    expect(f.ghosts()).toEqual([]);
   });
 });
 
@@ -286,6 +324,81 @@ describe('factory commands: undo / redo (02 §2.7; canon §4.11)', () => {
     expect(f.ghosts().map((g) => [g.kind, g.x, g.y])).toEqual([['router', 35, 23]]);
   });
 
+  it('undo of a placement follows Deconstruct: blocked without Stockpile room, never scrapping contents (02 §2.7)', () => {
+    const r = rig({ yardRows: 16 });
+    const { f, wallet } = r;
+    f.discoverLode(0, false);
+    const bin = must(f.place('bin', 1, 30, 5, 0)).id;
+    must(f.stockpilePut([{ item: 'copperIngot', n: 300 }])); // 200 fill the survey Bin, 100 land in the new one
+    expect(f.deconstruct(bin)).toEqual({ ok: false, code: 'E_STOCKPILE_FULL', need: 100 });
+    expect(f.undo()).toEqual({ ok: false, code: 'E_STOCKPILE_FULL', need: 100 });
+    expect(f.entity(bin)).not.toBeNull();
+    expect(f.stockpileCount('copperIngot')).toBe(300);
+    expect(f.debug.counts.scrapped).toBe(0);
+    expect(f.canUndo).toBe(true); // the step stays for later
+    must(f.stockpileTake([{ item: 'copperIngot', n: 150 }]));
+    expect(f.undo()).toEqual({ ok: true, refund: 250 });
+    expect(f.entity(bin)).toBeNull();
+    expect(f.stockpileCount('copperIngot')).toBe(150);
+    expect(wallet.cashNow).toBe(100_000);
+    expect(f.debug.conservationOk()).toBe(true);
+  });
+
+  it('redo of a deconstruct is blocked the same way', () => {
+    const r = rig({ yardRows: 16 });
+    const { f } = r;
+    f.discoverLode(0, false);
+    must(f.deconstruct(must(f.place('bin', 1, 30, 5, 0)).id));
+    must(f.undo());
+    const again = f.entities().find((e) => e.kind === 'bin' && e.x === 30)!.id;
+    must(f.stockpilePut([{ item: 'gear', n: 300 }]));
+    expect(f.redo()).toEqual({ ok: false, code: 'E_STOCKPILE_FULL', need: 100 });
+    expect(f.inspect(again)?.contents).toEqual([{ item: 'gear', n: 100 }]);
+    expect(f.debug.counts.scrapped).toBe(0);
+    expect(f.canRedo).toBe(true);
+  });
+
+  it('deconstructing a lift takes its pending rail jobs along; one undo brings foot and rails back (02 §2.6)', () => {
+    const r = rig();
+    const { f } = r;
+    f.discoverLode(0, false);
+    const ids = must(f.placeGhost({ kind: 'lift', ...f.surveyPlan().lift })).ids;
+    expect(f.ghosts().map((g) => [g.part, g.y, g.h])).toEqual([
+      ['foot', 14, 32],
+      ['rail', 0, 14],
+    ]);
+    must(f.completeGhost(ids[0], POD_AWAY, new Cargo({ liftFoot: 1 })));
+    must(f.deconstruct(f.entities().find((e) => e.kind === 'lift')!.id));
+    // No rail job is left waiting for a lift that is gone (it could never complete).
+    expect(f.ghosts()).toEqual([]);
+    expect(f.stockpileCount('kit:liftFoot')).toBe(1);
+    must(f.undo());
+    expect(f.ghosts().map((g) => [g.part, g.y, g.h])).toEqual([
+      ['foot', 14, 32],
+      ['rail', 0, 14],
+    ]);
+    const cargo = new Cargo({ liftFoot: 1, liftRail: 1 });
+    for (const g of f.ghosts()) must(f.completeGhost(g.id, POD_AWAY, cargo));
+    expect(f.entities().find((e) => e.kind === 'lift')).toMatchObject({ y: 0, h: 46 });
+    // The same full shaft can be laid again after a deconstruct (no stray rail job holds its column).
+    must(f.deconstruct(f.entities().find((e) => e.kind === 'lift')!.id));
+    expect(f.canPlaceGhost({ kind: 'lift', ...f.surveyPlan().lift })).toBeNull();
+  });
+
+  it('removing a pending lift job drops the rail jobs stacked on it; undo re-adds them', () => {
+    const r = rig();
+    const { f } = r;
+    f.discoverLode(0, false);
+    must(f.placeGhost({ kind: 'lift', ...f.surveyPlan().lift }));
+    must(f.removeGhost(f.ghosts().find((g) => g.part === 'foot')!.id));
+    expect(f.ghosts()).toEqual([]);
+    must(f.undo());
+    expect(f.ghosts().map((g) => g.part)).toEqual(['foot', 'rail']);
+    // A rail job alone goes alone; the foot under it stays.
+    must(f.removeGhost(f.ghosts().find((g) => g.part === 'rail')!.id));
+    expect(f.ghosts().map((g) => g.part)).toEqual(['foot']);
+  });
+
   it('keeps at least 50 steps', () => {
     const r = rig({ yardRows: 16 });
     const { f } = r;
@@ -307,6 +420,28 @@ describe('factory commands: unlocks, Yard, Stockpile, away', () => {
     must(f.expandYard());
     expect(wallet.cashNow).toBe(97_500);
     expect(f.expandYard()).toEqual({ ok: false, code: 'E_LOCKED', rung: 'U8' });
+  });
+
+  it('lode purity: unknown after a Tin Ear discovery until the first drilled ore (02 §3.6), and saved', () => {
+    const r = rig();
+    const { f } = r;
+    f.discoverLode(0, false);
+    expect(f.purityKnown(0)).toBe(false);
+    must(f.completeGhost(must(f.placeGhost({ kind: 'autoDrill', ...f.surveyPlan().drill })).ids[0], POD_AWAY, new Cargo({ autoDrill: 1 })));
+    const load = (bytes: Uint8Array): Factory => Factory.deserialize(bytes, { grid: cloneGrid(r.grid), wallet: new Wallet(), emit: () => {} }, { scope: 'mvp', surveyColumn: ONBOARD.column, scriptedLodeId: 0 });
+    expect(load(f.serialize()).purityKnown(0)).toBe(false);
+    const drill = f.entities().find((e) => e.kind === 'autoDrill')!.id;
+    for (let t = 0; t < 2_000 && (f.inspect(drill)?.output.length ?? 0) === 0; t++) {
+      expect(f.purityKnown(0)).toBe(false);
+      f.tick();
+    }
+    expect(f.inspect(drill)?.output).toEqual([{ item: 'copperOre', n: 1 }]);
+    expect(f.purityKnown(0)).toBe(true);
+    expect(load(f.serialize()).purityKnown(0)).toBe(true);
+    // A discovery that shows it (fixed purity, or a Dowser) sets it at once.
+    const known = rig();
+    known.f.discoverLode(0, true);
+    expect(known.f.purityKnown(0)).toBe(true);
   });
 
   it('PartsLedger reads and takes Stockpile parts', () => {

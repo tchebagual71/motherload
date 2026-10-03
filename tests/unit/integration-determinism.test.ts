@@ -17,7 +17,9 @@ const SAMPLE = 600;
  * A deliberate sim change (pod, terrain, story, economy or factory rules) moves them: re-run this file, check
  * that only the intended behaviour changed, and update both numbers in the same commit.
  */
-const GOLDEN = { world: 0x99ae93e5, factory: 0x1da9e652 };
+// world moved from 0x99ae93e5: the story now marks the Starter Kit collected at the Shed (ob:kit is written to
+// STRY at the claim, not at the scripted lode's discovery). The factory hash is unchanged.
+const GOLDEN = { world: 0x6ab430e0, factory: 0x1da9e652 };
 
 function must<T extends { ok: boolean }>(r: T): T {
   if (!r.ok) throw new Error(JSON.stringify(r));

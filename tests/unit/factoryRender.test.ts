@@ -1,5 +1,9 @@
+import { performance } from 'node:perf_hooks';
 import { BackSide, InstancedMesh, ShaderLib, type BufferAttribute, type InstancedBufferAttribute, type Material, type WebGLProgramParametersWithUniforms, type WebGLRenderer } from 'three';
 import { describe, expect, it, vi } from 'vitest';
+import { benchWorld } from '../../src/debug/bench';
+import { NO_INTENT } from '../../src/pod/types';
+import { LAYER_LATE } from '../../src/render/materials';
 import { ITEMS, item } from '../../src/factory/items';
 import type { BuildingKind, FactoryApi, ViewRect } from '../../src/factory/api';
 import { MaterialKit } from '../../src/render/materials';
@@ -10,8 +14,10 @@ import { SHAPE_CORNER, SHAPE_JUNCTION, SHAPE_STRAIGHT, beltTiles, pathTiles } fr
 import { buildItemTable, itemLook } from '../../src/render/factory/itemLooks';
 import * as Models from '../../src/render/factory/models';
 import { BUBBLE_GLYPH, GHOST_STYLE, createGlyphAtlas } from '../../src/render/factory/overlayMaterials';
-import { buildPose, newPose, screenRay } from '../../src/render/factory/projection';
-import { FactoryView, dirAngle, type FactoryFrame } from '../../src/render/factory/view';
+import { buildPose, newPose, planeViewRect, screenRay } from '../../src/render/factory/projection';
+import { BUBBLE_TEXT, statusGlyph } from '../../src/render/factory/status';
+import { BUBBLE_PT, FactoryView, REGION, dirAngle, regionKey, type FactoryFrame } from '../../src/render/factory/view';
+import { INST_HIDDEN } from '../../src/render/materials/glsl';
 import type { BuildFrame } from '../../src/render/api';
 import { ONBOARD, POD_AWAY, Cargo, buildOnboarding, carve, rig, ticks } from './factory.helpers';
 
@@ -118,7 +124,7 @@ describe('factory render: structure from the views (04 §3.3, §5.3)', () => {
     view.bind(f);
     const spy = vi.spyOn(f, 'entities');
     view.update(frame(f));
-    for (const k of ['headframe', 'smelter', 'bin', 'autoDrill', 'liftRail', 'liftFoot', 'liftStrand']) expect(count(view, `factory-${k}`), k).toBe(1);
+    for (const k of ['headframe', 'smelter', 'bin', 'autoDrill', 'liftFoot']) expect(count(view, `factory-${k}`), k).toBe(1);
     expect(count(view, 'factory-liftHead')).toBe(0); // the top is the Rim: the Headframe's sheave takes over
     expect(count(view, 'factory-liftTie')).toBe(15);
     expect(count(view, 'factory-belt')).toBe(2);
@@ -126,10 +132,19 @@ describe('factory render: structure from the views (04 §3.3, §5.3)', () => {
     expect(count(view, 'factory-sheave')).toBe(1);
     expect(inst(view, 'factory-smelter', 0)[1]).toBe(1); // rusted survey skin
     expect(inst(view, 'factory-autoDrill', 0)[1]).toBe(0);
-    // The lift rails span the whole column: foot row 45 up to the Rim (y 0).
+    // The lift rails span the whole column, foot row 45 up to the Rim (y 0), in one piece per culling band.
+    const bands = Math.ceil(ONBOARD.top / REGION);
+    expect(count(view, 'factory-liftRail')).toBe(bands);
     const rails = mesh(view, 'factory-liftRail').instanceMatrix.array as Float32Array;
-    expect(rails[5]).toBe(ONBOARD.top);
-    expect(rails[13]).toBe(-ONBOARD.top);
+    const spans = Array.from({ length: bands }, (_, i) => [rails[i * 16 + 13], rails[i * 16 + 13] + rails[i * 16 + 5]]).sort((a, b) => a[0] - b[0]);
+    expect(spans[0][0]).toBe(-ONBOARD.top);
+    expect(spans[bands - 1][1]).toBe(0);
+    for (let i = 1; i < bands; i++) expect(spans[i][0]).toBe(spans[i - 1][1]); // no gaps, no overlaps
+    // The chain strands too, plus their climb from the shaft mouth to the Headframe's sheave.
+    expect(count(view, 'factory-liftStrand')).toBe(bands + 1);
+    const strands = mesh(view, 'factory-liftStrand').instanceMatrix.array as Float32Array;
+    const tops = Array.from({ length: bands + 1 }, (_, i) => strands[i * 16 + 13] + strands[i * 16 + 5]);
+    expect(Math.max(...tops)).toBeCloseTo(Models.SHEAVE_Y, 5);
     // The survey Smelter faces S (away from the Rim): local +x → world −z.
     const sm = mesh(view, 'factory-smelter').instanceMatrix.array as Float32Array;
     expect(sm[2]).toBeCloseTo(-1, 9);
@@ -326,6 +341,260 @@ describe('factory render: structure from the views (04 §3.3, §5.3)', () => {
     const ys = Array.from({ length: m.count }, (_, i) => translation(view, 'factory-belt', i)[1]);
     expect(ys.filter((y) => y === -ONBOARD.top)).toHaveLength(3);
     expect((m.instanceMatrix.array as Float32Array)[5 + 16 * ys.indexOf(-ONBOARD.top)]).toBeCloseTo(Models.MINE_BELT_SCALE_Y, 5);
+  });
+});
+
+/** Instance origins and x-scale of a named mesh's drawn instances. */
+function drawn(view: FactoryView, name: string): { x: number; y: number; z: number; sx: number }[] {
+  const m = mesh(view, name);
+  if (!m.visible) return [];
+  const e = m.instanceMatrix.array as Float32Array;
+  return Array.from({ length: m.count }, (_, i) => ({ x: e[i * 16 + 12], y: e[i * 16 + 13], z: e[i * 16 + 14], sx: e[i * 16] }));
+}
+
+/** Triangles the factory view draws now (instances × triangles per instance, hulls and twins included). */
+function factoryTris(view: FactoryView): number {
+  let n = 0;
+  view.root.traverse((o) => {
+    if (!(o instanceof InstancedMesh)) return;
+    for (let p: import('three').Object3D | null = o; p; p = p.parent) if (!p.visible) return;
+    const g = o.geometry;
+    n += o.count * ((g.index ? g.index.count : g.getAttribute('position').count) / 3);
+  });
+  return n;
+}
+
+/** A run of n built floor belts on mine row `row` from column x0 (carved, seen, completed by the pod). */
+function mineBelts(r: ReturnType<typeof rig>, x0: number, row: number, n: number): void {
+  carve(r.grid, x0, row, x0 + n - 1, row);
+  r.f.tileChanged([]);
+  const job = r.f.placeGhost({ kind: 'belt', x: x0, y: row, dir: 0, length: n });
+  if (!job.ok) throw new Error(JSON.stringify(job));
+  for (const id of job.ids) expect(r.f.completeGhost(id, POD_AWAY, new Cargo({ belt: 64 })).ok).toBe(true);
+}
+
+describe('factory render: culling to the camera (canon §3.14 triangle budgets)', () => {
+  it('draws only the structure in view: a Yard view pays for no mine belts, ties or drills, a mine view only its rows', () => {
+    const r = onboarded();
+    const { f } = r;
+    mineBelts(r, 4, 200, 10);
+    mineBelts(r, 30, 400, 8);
+    const view = new FactoryView(new MaterialKit(), 'toon');
+    const all = { ...MINE_ALL, y1: 607 };
+    view.update(frame(f, { mineRect: all }));
+    expect(count(view, 'factory-belt')).toBe(2 + 10 + 8);
+    // The Yard alone: its two belts, the buildings, and the lift's climb into the Headframe — nothing underground.
+    view.update(frame(f, { mineRect: null }));
+    expect(count(view, 'factory-belt')).toBe(2);
+    expect(count(view, 'factory-chevron')).toBe(2);
+    for (const k of ['liftTie', 'liftRail', 'liftFoot', 'autoDrill']) expect(count(view, `factory-${k}`), k).toBe(0);
+    expect(drawn(view, 'factory-liftStrand').map((s) => s.y)).toEqual([0]);
+    expect(count(view, 'factory-smelter')).toBe(1);
+    // Deep in the mine: only the belts on those rows; no Yard building, no lift (rows 0–45), no drill.
+    view.update(frame(f, { yardRect: null, mineRect: { plane: 'mine', x0: 0, y0: 195, x1: 20, y1: 205 } }));
+    expect(count(view, 'factory-belt')).toBe(10);
+    expect(drawn(view, 'factory-belt').every((b) => b.y === -201)).toBe(true);
+    for (const k of ['smelter', 'headframe', 'liftTie', 'liftRail', 'autoDrill']) expect(count(view, `factory-${k}`), k).toBe(0);
+    // Around the lift foot: the ties and rail pieces of those rows only.
+    view.update(frame(f, { yardRect: null, mineRect: { plane: 'mine', x0: 10, y0: 38, x1: 30, y1: 47 } }));
+    expect(count(view, 'factory-autoDrill')).toBe(1);
+    const ties = drawn(view, 'factory-liftTie');
+    expect(ties.length).toBeGreaterThan(0);
+    expect(ties.length).toBeLessThan(8);
+    expect(ties.every((t) => -t.y > 38 - REGION - 2 && -t.y < 48)).toBe(true);
+    expect(count(view, 'factory-liftRail')).toBeLessThanOrEqual(4);
+    // Per-tick state still reaches what is drawn: the drill works.
+    ticks(f, 40);
+    view.update(frame(f, { yardRect: null, mineRect: { plane: 'mine', x0: 10, y0: 38, x1: 30, y1: 47 } }));
+    expect(inst(view, 'factory-autoDrill', 0)[0]).toBe(1);
+    // Back to everything: the same instances, nothing lost or doubled.
+    view.update(frame(f, { mineRect: all }));
+    expect(count(view, 'factory-belt')).toBe(20);
+    expect(count(view, 'factory-liftTie')).toBe(15);
+  });
+
+  it('files every piece under its anchor cell’s region, Yard bands before mine bands', () => {
+    expect(regionKey('yard', 0, 0)).toBe(0);
+    expect(regionKey('yard', REGION, 0)).toBe(1);
+    expect(regionKey('yard', 0, REGION)).toBeGreaterThan(regionKey('yard', 47, REGION - 1));
+    expect(regionKey('mine', 0, 0)).toBeGreaterThan(regionKey('yard', 47, 32));
+    expect(regionKey('mine', 47, 607)).toBeGreaterThan(regionKey('mine', 0, 600));
+  });
+
+  it('keeps the canon fixture’s factory within the triangle budget in the Yard and Mine build views', () => {
+    const { world } = benchWorld(7, () => performance.now());
+    for (let i = 0; i < 1500; i++) {
+      world.step(NO_INTENT, true);
+      world.drainEvents();
+    }
+    const f = world.factory as FactoryApi;
+    // The bench page's cameras (src/debug/benchPage.ts) on the SE and the iPhone 15, rects as the renderer makes them.
+    for (const layout of [{ width: 375, height: 667 }, { width: 393, height: 852 }]) {
+      for (const cam of [{ plane: 'yard', cx: 24, cy: 12, ppu: 39, yaw: 0 }, { plane: 'yard', cx: 24, cy: 12, ppu: 39, yaw: 1 }, { plane: 'mine', cx: 24, cy: 60, ppu: 47, yaw: 0 }] as const) {
+        const pose = buildPose(cam, newPose());
+        const yr: ViewRect = { plane: 'yard', x0: 0, y0: 0, x1: 0, y1: 0 };
+        const mr: ViewRect = { plane: 'mine', x0: 0, y0: 0, x1: 0, y1: 0 };
+        const fr: FactoryFrame = {
+          ...frame(f, { grid: world.terrain, pose }),
+          yardRect: planeViewRect(pose, layout, 'yard', 2, yr) ? yr : null,
+          mineRect: planeViewRect(pose, layout, 'mine', 2, mr) ? mr : null,
+          viewport: layout,
+        };
+        const view = new FactoryView(new MaterialKit(), 'toon');
+        // Low tier: outlines on the selected piece only. The factory keeps under ¾ of the 60k frame.
+        view.setHulls(false, true);
+        view.update(fr);
+        expect(factoryTris(view), `low ${cam.plane} ${cam.yaw} ${layout.width}`).toBeLessThan(45_000);
+        // Mid tier: every piece outlined. Under ¾ of 150k.
+        view.setHulls(true, true);
+        view.update(fr);
+        expect(factoryTris(view), `mid ${cam.plane} ${cam.yaw} ${layout.width}`).toBeLessThan(112_500);
+      }
+    }
+  });
+
+  it('draws a bucket only on the rows in view, and buckets climb into the Headframe up to its sheave (03 §8.6)', () => {
+    const { f } = onboarded();
+    const view = new FactoryView(new MaterialKit(), 'toon');
+    const col = ONBOARD.column;
+    let top = -Infinity;
+    let above = 0;
+    for (let k = 0; k < 2400; k++) {
+      f.tick();
+      view.update(frame(f, { alphaF: (k % 3) / 3 }));
+      for (const b of drawn(view, 'factory-bucket')) {
+        if (b.sx < 0) continue; // empties hang upside down
+        top = Math.max(top, b.y);
+        if (b.y > 0.5) above++;
+      }
+    }
+    // Loaded buckets ride the −x strand from the foot all the way up, past the shaft mouth, to the sheave.
+    expect(top).toBeGreaterThan(Models.SHEAVE_Y - 0.3);
+    expect(top).toBeLessThanOrEqual(Models.SHEAVE_Y + 1e-6);
+    expect(above).toBeGreaterThan(0);
+    // Empties come down the +x strand from the sheave, inside the strand and forward of it, so the rock right of a
+    // 1-wide shaft (cameras look from +x) does not hide them.
+    const empties = drawn(view, 'factory-bucket').filter((b) => b.sx < 0);
+    expect(empties.length).toBeGreaterThan(10);
+    for (const b of empties) {
+      expect(b.x).toBeGreaterThan(col + 0.5);
+      expect(b.x).toBeLessThanOrEqual(col + 0.7);
+      expect(b.z).toBeGreaterThan(Models.LIFT_Z);
+    }
+    expect(empties.some((b) => b.y > 0.5)).toBe(true); // under the Headframe too
+    // Only buckets on the rows in view are placed (the sim fills whole lifts).
+    view.update(frame(f, { yardRect: null, mineRect: { plane: 'mine', x0: 10, y0: 20, x1: 30, y1: 26 } }));
+    const shown = drawn(view, 'factory-bucket');
+    expect(shown.length).toBeGreaterThan(0);
+    for (const b of shown) {
+      expect(b.y).toBeLessThan(-20 + 0.6);
+      expect(b.y).toBeGreaterThan(-27 - 0.6);
+    }
+    // The Yard alone still shows what climbs the Headframe's tower.
+    view.update(frame(f, { mineRect: null }));
+    for (const b of drawn(view, 'factory-bucket')) expect(b.y).toBeGreaterThan(-1.6);
+  });
+});
+
+describe('factory render: build overlays (03 §4.3, §4.9, §4.10)', () => {
+  it('outlines ghosts with a depth prepass and a crisp silhouette edge in the late pass', () => {
+    const { f } = onboarded();
+    const view = new FactoryView(new MaterialKit(), 'toon');
+    const build: BuildFrame = { plane: 'yard', cursor: { x: 2, y: 2 }, preview: { kind: 'smelter', mk: 1, x: 2, y: 2, w: 2, h: 2, dir: 0, valid: false }, bulldoze: false, selectedId: null };
+    view.update(frame(f, { build }));
+    const body = mesh(view, 'factory-ghost-smelter');
+    const depth = mesh(view, 'factory-ghost-smelter-depth');
+    const edge = mesh(view, 'factory-ghost-smelter-edge');
+    expect([depth.count, edge.count]).toEqual([body.count, body.count]);
+    expect(body.count).toBe(1);
+    // Prepass (depth only) → outline (inverted hull) → translucent body, all on the late layer.
+    expect([depth.renderOrder, edge.renderOrder, body.renderOrder]).toEqual([7, 7.5, 8]);
+    expect(depth.layers.mask).toBe(body.layers.mask);
+    expect(edge.layers.mask).toBe(body.layers.mask);
+    expect(body.layers.mask).toBe(1 << LAYER_LATE);
+    const dm = depth.material as Material;
+    expect([dm.colorWrite, dm.depthWrite]).toEqual([false, true]);
+    expect((edge.material as Material).side).toBe(BackSide);
+    expect((edge.material as Material).depthWrite).toBe(false);
+    // The outline shares the instance data (the invalid style, the red tint) and has welded normals of its own.
+    expect(edge.instanceMatrix).toBe(body.instanceMatrix);
+    expect(edge.instanceColor).toBe(body.instanceColor);
+    expect(edge.geometry.getAttribute('hfGhost')).toBe(body.geometry.getAttribute('hfGhost'));
+    expect(edge.geometry.getAttribute('normal')).not.toBe(body.geometry.getAttribute('normal'));
+    // The cursor draws before the prepass, so the ghost tints it instead of hiding it.
+    let cursorOrder = -1;
+    view.root.traverse((o) => {
+      if (o.name === 'factory-cursor') cursorOrder = o.renderOrder;
+    });
+    expect(cursorOrder).toBeLessThan(depth.renderOrder);
+    // Width: 1.5 CSS px × the render DPR in Toon, one low-res texel in Pixel Lab (set by the renderer).
+    view.setGhostEdge(3, 750, 1334);
+    const u = (edge.material as unknown as { uniforms: Record<string, { value: { x?: number; y?: number } | number }> }).uniforms;
+    expect(u.uPx.value).toBe(3);
+    expect(u.uRes.value).toMatchObject({ x: 750, y: 1334 });
+  });
+
+  it('fades a Yard building to a see-through copy while it hides the cursor or the selection (yaw 45°)', () => {
+    const { f } = onboarded();
+    const view = new FactoryView(new MaterialKit(), 'toon');
+    const col = ONBOARD.column;
+    const smelter = f.entities().find((e) => e.kind === 'smelter');
+    if (!smelter) throw new Error('no smelter');
+    expect([smelter.x, smelter.y]).toEqual([col, 4]);
+    // The belt tile on row 6 sits right behind the Smelter seen from the default yaw (45°, pitch 55°).
+    const build: BuildFrame = { plane: 'yard', cursor: { x: col, y: 6 }, preview: null, bulldoze: false, selectedId: null };
+    view.update(frame(f, { build }));
+    expect(inst(view, 'factory-smelter', 0)[2]).toBeGreaterThanOrEqual(INST_HIDDEN);
+    expect(count(view, 'factory-xray-smelter')).toBe(1);
+    const xg = mesh(view, 'factory-xray-smelter');
+    expect((xg.geometry.getAttribute('hfGhost') as BufferAttribute).getY(0)).toBe(GHOST_STYLE.XRAY);
+    expect((xg.geometry.getAttribute('hfGhost') as BufferAttribute).getX(0)).toBeCloseTo(0.4, 6);
+    expect(xg.renderOrder).toBeGreaterThan(mesh(view, 'factory-ghost-belt').renderOrder);
+    // A painted belt behind it does the same; so does the selected Bin behind it.
+    view.update(frame(f, { build: { ...build, cursor: null, preview: { kind: 'belt', mk: 1, x: col - 1, y: 6, w: 1, h: 1, dir: 0, valid: true, path: [{ x: col - 2, y: 6 }, { x: col - 1, y: 6 }, { x: col, y: 6 }] } } }));
+    expect(count(view, 'factory-xray-smelter')).toBe(1);
+    // The cursor on open ground in front of everything: nothing fades, the Smelter is solid again.
+    view.update(frame(f, { build: { ...build, cursor: { x: col + 6, y: 2 } } }));
+    expect(count(view, 'factory-xray-smelter')).toBe(0);
+    expect(inst(view, 'factory-smelter', 0)[2]).toBe(0);
+    // The building under the cursor itself never fades, nor anything outside build mode.
+    view.update(frame(f, { build: { ...build, cursor: { x: col, y: 4 } } }));
+    expect(inst(view, 'factory-smelter', 0)[2]).toBeLessThan(INST_HIDDEN);
+    view.update(frame(f, { build: null }));
+    expect(count(view, 'factory-xray-smelter')).toBe(0);
+  });
+
+  it('sizes status bubbles to 28 pt on screen at every zoom, in whole texels in Pixel Lab (03 §4.10)', () => {
+    const { f } = onboarded();
+    const view = new FactoryView(new MaterialKit(), 'toon');
+    const scale = (): number => {
+      const e = mesh(view, 'factory-bubbles').instanceMatrix.array as Float32Array;
+      return Math.hypot(e[0], e[1], e[2]);
+    };
+    for (const ppu of [36, 39, 41, 47, 64]) {
+      const pose = buildPose({ plane: 'yard', cx: ONBOARD.column, cy: 5, ppu, yaw: 0 }, newPose());
+      view.update(frame(f, { pose }));
+      expect(count(view, 'factory-bubbles')).toBeGreaterThanOrEqual(1); // the fresh Smelter has no input
+      expect(scale() * pose.ppu).toBeCloseTo(BUBBLE_PT, 4);
+    }
+    const pose = buildPose({ plane: 'yard', cx: ONBOARD.column, cy: 5, ppu: 39, yaw: 0 }, newPose());
+    const texel = 4 / (39 * 3) + 0.003;
+    view.update(frame(f, { pose, texel }));
+    const texels = scale() / texel;
+    expect(texels).toBeCloseTo(Math.round(texels), 4);
+    expect(Math.abs(scale() * 39 - BUBBLE_PT)).toBeLessThan(texel * 39);
+  });
+
+  it('shares one status → glyph table: storage, Headframes and lifts never claim “no input” (03 §4.10)', () => {
+    expect(statusGlyph('smelter', 'idle')).toBe(BUBBLE_GLYPH.NO_INPUT);
+    expect(statusGlyph('assembler', 'idle')).toBe(BUBBLE_GLYPH.NO_INPUT);
+    for (const k of ['bin', 'export', 'headframe', 'lift', 'autoDrill', 'router'] as const) expect(statusGlyph(k, 'idle'), k).toBe(-1);
+    expect(statusGlyph('bin', 'blocked')).toBe(-1); // storage carries no bubble at all
+    expect(statusGlyph('smelter', 'blocked')).toBe(BUBBLE_GLYPH.FULL);
+    expect(statusGlyph('export', 'noOutput')).toBe(BUBBLE_GLYPH.DISCONNECTED);
+    expect(statusGlyph('assembler', 'noRecipe')).toBe(BUBBLE_GLYPH.NO_RECIPE);
+    expect(statusGlyph('smelter', 'working')).toBe(-1);
+    for (const g of Object.values(BUBBLE_GLYPH)) expect(BUBBLE_TEXT[g]).toBeTruthy();
   });
 });
 

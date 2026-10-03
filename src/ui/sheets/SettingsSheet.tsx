@@ -2,6 +2,7 @@
 // probe, look test; INT-1, UI-4).
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
+import { isAssisted } from '../../app/settings';
 import type { AppController, Settings } from '../../app/types';
 import { inScope, SCOPE } from '../../config/scope';
 import type { Look } from '../../shared/types';
@@ -46,7 +47,7 @@ export function SettingsSheet({ app, close, leaving }: { app: AppController; clo
   const s = app.state.settings.value;
   const look = app.state.look.value;
   const set = (patch: Partial<Settings>) => app.updateSettings(patch);
-  const assisted = s.landingAssist || s.steadyDrill;
+  const assisted = isAssisted(s);
   // Text scale, one-handed, THRUST toggle, assists and the Return Tick are MVP rows (canon §5.5).
   const mvp = inScope('mvp');
   return (
@@ -91,6 +92,15 @@ export function SettingsSheet({ app, close, leaving }: { app: AppController; clo
       <Switch label="THRUST button" hint="A button for full thrust" value={s.thrustButton} onChange={(v) => set({ thrustButton: v })} />
       {mvp && s.thrustButton && (
         <Segmented<Settings['thrustMode']> label="THRUST works by" value={s.thrustMode} options={THRUST_MODES} onChange={(v) => set({ thrustMode: v })} />
+      )}
+      {mvp && (
+        // 03 §4.3: placements commit when the finger lifts; belt painting and Bulldoze still wait for ✓.
+        <Switch
+          label="Instant build"
+          hint="Pieces place on lift, no ✓; belt paths and Bulldoze still ask"
+          value={s.instantBuild === true}
+          onChange={(v) => set({ instantBuild: v })}
+        />
       )}
 
       {mvp && <Assists s={s} set={set} assisted={assisted} />}

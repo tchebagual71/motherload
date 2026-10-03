@@ -19,7 +19,7 @@ import { checkVitals } from './vitals';
 export { podStats, cargoMass, cargoSlotsUsed, itemMass, itemSlots, kitSpec, bayHasRoom, isTooHeavy, climbSpeed, returnTickLiters, deepHeatFactor, landingDamage, thrustAccel } from './stats';
 export { classifyDigTarget, type DigTarget } from './dig';
 export { nextSector, digDirOf } from './sector';
-export { revealAround } from './sense';
+export { inScannerRange, revealAround } from './sense';
 export { thrustInput, skyFade } from './physics';
 export { PUMP_PAD_X } from './consumables';
 export { blocksPod, forcedFloorRow } from './collision';

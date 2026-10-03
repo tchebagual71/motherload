@@ -4,7 +4,7 @@ import { render } from 'preact';
 import { h } from 'preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createFakeApp, type FakeApp } from '../../src/ui/fakes';
-import { garageOrder, inGarageOrder } from '../../src/ui/sheets/GarageSheet';
+import { garageOrder, inGarageOrder, partChipText } from '../../src/ui/sheets/GarageSheet';
 import { SheetHost } from '../../src/ui/SheetHost';
 import type { UpgradeCard } from '../../src/world/api';
 import { flush, installFakeDom, pointer, text, type FakeDom, type FakeElement } from './ui-dom.helpers';
@@ -92,6 +92,28 @@ describe('Garage card order (UI-1)', () => {
     await flush(() => (app.state.sheet.value = 'garage'));
     // Nothing is affordable now: available lines keep their catalogue order, out-of-scope ones last.
     expect(cardTitles().slice(0, 4)).toEqual(['Drill', 'Engine', 'Tank', 'Cargo bay']);
+  });
+});
+
+describe('Garage parts check (01 §2.6 beat 7, §3.10; PLAYER-10)', () => {
+  it('a met part reads "from your lode" with the count capped at the need; a missing one keeps its count', () => {
+    expect(partChipText({ item: 'Wire', need: 10, have: 10 })).toBe('Wire 10/10 from your lode ✓');
+    expect(partChipText({ item: 'Wire', need: 10, have: 24 })).toBe('Wire 10/10 from your lode ✓');
+    expect(partChipText({ item: 'Hull Plate', need: 1_200, have: 3_000 })).toBe('Hull Plate 1,200/1,200 from your lode ✓');
+    expect(partChipText({ item: 'Circuit', need: 2, have: 0 })).toBe('Circuit 0/2 ✗');
+  });
+
+  it('renders on the t3 card', async () => {
+    const cards = app.world.garageCards();
+    const parts = [
+      { item: 'Wire', need: 10, have: 24 },
+      { item: 'Circuit', need: 2, have: 0 },
+    ];
+    app.world.garageCards = () => cards.map((c) => (c.line === 'drill' ? { ...c, parts } : c));
+    app.state.sheet.value = 'garage';
+    await mount();
+    const chips = dom.root.querySelectorAll('.hf-parts .hf-chip').map((e) => text(e));
+    expect(chips).toEqual(['Wire 10/10 from your lode ✓', 'Circuit 0/2 ✗']);
   });
 });
 

@@ -2,8 +2,11 @@
 import { describe, expect, it } from 'vitest';
 import { DIR, type Cell, type Dir, type GhostView } from '../../src/factory/api';
 import { BUILD_ZOOM, clampCamera, clampPpu, defaultCamera, entryPlane, planeBounds } from '../../src/ui/build/camera';
-import { errText, kitBill, kitsForUnits, undoText, unlockText } from '../../src/ui/build/text';
+import { errText, kitBill, kitName, kitsForUnits, rungTrigger, undoText, unlockText } from '../../src/ui/build/text';
+import * as refusals from '../../src/world/factoryText';
 import {
+  TABS,
+  beltPathUnchanged,
   cardsFor,
   dockLayout,
   drillSites,
@@ -22,9 +25,11 @@ import {
   shoppingSummary,
   snapDrill,
   snapEndDir,
+  tabOf,
   takesInput,
   worldArea,
   yardBeltCost,
+  yardBeltRefund,
 } from '../../src/ui/build/tools';
 import type { Lode } from '../../src/shared/types';
 
@@ -180,6 +185,20 @@ describe('copy (03 §6.2)', () => {
     }
   });
 
+  it('has one source for refusal texts, Kit names and rung triggers: world/factoryText.ts (follow-up b)', () => {
+    expect(kitName).toBe(refusals.kitName);
+    expect(rungTrigger).toBe(refusals.rungTrigger);
+    const codes = ['E_LOCKED', 'E_YARD', 'E_OCCUPIED', 'E_SOLID', 'E_UNSEEN', 'E_FLOOR', 'E_LODE', 'E_HEAT', 'E_POD', 'E_COLUMN', 'E_ARENA', 'E_FUNDS', 'E_PARTS', 'E_STOCKPILE_FULL', 'E_LIMIT', 'E_INVALID'] as const;
+    for (const code of codes) {
+      const e = { ok: false as const, code, need: 1234, item: 'hullPlate', rung: 'U3' as const, y: 41 };
+      expect(errText(e)).toBe(refusals.errText(e));
+    }
+    // What build mode adds: whole Kits for metered units, the piece in hand, the undo wording.
+    expect(errText({ ok: false, code: 'E_KIT', need: 9, item: 'belt' })).toBe('Need 2 Belt Kit in cargo');
+    expect(errText({ ok: false, code: 'E_LIMIT' }, { kind: 'belt' })).toBe('Too many ghosts (256 max)');
+    expect(errText({ ok: false, code: 'E_EMPTY' })).toBe('Nothing to undo');
+  });
+
   it('meters Kit bills and names undo steps (03 §4.4, §4.8)', () => {
     expect(kitsForUnits('belt', 16)).toBe(2);
     expect(kitBill('belt', 16)).toBe('16 tiles = 2 Belt Kits');
@@ -290,5 +309,57 @@ describe('build camera (canon §3.4; 03 §5)', () => {
     const cam = { plane: 'mine' as const, cx: 60, cy: 200, ppu: 47, yaw: 0 as const };
     expect(clampCamera(cam, planeBounds('mine', 8, 50))).toMatchObject({ cx: 48, cy: 54 });
     expect(clampCamera({ ...cam, plane: 'yard', cy: -3 }, planeBounds('yard', 8, 0))).toMatchObject({ cy: 0 });
+  });
+});
+
+describe('tray tabs, no-op belt paths and the Bulldoze refund', () => {
+  it('finds the tab that holds a tool (BUILD-11)', () => {
+    expect(tabOf('mine', 'autoDrill', 'logistics')).toBe('extract');
+    expect(tabOf('mine', 'lift', 'tools')).toBe('logistics');
+    expect(tabOf('yard', 'bin')).toBe('storage');
+    expect(tabOf('yard', 'belt', 'logistics')).toBe('logistics');
+    expect(tabOf('mine', 'smelter')).toBeNull();
+    for (const plane of ['yard', 'mine'] as const) for (const t of TABS[plane]) expect(tabOf(plane, 'bulldoze', t.id)).toBe('tools');
+  });
+
+  /** A Yard belt word (04 §4.1): present, tier A 12–13, dir A 10–11; a Junction adds tier B 8–9, dir B 6–7. */
+  const word = (tier: number, dir: Dir) => 0x8000 | (tier << 12) | (dir << 10);
+  const junction = (ta: number, da: Dir, tb: number, db: Dir) => 0x8000 | 0x4000 | (ta << 12) | (da << 10) | (tb << 8) | (db << 6);
+
+  it('a path is unchanged only when every tile already runs that way (BUILD-5)', () => {
+    const words = new Uint16Array(48 * 10);
+    const path: Cell[] = [{ x: 20, y: 2 }, { x: 21, y: 2 }, { x: 22, y: 2 }];
+    for (const c of path) words[c.y * 48 + c.x] = word(1, DIR.E);
+    const none = () => 0;
+    const dirs = pathDirs(path);
+    expect(beltPathUnchanged(path, dirs, words, 1, none, () => false, true)).toBe(true);
+    expect(beltPathUnchanged(path.slice().reverse(), pathDirs(path.slice().reverse()), words, 1, none, () => false, true)).toBe(false);
+    expect(beltPathUnchanged(path, dirs, words, 2, none, () => false, true)).toBe(false); // an upgrade
+    expect(beltPathUnchanged([...path, { x: 23, y: 2 }], pathDirs([...path, { x: 23, y: 2 }]), words, 1, none, () => false, true)).toBe(false);
+    // A Junction's crossing slot, a Router passed through.
+    words[2 * 48 + 21] = junction(1, DIR.S, 1, DIR.E);
+    expect(beltPathUnchanged(path, dirs, words, 1, none, () => false, true)).toBe(true);
+    const routerAt = (x: number, y: number) => (x === 22 && y === 2 ? 77 : 0);
+    words[2 * 48 + 22] = 0;
+    expect(beltPathUnchanged(path, dirs, words, 1, routerAt, (id) => id === 77, true)).toBe(true);
+    expect(beltPathUnchanged(path, dirs, words, 1, routerAt, () => false, true)).toBe(false); // a building in the way
+    // Ending into the side of a belt adds a T-Router (when Routers are unlocked).
+    words[2 * 48 + 22] = word(1, DIR.E);
+    words[2 * 48 + 23] = word(1, DIR.S);
+    expect(beltPathUnchanged(path, dirs, words, 1, none, () => false, true)).toBe(false);
+    expect(beltPathUnchanged(path, dirs, words, 1, none, () => false, false)).toBe(true);
+    expect(beltPathUnchanged([], [], words, 1, none, () => false, true)).toBe(false);
+  });
+
+  it('refunds a Junction as two tiles and counts the crossings (BUILD-8)', () => {
+    const words = new Uint16Array(48 * 10);
+    const cells: Cell[] = [3, 4, 5, 6].map((y) => ({ x: 22, y }));
+    for (const c of cells) words[c.y * 48 + c.x] = word(1, DIR.S);
+    words[4 * 48 + 22] = junction(1, DIR.S, 1, DIR.E);
+    const cash = (t: number) => [0, 5, 12, 30][t];
+    expect(yardBeltRefund(cells, words, cash)).toEqual({ refund: 25, tiles: 4, crossings: 1 });
+    expect(yardBeltRefund([...cells, { x: 22, y: 3 }, { x: 30, y: 3 }], words, cash)).toEqual({ refund: 25, tiles: 4, crossings: 1 });
+    words[5 * 48 + 22] = word(2, DIR.S);
+    expect(yardBeltRefund(cells, words, cash).refund).toBe(32);
   });
 });

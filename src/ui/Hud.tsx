@@ -5,6 +5,7 @@
 import type { Signal } from '@preact/signals';
 import type { CSSProperties, JSX } from 'preact';
 import { useLayoutEffect, useRef } from 'preact/hooks';
+import { isAssisted } from '../app/settings';
 import type { AppController } from '../app/types';
 import { inScope } from '../config/scope';
 import { closeCurrentSheet } from './actions';
@@ -31,7 +32,7 @@ export function Hud({ app, vp }: { app: AppController; vp: Signal<Viewport> }): 
   const tickOn = inScope('mvp') && returnTickOn(settings.returnTick, {
     tankTier: world.pod.tiers.tank,
     trips: world.story.trips,
-    assisted: settings.landingAssist || settings.steadyDrill,
+    assisted: isAssisted(settings),
   });
   const m = hudModel(world.pod, stats, world.wallet, { liters: tickOn ? world.returnFuel() : 0, shown: tickOn });
   const rowW = v.w - v.il - v.ir;

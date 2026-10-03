@@ -2,7 +2,7 @@
 // 01 §3.12, §4.11). PURE MODULE.
 import { LODE_H, LODE_W, MINE_H, MINE_W } from '../shared/canon';
 import type { GameEvent } from '../shared/events';
-import { F, type Scope } from '../shared/types';
+import { F, type Lode, type Scope } from '../shared/types';
 import type { TerrainGrid } from '../terrain/grid';
 import { isLodeVisible } from '../terrain/scope';
 import { scannerRadiusOf } from './stats';
@@ -47,19 +47,23 @@ export function updateVisibility(pod: Readonly<PodState>, grid: TerrainGrid): vo
 export function discoverLodes(pod: Readonly<PodState>, grid: TerrainGrid, scope: Scope, out: GameEvent[]): void {
   const lodes = grid.lodes;
   if (lodes.length === 0) return;
-  const radius = scannerRadiusOf(pod.tiers.scanner);
-  const cx = Math.floor(pod.x);
-  const cr = Math.floor(-pod.y);
   for (let i = 0; i < lodes.length; i++) {
     const lode = lodes[i];
-    if (lode.discovered || !isLodeVisible(lode, scope)) continue;
-    const dx = Math.max(0, lode.x0 - cx, cx - (lode.x0 + LODE_W - 1));
-    const dr = Math.max(0, lode.top - cr, cr - (lode.top + LODE_H - 1));
-    if (dx > radius || dr > radius) continue;
+    if (lode.discovered || !isLodeVisible(lode, scope) || !inScannerRange(pod, lode)) continue;
     lode.discovered = true;
     touchLode(grid, lode.x0, lode.top);
     out.push({ t: 'lode-discovered', lodeId: lode.id });
   }
+}
+
+/** Is a cell of `lode` within the Scanner radius (Chebyshev) of the pod's cell? */
+export function inScannerRange(pod: Readonly<PodState>, lode: Readonly<Lode>): boolean {
+  const radius = scannerRadiusOf(pod.tiers.scanner);
+  const cx = Math.floor(pod.x);
+  const cr = Math.floor(-pod.y);
+  const dx = Math.max(0, lode.x0 - cx, cx - (lode.x0 + LODE_W - 1));
+  const dr = Math.max(0, lode.top - cr, cr - (lode.top + LODE_H - 1));
+  return dx <= radius && dr <= radius;
 }
 
 /** Bump the lode's chunks so renderers can show its discovered state. */

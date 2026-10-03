@@ -6,7 +6,7 @@ import { effect, signal } from '@preact/signals';
 import { inScope } from '../config/scope';
 import { ARENA_ROW, type Plane } from '../factory/api';
 import type { BuildFrame, QualityTier, Renderer } from '../render/api';
-import { applyAssists, classifyDigTarget, forcedFloorRow, type AssistFlags } from '../pod';
+import { applyAssists, blocksPod, classifyDigTarget, forcedFloorRow, type AssistFlags } from '../pod';
 import { NO_INTENT, type DigDir, type PodIntent } from '../pod/types';
 import { LINES, MINE_H, MINE_W, RIM_BUILDINGS, SALVAGE_MIN, SALVAGE_RATE, SKY_ROWS, TIER_PRICE, TOUCH } from '../shared/canon';
 import type { GameEvent } from '../shared/events';
@@ -189,7 +189,8 @@ export class GameApp implements AppController {
   private readonly storyFeed: StoryFeed;
   /** Style-test gallery bookmark the loop draws instead of play (03 §9.4), or null. */
   private viewRef: StyleView | null = null;
-  private readonly drive = new AutoDrive();
+  /** Sign-tap auto-drive over the live world's Rim row (a hole Pip cannot skim stops it, 01 §3.2). */
+  private readonly drive = new AutoDrive((c) => this.rimFloor(c));
   private readonly driveIntent: PodIntent = { sx: 0, sy: 0, thrust: false, fireSlot: -1 };
   private readonly shaped: PodIntent = { sx: 0, sy: 0, thrust: false, fireSlot: -1 };
   private readonly assists: AssistFlags = { landingAssist: false, steadyDrill: false };
@@ -385,6 +386,7 @@ export class GameApp implements AppController {
     }
     if (r.message) this.toast(r.message, 'good');
     this.saves?.requestSoon(this.opts.now());
+    this.storyFeed.refresh(); // a sale or purchase moves the goal chip and Next Goals now, not up to 0.5 s later
   }
 
   unlockAudio(): void {
@@ -607,7 +609,15 @@ export class GameApp implements AppController {
     }
     this.digTap = null;
     if (w.padUnderPod() === id) this.openSheet(id);
-    else this.drive.start(id);
+    else if (this.drive.start(id, w.pod) === 'blocked') this.toast(NOTICE.holeAhead, 'info');
+  }
+
+  /** Does the Rim's row 0 hold Pip up at column `c` (the auto-drive's floor probe)? */
+  private rimFloor(c: number): boolean {
+    const w = this.worldRef;
+    // Fake worlds (UI and render harnesses) have no terrain: a flat Rim.
+    if (!w.terrain) return true;
+    return blocksPod(w.terrain, c, 0, forcedFloorRow(scopeFloorRow(w.scope)));
   }
 
   /** Rim building the sign-tap drive is heading for, if any. */
@@ -660,6 +670,9 @@ export class GameApp implements AppController {
       return this.driveIntent;
     }
     if (status === 'arrived' && id) this.openSheet(id);
+    // A drive never ends silently (01 §3.10): a hole that opened on the way, or Pip off the Rim or stuck.
+    else if (status === 'blocked') this.toast(NOTICE.holeAhead, 'info');
+    else if (status === 'lost' && !w.pod.destroyed) this.toast(w.onRim() ? NOTICE.driveStuck : NOTICE.driveLeftRim, 'info');
     return null;
   }
 
@@ -752,6 +765,7 @@ export class GameApp implements AppController {
       this.audio?.play('sheetOpen');
     } else if (prev !== null && id === null) {
       this.audio?.play('sheetClose');
+      this.storyFeed.refresh(); // the trip summary waiting under the sheet shows current Next Goals
     }
   }
 

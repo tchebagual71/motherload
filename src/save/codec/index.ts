@@ -39,11 +39,14 @@ export type { PadSnapshot, SaveState } from './types';
 
 /**
  * HFSV format version (04 §4.9, §4.11). M0 wrote 0; the MVP writes 1 (Kit meter units in cargo, the ghost
- * timer in PODS, the optional FACT section). Version 0 still loads: no FACT, so the World hosts a fresh factory.
+ * timer in PODS, the optional FACT section).
  */
 export const SAVE_VERSION = 1;
-/** Oldest version this build reads. */
-export const MIN_SAVE_VERSION = 0;
+/**
+ * Oldest version this build reads. Migrations run stepwise from MVP version 1; M0 (version 0) saves never migrate
+ * (canon §3.15) and are refused with "This test save can't be loaded" (04 §4.11), which offers export.
+ */
+export const MIN_SAVE_VERSION = 1;
 /** 04 §4.9: an HFSV file is ≤ 1 MiB uncompressed. */
 export const MAX_SAVE_BYTES = 1 << 20;
 
@@ -115,8 +118,6 @@ function readEnvelope(bytes: Uint8Array): { version: number; table: Map<string, 
     table.set(tag, [start, start + len]);
   }
   for (const tag of REQUIRED) if (!table.has(tag)) throw new SaveError('missing', `Save has no ${tag} section`);
-  // Version 0 predates the factory: a FACT section there is not one this build wrote.
-  if (version < 1 && table.has(TAG.FACT)) throw new SaveError('section', 'Version 0 save with a FACT section');
   return { version, table };
 }
 
@@ -140,7 +141,7 @@ export function deserialize(bytes: Uint8Array): SaveState {
 }
 
 function decode(bytes: Uint8Array): SaveState {
-  const { version, table } = readEnvelope(bytes);
+  const { table } = readEnvelope(bytes);
   const meta = readSection(bytes, table, TAG.META, readMeta);
   const grid = readSection(bytes, table, TAG.TERR, (r) => readTerrain(r, meta.seed));
   readSection(bytes, table, TAG.LODE, (r) => readLodes(r, grid));
@@ -154,10 +155,7 @@ function decode(bytes: Uint8Array): SaveState {
     stepNo: meta.stepNo,
     meta: { surveyColumn: meta.surveyColumn, scriptedLodeId: meta.scriptedLodeId },
     grid,
-    ...readSection(bytes, table, TAG.PODS, (r) => {
-      const pod = readPod(r, version);
-      return version >= 1 ? { pod, ghost: readGhostTimer(r) } : { pod };
-    }),
+    ...readSection(bytes, table, TAG.PODS, (r) => ({ pod: readPod(r), ghost: readGhostTimer(r) })),
     wallet: readSection(bytes, table, TAG.WALT, readWallet),
     story: readSection(bytes, table, TAG.STRY, readStory),
     rng: readSection(bytes, table, TAG.RNGS, readRng),

@@ -1854,6 +1854,26 @@ a.hf-btn {
 .hf-pixel .hf-ruler-pod {
   border-radius: 0;
 }
+/* Build mode (03 §4.11): the Mine build camera's row, a bracket the drag moves. */
+.hf-ruler-view {
+  position: absolute;
+  left: -5px;
+  right: -5px;
+  height: 12px;
+  margin-top: -6px;
+  border: 2.5px solid #f6c343;
+  border-radius: 4px;
+  box-shadow: 0 0 0 1.5px var(--hf-ink);
+  pointer-events: none;
+}
+/* A rail flush with the right edge keeps its bracket on screen. */
+.hf-ruler-right .hf-ruler-view {
+  left: -7px;
+  right: 0;
+}
+.hf-pixel .hf-ruler-view {
+  border-radius: 0;
+}
 @keyframes hf-ruler-ping {
   from {
     transform: scale(0.6);

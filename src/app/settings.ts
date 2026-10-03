@@ -32,6 +32,19 @@ export function defaultSettings(screenWidth: number, screenHeight: number, osRed
   };
 }
 
+/** The assists switched on (01 §6.4), by name: Landing Assist, Steady Drill. */
+export function assistsOn(s: Pick<Settings, 'landingAssist' | 'steadyDrill'>): string[] {
+  const on: string[] = [];
+  if (s.landingAssist) on.push('Landing Assist');
+  if (s.steadyDrill) on.push('Steady Drill');
+  return on;
+}
+
+/** Any assist on (01 §6.4): the Return Tick stays on and the office stats card carries an "Assisted" tag. */
+export function isAssisted(s: Pick<Settings, 'landingAssist' | 'steadyDrill'>): boolean {
+  return s.landingAssist || s.steadyDrill;
+}
+
 function pickBool(v: unknown, d: boolean): boolean {
   return typeof v === 'boolean' ? v : d;
 }

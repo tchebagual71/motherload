@@ -1,5 +1,6 @@
 // Garage (canon §2.4, §2.6; 01 §3.10; 03 §6.3–6.4): one card per line (installed vs next tier, price, BUY
-// or the blocker), pinned Repair all. Lines outside this build's scope show greyed "Coming soon".
+// or the blocker), pinned Repair all. Lines outside this build's scope show greyed "Coming soon". From t3 a card
+// shows its parts check (01 §2.6 beat 7, §3.10): "Wire 10/10 from your lode ✓" or "Circuit 0/2 ✗".
 import type { JSX } from 'preact';
 import { useRef } from 'preact/hooks';
 import type { AppController } from '../../app/types';
@@ -7,7 +8,7 @@ import type { Line } from '../../shared/canon';
 import type { UpgradeCard } from '../../world/api';
 import { act } from '../actions';
 import { BottomSheet } from '../BottomSheet';
-import { formatCash, formatHp } from '../format';
+import { formatCash, formatHp, formatInt } from '../format';
 import { Icon, type IconName } from '../icons';
 import { Button } from '../widgets';
 
@@ -94,6 +95,16 @@ export function inGarageOrder(order: readonly Line[], cards: readonly UpgradeCar
   return [...cards].sort((a, b) => pos(a.line) - pos(b.line));
 }
 
+/**
+ * One parts-check chip (01 §2.6 beat 7, §3.10 Garage row). A met part reads "Wire 10/10 from your lode ✓": the
+ * count stops at the need (the bill takes exactly that many; the Stockpile may hold more), and every MVP part comes
+ * from the player's own factory, which is the lesson the card teaches. A missing one reads "Circuit 0/2 ✗".
+ */
+export function partChipText(p: UpgradeCard['parts'][number]): string {
+  if (p.have >= p.need) return `${p.item} ${formatInt(p.need)}/${formatInt(p.need)} from your lode ✓`;
+  return `${p.item} ${formatInt(p.have)}/${formatInt(p.need)} ✗`;
+}
+
 function LineCard({ card, onBuy }: { card: UpgradeCard; onBuy: () => void }): JSX.Element {
   const soon = !card.available;
   return (
@@ -122,7 +133,7 @@ function LineCard({ card, onBuy }: { card: UpgradeCard; onBuy: () => void }): JS
         <div class="hf-parts">
           {card.parts.map((p) => (
             <span key={p.item} class={p.have >= p.need ? 'hf-chip hf-chip-ok' : 'hf-chip hf-chip-miss'}>
-              {p.item} {p.have}/{p.need} {p.have >= p.need ? '✓' : '✗'}
+              {partChipText(p)}
             </span>
           ))}
         </div>

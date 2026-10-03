@@ -7,9 +7,11 @@ import type { JSX } from 'preact';
 import { useEffect, useLayoutEffect, useRef } from 'preact/hooks';
 import type { AppController } from '../../app/types';
 import { BUILDINGS, type EntStatus } from '../../factory/api';
+import { TOUCH } from '../../shared/canon';
 import { formatCash, formatCashHud } from '../format';
 import { GoalChip } from '../story/GoalChip';
 import type { Viewport } from '../viewport';
+import { LABEL, NUDGE_BOX, labelBox, labelWidth, nudgeSpot } from './aids';
 import { Glyph, kindGlyph, roleColour, type GlyphName } from './glyphs';
 import { InspectSheet } from './Inspect';
 import { drawLoupe, loupeCaption, loupeCells } from './loupe';
@@ -28,6 +30,7 @@ import {
   shoppingList,
   shoppingSummary,
   type DockId,
+  type Rect,
 } from './tools';
 import './build.css';
 
@@ -66,8 +69,7 @@ export function BuildLayer({ app, build, vp }: BuildLayerProps): JSX.Element {
     <div ref={root} class={`hf-build${left ? ' hf-build-left' : ''}`} data-plane={build.plane}>
       <TopBar app={app} build={build} guard={guard} />
       <BuildGoal app={app} />
-      <GhostLabel build={build} />
-      <NudgeArrows build={build} guard={guard} />
+      <GhostAids app={app} build={build} guard={guard} />
       {build.overlay && <StatusBubbles app={app} build={build} />}
       <Loupe app={app} build={build} vp={vp} />
       <SideStack build={build} dockTop={dockTop} left={left} pan={!panInDock} guard={guard} />
@@ -378,24 +380,6 @@ function HeadframePip({ build, top, left }: { build: BuildSession; top: number; 
 
 // ---------------------------------------------------------------- ghost label, status bubbles, loupe
 
-function GhostLabel({ build }: { build: BuildSession }): JSX.Element | null {
-  build.cursorVersion.value;
-  const p = build.pending;
-  if (!p || !build.active) return null;
-  // The reason a ghost is red sits on the ghost too (03 §6.2); prices and Kits stay in the pending chip.
-  if (!build.error) return null;
-  const a = build.ghostAnchor();
-  const chip = build.chip();
-  if (!a || !chip || !Number.isFinite(a.x) || !Number.isFinite(a.y)) return null;
-  const area = build.area;
-  if (a.y < area.y0 || a.y > area.y1) return null;
-  return (
-    <div class={`hf-ghost-label hf-ghost-${chip.tone}`} style={{ transform: `translate3d(${Math.round(a.x)}px, ${Math.round(a.y - 30)}px, 0) translate(-50%, -100%)` }} aria-hidden="true">
-      {chip.text}
-    </div>
-  );
-}
-
 /** Plane directions for the nudge arrows: Yard E, N (toward the Rim), W, S; underground E and W only. */
 const NUDGE: readonly { dx: number; dy: number; label: string }[] = [
   { dx: 1, dy: 0, label: 'Nudge east' },
@@ -404,42 +388,112 @@ const NUDGE: readonly { dx: number; dy: number; label: string }[] = [
   { dx: 0, dy: -1, label: 'Nudge toward the Rim' },
 ];
 
-/** 03 §4.3 Nudge: 44-pt arrows around the pending piece (4 on the Yard, 2 underground). */
-function NudgeArrows({ build, guard }: { build: BuildSession; guard: Guard }): JSX.Element | null {
+/** Top of the world area the reason label keeps clear of: the goal chip, or the toast stack (styles.css .hf-toasts). */
+function labelTopClear(app: AppController, y0: number): number {
+  const now = performance.now();
+  const toasts = app.state.toasts.value.filter((t) => t.until > now).length;
+  if (toasts > 0) return y0 + 22 + toasts * 46;
+  return app.state.goal.value ? y0 + 40 : y0 + 4;
+}
+
+/**
+ * The pending ghost's aids: the red reason label on the ghost (03 §6.2), a ⊘ badge that marks an invalid ghost
+ * without relying on its hue (a valid Smelter's coral is close to the invalid red, 03 §4.3), and the 44-pt nudge
+ * arrows (03 §4.3: 4 on the Yard, 2 underground) placed clear of the label and of the fingers that grab the ghost.
+ */
+function GhostAids({ app, build, guard }: { app: AppController; build: BuildSession; guard: Guard }): JSX.Element | null {
   build.cursorVersion.value;
+  app.state.hudTick.value; // toasts expire
+  const labelRef = useRef<HTMLDivElement>(null);
   const p = build.pending;
-  if (!build.active || p?.t !== 'piece' || build.loupeAt) return null;
-  const def = BUILDINGS[p.kind];
-  const cx = p.x + def.w / 2;
-  const cy = p.y + def.h / 2;
-  const c = build.cellScreen(cx - 0.5, cy - 0.5);
-  if (!c) return null;
+  const fp = build.ghostRect();
   const area = build.area;
-  const dirs = build.plane === 'yard' ? NUDGE : NUDGE.slice(0, 2);
+  const bad = !!p && !!build.error && build.active;
+  const chip = bad ? build.chip() : null;
+  let label: { x: number; y: number; w: number; h: number } | null = null;
+  let anchor: { x: number; y: number } | null = null;
+  let below = 0;
+  const topClear = labelTopClear(app, area.y0);
+  if (bad && chip && fp && build.ghostOnScreen()) {
+    anchor = build.ghostAnchor();
+    for (const [x, y] of [[fp.x, fp.y], [fp.x + fp.w - 1, fp.y], [fp.x, fp.y + fp.h - 1], [fp.x + fp.w - 1, fp.y + fp.h - 1]]) {
+      const c = build.cellScreen(x, y);
+      if (c) below = Math.max(below, c.y + 16);
+    }
+    if (anchor) label = labelBox(anchor, below, labelWidth(chip.text), LABEL.h, area, topClear);
+  }
+  useLayoutEffect(() => {
+    // Re-centre on the measured width (the estimate only reserves room for the arrows).
+    const el = labelRef.current;
+    if (!el || !anchor || !label) return;
+    const w = el.offsetWidth;
+    if (!w || Math.abs(w - label.w) < 1) return;
+    const b = labelBox(anchor, below, w, label.h, area, topClear);
+    if (b) el.style.transform = `translate3d(${Math.round(b.x)}px, ${Math.round(b.y)}px, 0)`;
+  });
+  if (!p || !build.active || !fp) return null;
+  const badge = bad ? build.cellScreen(fp.x + (fp.w - 1) / 2, fp.y + (fp.h - 1) / 2) : null;
+  const arrows: JSX.Element[] = [];
+  if (p.t === 'piece' && !build.loupeAt) {
+    const def = BUILDINGS[p.kind];
+    const cx = p.x + def.w / 2;
+    const cy = p.y + def.h / 2;
+    const c = build.cellScreen(cx - 0.5, cy - 0.5);
+    // Where a finger rests to aim at each footprint cell (the lifted point is 44 pt above it).
+    const fingers: { x: number; y: number }[] = [];
+    for (let y = p.y; y < p.y + def.h; y++) {
+      for (let x = p.x; x < p.x + def.w; x++) {
+        const s = build.cellScreen(x, y);
+        if (s) fingers.push({ x: s.x, y: s.y + TOUCH.liftedPointPt });
+      }
+    }
+    const avoid: Rect[] = label ? [{ x0: label.x - 4, y0: label.y - 4, x1: label.x + label.w + 4, y1: label.y + label.h + 4 }] : [];
+    const dirs = build.plane === 'yard' ? NUDGE : NUDGE.slice(0, 2);
+    for (const d of c ? dirs : []) {
+      const half = (d.dx !== 0 ? def.w : def.h) / 2;
+      const a = nudgeSpot((reach) => build.cellScreen(cx + d.dx * (half + reach) - 0.5, cy + d.dy * (half + reach) - 0.5), fingers, avoid, area);
+      if (!a || !c) continue;
+      avoid.push({ x0: a.x - NUDGE_BOX / 2, y0: a.y - NUDGE_BOX / 2, x1: a.x + NUDGE_BOX / 2, y1: a.y + NUDGE_BOX / 2 });
+      const deg = (Math.atan2(a.y - c.y, a.x - c.x) * 180) / Math.PI;
+      arrows.push(
+        <button
+          key={d.label}
+          type="button"
+          class="hf-nudge"
+          style={{ transform: `translate3d(${Math.round(a.x - NUDGE_BOX / 2)}px, ${Math.round(a.y - NUDGE_BOX / 2)}px, 0)` }}
+          aria-label={d.label}
+          onClick={guard(() => build.nudge(d.dx, d.dy))}
+        >
+          <span>
+            <svg width="16" height="16" viewBox="0 0 24 24" style={{ transform: `rotate(${Math.round(deg)}deg)` }} aria-hidden="true">
+              <path d="M4 12h15M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+        </button>,
+      );
+    }
+  }
   return (
     <>
-      {dirs.map((d) => {
-        const reach = (d.dx !== 0 ? def.w : def.h) / 2 + 0.9;
-        const a = build.cellScreen(cx + d.dx * reach - 0.5, cy + d.dy * reach - 0.5);
-        if (!a || a.x < area.x0 + 22 || a.x > area.x1 - 22 || a.y < area.y0 + 22 || a.y > area.y1 - 22) return null;
-        const deg = (Math.atan2(a.y - c.y, a.x - c.x) * 180) / Math.PI;
-        return (
-          <button
-            key={d.label}
-            type="button"
-            class="hf-nudge"
-            style={{ transform: `translate3d(${Math.round(a.x - 22)}px, ${Math.round(a.y - 22)}px, 0)` }}
-            aria-label={d.label}
-            onClick={guard(() => build.nudge(d.dx, d.dy))}
-          >
-            <span>
-              <svg width="16" height="16" viewBox="0 0 24 24" style={{ transform: `rotate(${Math.round(deg)}deg)` }} aria-hidden="true">
-                <path d="M4 12h15M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
-            </span>
-          </button>
-        );
-      })}
+      {badge && Number.isFinite(badge.x) && Number.isFinite(badge.y) && badge.y >= area.y0 && badge.y <= area.y1 && (
+        <span class="hf-ghost-badge" style={{ transform: `translate3d(${Math.round(badge.x - 13)}px, ${Math.round(badge.y - 13)}px, 0)` }} aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="3" />
+            <path d="M6 18L18 6" stroke="currentColor" stroke-width="3" stroke-linecap="round" />
+          </svg>
+        </span>
+      )}
+      {label && chip && (
+        <div
+          ref={labelRef}
+          class={`hf-ghost-label hf-ghost-${chip.tone}`}
+          style={{ transform: `translate3d(${Math.round(label.x)}px, ${Math.round(label.y)}px, 0)`, maxWidth: `${LABEL.maxW}px` }}
+          aria-hidden="true"
+        >
+          {chip.text}
+        </div>
+      )}
+      {arrows}
     </>
   );
 }

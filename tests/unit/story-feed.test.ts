@@ -6,7 +6,9 @@ import { GameApp, type ControllerOptions } from '../../src/app/controller';
 import { defaultSettings } from '../../src/app/settings';
 import { GOAL_REFRESH_MS, StoryFeed, surveyColumnOf } from '../../src/app/storyFeed';
 import type { GoalChip, RadioMessage, TripSummary } from '../../src/app/types';
+import { RIM_BUILDINGS } from '../../src/shared/canon';
 import type { Scope } from '../../src/shared/types';
+import { StoryLedger } from '../../src/story';
 import { World } from '../../src/world/world';
 
 function feedFor(scope: Scope = 'mvp') {
@@ -50,6 +52,32 @@ describe('StoryFeed', () => {
     f.feed.onEvents([{ t: 'trip-end', trip: 1, deepestRow: 18 }], 200);
     expect(f.state.tripSummary.value).toMatchObject({ trip: 1, deepestRow: 18, collected: 1, value: 250, hullLost: 2, fuelUsed: 1.5 });
     expect(f.state.tripSummary.value!.nextGoals[0]).toBe('Fill up at the Pump House');
+  });
+
+  it('a pending trip summary keeps its Next Goals current: a sale on the Assay pad counts (PLAYER-7)', () => {
+    const f = feedFor();
+    const w = f.world;
+    new StoryLedger(w.story.flags).recordMilestone('toppedOff');
+    const assay = RIM_BUILDINGS[1];
+    w.pod.x = w.pod.prevX = (assay.x0 + assay.x1 + 1) / 2;
+    for (let i = 0; i < 6; i++) w.pod.cargo.push({ kind: 'mineral', tier: 3 });
+    w.drainEvents();
+    f.feed.onEvents([{ t: 'left-rim' }], 0);
+    f.feed.tick(0);
+    f.feed.onEvents([{ t: 'trip-end', trip: 1, deepestRow: 18 }], 100);
+    const before = f.state.tripSummary.value!;
+    expect(before.nextGoals[0]).toBe('Sell at the Assay Office');
+    // The pad's sheet opened on landing; the player sells there, then closes it (the app asks for a refresh).
+    expect(w.sellAll().ok).toBe(true);
+    f.feed.onEvents(w.drainEvents(), 200);
+    f.feed.refresh();
+    f.feed.tick(201);
+    const after = f.state.tripSummary.value!;
+    expect(after).toMatchObject({ trip: 1, deepestRow: 18 });
+    expect(after.nextGoals).not.toContain('Sell at the Assay Office');
+    expect(after.nextGoals).not.toEqual(before.nextGoals);
+    // The same list the goal chip offers right now (its action, then its Next Goals).
+    expect(after.nextGoals).toEqual([f.state.goal.value!.text, ...f.state.goal.value!.next!]);
   });
 
   it('refreshes the goal chip at most twice a second', () => {
@@ -118,5 +146,24 @@ describe('GameApp wiring', () => {
     expect(a.state.goal.value).toBeNull();
     a.handleEvents(a.world.drainEvents());
     expect(a.state.radio.value.map((m) => m.beat)).toEqual(['S0']);
+  });
+
+  it('a purchase and a sheet closing refresh the goal chip at once, not up to 0.5 s later', () => {
+    const w = new World({ seed: 7, scope: 'mvp' });
+    const a = app(w);
+    a.handleEvents(w.drainEvents());
+    a.tick(16, 1_000);
+    expect(a.state.goal.value?.text).toBe('Fill up at the Pump House');
+    const pump = RIM_BUILDINGS[0];
+    w.pod.x = w.pod.prevX = (pump.x0 + pump.x1 + 1) / 2;
+    a.openSheet('pump');
+    a.afterAction(w.buyFuel('fill'));
+    a.handleEvents(w.drainEvents());
+    a.tick(16, 1_001);
+    expect(a.state.goal.value?.text).not.toBe('Fill up at the Pump House');
+    const shown = a.state.goal.value;
+    a.closeSheet();
+    a.tick(16, 1_002); // recomputed (same result) even though only 2 ms have passed
+    expect(a.state.goal.value).toEqual(shown);
   });
 });

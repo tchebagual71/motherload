@@ -219,6 +219,21 @@ describe('dig refusals (01 §3.4)', () => {
     expect(pushOnto((g) => g.setFlag(20, 10, F.ANCHORED))[0].reason).toBe('anchored');
   });
 
+  it('a dig in progress on a cell that becomes anchored is cancelled before it breaks through (02 §2.3)', () => {
+    const g = solidGrid();
+    const p = podAt(20, 9);
+    expect(ofType(run(p, g, DIG_ENGAGE_STEPS, DOWN), 'dig-start')).toHaveLength(1);
+    run(p, g, 2, DOWN);
+    expect(p.dig).not.toBeNull();
+    g.setFlag(20, 10, F.ANCHORED); // a floor mount completed above it mid-dig
+    const ev = run(p, g, 120, DOWN); // the push is still held
+    expect(p.dig).toBeNull();
+    expect(g.get(20, 10)).toBe(T.DIRT);
+    expect(ofType(ev, 'dug')).toHaveLength(0);
+    expect(ofType(ev, 'dig-start')).toHaveLength(0);
+    expect(ofType(ev, 'dig-refused')).toEqual([{ t: 'dig-refused', x: 20, r: 10, reason: 'anchored' }]);
+  });
+
   it('rows at or below the scope floor are refused as "floor"', () => {
     expect(pushOnto(() => {}, makeCtx({ floorRow: 10, scope: 'm0' }))[0].reason).toBe('floor');
   });

@@ -171,7 +171,7 @@ describe("Dot's office: Yard Expansion (MVP)", () => {
 });
 
 describe('Garage: t3 parts from the Stockpile (canon §4.3.5; 01 §2.6 beat 7)', () => {
-  it('shows "Wire 10/10 ✓" from the Bins and takes the bill all or nothing', async () => {
+  it('shows "Wire 10/10 from your lode ✓" from the Bins and takes the bill all or nothing', async () => {
     const f = world.factory!;
     findLode(31);
     world.debugGiveCash(5_000);
@@ -184,11 +184,11 @@ describe('Garage: t3 parts from the Stockpile (canon §4.3.5; 01 §2.6 beat 7)',
     await mount();
     const bay = () => dom.root.querySelectorAll('.hf-card').find((c) => text(c).startsWith('Cargo bay'))!;
     const chips = () => bay().querySelectorAll('.hf-chip').map((c) => text(c));
-    expect(chips()).toEqual(['Hull Plate 2/3 ✗', 'Wire 10/10 ✓']);
+    expect(chips()).toEqual(['Hull Plate 2/3 ✗', 'Wire 10/10 from your lode ✓']);
     expect(text(bay())).toContain('Needs 3 Hull Plate (have 2)');
     f.stockpilePut([{ item: 'hullPlate', n: 1 }]);
     await tick();
-    expect(chips()).toEqual(['Hull Plate 3/3 ✓', 'Wire 10/10 ✓']);
+    expect(chips()).toEqual(['Hull Plate 3/3 from your lode ✓', 'Wire 10/10 from your lode ✓']);
     const buy = bay().querySelector('.hf-btn-primary') as FakeElement;
     expect(buy.disabled).toBe(false);
     await flush(() => buy.click());

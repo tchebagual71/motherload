@@ -1,5 +1,6 @@
 // The one synchronous placement validator (02 §2.5): red-ghost preview, confirm and ghost completion. PURE MODULE.
 import { F, T, isSolid } from '../shared/types';
+import { isValidHeadframeColumn } from '../terrain/rules';
 import { ARENA_ROW, BUILDINGS, type BuildingKind, type Dir, type Err, type ErrCode, type PodBox } from './api';
 import { MINE, W, YARD, headframeFits, isRimBuildingCell } from './geom';
 import { PART_RAIL, type JobShape } from './ghost';
@@ -65,6 +66,8 @@ export function checkJob(s: FactoryState, job: JobShape, self = 0): Err | null {
   if (job.x < 0 || job.x + job.w > W || job.y < (job.kind === 'lift' ? 0 : 1) || job.h < 1) return fail('E_INVALID');
   if (job.kind === 'belt' && (job.dir & 1) !== 0) return fail('E_INVALID'); // underground belts run horizontally
   if (job.y + job.h - 1 >= ARENA_ROW) return fail('E_ARENA', { x: job.x, y: ARENA_ROW });
+  // A column reaching row 0 delivers only through a Headframe, which must fit over it (02 §2.2, §2.5).
+  if ((job.kind === 'lift' || job.kind === 'chute') && job.y === 0 && !isValidHeadframeColumn(job.x)) return fail('E_COLUMN', { x: job.x });
   if (job.kind === 'autoDrill') {
     const lode = lodeErr(s, job.x, job.y);
     if (lode) return lode;

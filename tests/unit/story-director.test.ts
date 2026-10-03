@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { Line } from '../../src/shared/canon';
 import type { GameEvent } from '../../src/shared/events';
 import type { Scope } from '../../src/shared/types';
-import { StoryDirector } from '../../src/story/director';
+import { STARTER_KIT_PURCHASE, StoryDirector } from '../../src/story/director';
 import { StoryLedger } from '../../src/story/ledger';
 import { isRungUnlocked } from '../../src/story/plans';
 import type { StoryContext, StorySnapshot } from '../../src/story/types';
@@ -160,9 +160,14 @@ describe('system beats', () => {
     const ev = r.step([{ t: 'first-lift-delivery' }]);
     expect(beats(ev)).toEqual(['S6:Dot:2']);
     expect(milestones(ev)).toEqual(['handsOff']);
-    r.step([{ t: 'first-ingot', item: 'copperIngot' }, { t: 'starter-kit' }, { t: 'ghost-complete', kind: 'autoDrill' }]);
+    r.step([{ t: 'first-ingot', item: 'copperIngot' }, { t: 'ghost-complete', kind: 'autoDrill' }]);
     expect(isRungUnlocked(r.flags, 'U3')).toBe(true);
-    expect(r.flags['ob:ingot'] && r.flags['ob:kit'] && r.flags['ob:drill']).toBe(true);
+    expect(r.flags['ob:ingot'] && r.flags['ob:drill']).toBe(true);
+    // The Starter Kit counts as collected when it is handed over at the Shed, not when it becomes available.
+    r.step([{ t: 'starter-kit' }, { t: 'purchase', kind: 'kit', amount: 80, kit: 'belt' }]);
+    expect(r.flags['ob:kit']).toBeUndefined();
+    r.step([{ t: 'purchase', kind: 'kit', amount: 0, kit: STARTER_KIT_PURCHASE }]);
+    expect(r.flags['ob:kit']).toBe(true);
     r.step([{ t: 'unlock', rung: 'U2', label: 'Lode works' }]);
     expect(isRungUnlocked(r.flags, 'U2')).toBe(true);
   });

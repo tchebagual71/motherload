@@ -138,6 +138,7 @@ function drillP2(s: FactoryState, e: Ent): void {
   out.push(ore);
   s.count.produced++;
   s.see(ore);
+  s.purityKnown[lode.id] = 1; // the first ore shows the purity (02 §3.6)
 }
 
 function craftP2(s: FactoryState, e: Ent): void {

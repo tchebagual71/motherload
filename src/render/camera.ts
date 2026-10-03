@@ -446,10 +446,14 @@ export function pixelTargetSize(deviceW: number, deviceH: number, k: number): { 
   return { w: Math.ceil(deviceW / k) + 2, h: Math.ceil(deviceH / k) + 2 };
 }
 
-/** Snap ppu so a tile face (ppu × faceCos) spans a whole number of RT pixels (03 §9.3 zoom snap). */
+/**
+ * Snap ppu so a tile face (ppu × faceCos) spans a whole number of RT pixels (03 §9.3 zoom snap). A face seen
+ * edge-on (faceCos → 0, or < 0 past it) is clamped: the zoom must stay finite and positive whatever the angle.
+ */
 export function snapPixelPpu(ppu: number, dpr: number, k: number, faceCos: number): number {
-  const px = Math.max(1, Math.round((ppu * faceCos * dpr) / k));
-  return (px * k) / (dpr * faceCos);
+  const face = Math.max(0.25, faceCos);
+  const px = Math.max(1, Math.round((ppu * face * dpr) / k));
+  return (px * k) / (dpr * face);
 }
 
 /** RT pixels per tile face for a ppu (for tests and the info overlay). */

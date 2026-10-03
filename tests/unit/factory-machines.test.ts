@@ -67,6 +67,22 @@ describe('factory: Smelter (02 §4.2, §10.5)', () => {
     expect(r.f.debug.conservationOk()).toBe(true);
   });
 
+  it('deconstruct mid-craft hands back the running craft’s inputs (02 §2.7: 100% of contents), room permitting', () => {
+    const { r, machine } = chain('smelter', [{ item: 'spec4', n: 1 }]);
+    const { f } = r;
+    for (let t = 0; t < 400 && f.entity(machine)?.status !== 'working'; t++) f.tick();
+    expect(f.entity(machine)?.status).toBe('working');
+    expect(f.inspect(machine)?.contents).toEqual([]); // consumed at the craft's start
+    ok(f.stockpilePut([{ item: 'gear', n: f.stockpileFree() }]));
+    expect(f.deconstruct(machine)).toEqual({ ok: false, code: 'E_STOCKPILE_FULL', need: 1 });
+    ok(f.stockpileTake([{ item: 'gear', n: 1 }]));
+    ok(f.deconstruct(machine));
+    expect(f.stockpileCount('spec4')).toBe(1);
+    expect(f.stockpileCount('goldIngot')).toBe(0);
+    expect(f.debug.counts.scrapped).toBe(0);
+    expect(f.debug.conservationOk()).toBe(true);
+  });
+
   it('fires first-ingot once and opens U3 (Assembler, Router, Export)', () => {
     const r = rig({ yardRows: 16 });
     const { f, events } = r;
@@ -112,6 +128,20 @@ describe('factory: Assembler (02 §4.2, F1)', () => {
     expect(events).toContainEqual({ t: 'unlock', rung: 'A5', label: 'Circuit' });
     ok(f.setRecipe(machine, 'A5'));
     expect(f.recipes('assembler').filter((x) => x.unlocked).map((x) => x.id)).toEqual(['A1', 'A2', 'A3', 'A4', 'A5']);
+  });
+
+  it('an Assembler deconstructed mid-craft returns every input of the craft', () => {
+    const { r, src, machine } = chain('assembler', [{ item: 'ironIngot', n: 2 }]);
+    const { f } = r;
+    ok(f.stockpilePut([{ item: 'cobaltIngot', n: 1 }]));
+    ok(f.setRecipe(machine, 'A3'));
+    for (let t = 0; t < 200 && has(f, src, 'ironIngot') > 0; t++) f.tick();
+    ok(f.setUnloadFilter(src, 'cobaltIngot'));
+    for (let t = 0; t < 200 && f.entity(machine)?.status !== 'working'; t++) f.tick();
+    expect(f.entity(machine)?.status).toBe('working');
+    ok(f.deconstruct(machine));
+    expect([f.stockpileCount('ironIngot') - 200, f.stockpileCount('cobaltIngot'), f.stockpileCount('hullPlate')]).toEqual([2, 1, 0]);
+    expect(f.debug.conservationOk()).toBe(true);
   });
 
   it('sends buffered inputs to the Stockpile on a recipe change, and undo restores the recipe', () => {

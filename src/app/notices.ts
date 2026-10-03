@@ -20,6 +20,12 @@ export const NOTICE = {
   bayFull: 'Bay full: open Cargo to make room',
   /** A sign tap needs Pip grounded on the Rim (01 §3.10). */
   landFirst: 'Land on the Rim first',
+  /** Sign-tap auto-drive: a hole Pip cannot skim lies on the way (01 §3.2 gap skim bridges 1-wide gaps only). */
+  holeAhead: 'Hole in the way: fly over',
+  /** …the drive ended with Pip off the Rim (it never ends silently). */
+  driveLeftRim: 'Auto-drive stopped: Pip left the Rim',
+  /** …or stuck on the Rim for longer than a Rim crossing takes. */
+  driveStuck: 'Auto-drive stopped: something in the way',
 } as const;
 
 /**

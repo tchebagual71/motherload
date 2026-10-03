@@ -1,14 +1,42 @@
 // Build-mode overlay materials (03 §4.3, §4.10; 04 §5.4): translucent ghosts (valid = role colour 50%, invalid =
-// #FF4D5E 45% + hatch, queued jobs = pulsing blueprint) and status bubbles (28-pt discs with one glyph). All draw in
-// the late pass (Pixel Lab pass 3), depth-tested, never depth-writing.
-import { Color, DataTexture, DoubleSide, MeshBasicMaterial, NearestFilter, NoColorSpace, RGBAFormat, ShaderMaterial, UnsignedByteType } from 'three';
+// #FF4D5E 45% + hatch, queued jobs = pulsing blueprint, x-ray = a building faded to 40% because it hides the
+// cursor), the ghosts' depth prepass and crisp silhouette outline, and status bubbles (28-pt discs with one glyph).
+// All draw in the late pass (Pixel Lab pass 3), depth-tested; only the prepass writes depth.
+import { BackSide, Color, DataTexture, DoubleSide, MeshBasicMaterial, NearestFilter, NoColorSpace, RGBAFormat, ShaderMaterial, UnsignedByteType, Vector2 } from 'three';
 import { ROLE, UI } from '../palette';
 import { PART_FLAG } from '../materials/glsl';
 
-/** Ghost styles (hfGhost.y). */
-export const GHOST_STYLE = { VALID: 0, INVALID: 1, JOB: 2, ACTIVE: 3 } as const;
+export { BUBBLE_GLYPH } from './status';
+
+/** Ghost styles (hfGhost.y). XRAY: a real building drawn see-through over what it hides (03 §4.9). */
+export const GHOST_STYLE = { VALID: 0, INVALID: 1, JOB: 2, ACTIVE: 3, XRAY: 4 } as const;
 export const INVALID_HEX = 0xff4d5e;
-export const GHOST_ALPHA = { valid: 0.5, invalid: 0.45, job: 0.42 } as const;
+/** Deep red of an invalid ghost's outline (the bulldoze hull colour). */
+export const INVALID_EDGE_HEX = 0xb3263a;
+export const GHOST_ALPHA = { valid: 0.5, invalid: 0.45, job: 0.42, xray: 0.4 } as const;
+/** Ghost outline width: CSS px × render DPR in Toon (as the model hulls), one RT texel in Pixel Lab. */
+export const GHOST_EDGE_PX = 1.5;
+
+/**
+ * Ghost vertex transform shared by the body, its depth prepass and its outline, written once so all three land
+ * on bit-identical depths (the body tests LessEqual against the prepass).
+ */
+const GHOST_VERTEX_PARS = /* glsl */ `
+attribute vec4 hfPart;
+attribute vec2 hfGhost;
+vec4 hfGhostWorld() {
+  vec4 wp = vec4(position, 1.0);
+  #ifdef USE_INSTANCING
+  wp = instanceMatrix * wp;
+  #endif
+  return modelMatrix * wp;
+}
+// Ghosts are blueprints: no rust skin, decals or LEDs.
+bool hfGhostDropped() {
+  int fl = int(hfPart.y + 0.5);
+  return (fl & ${PART_FLAG.RUST | PART_FLAG.LED | PART_FLAG.CHEVRON}) != 0;
+}
+`;
 
 export function createGhostMaterial(): ShaderMaterial {
   return new ShaderMaterial({
@@ -18,20 +46,17 @@ export function createGhostMaterial(): ShaderMaterial {
     vertexColors: true,
     uniforms: { uTime: { value: 0 } },
     vertexShader: /* glsl */ `
-attribute vec4 hfPart;
-attribute vec2 hfGhost;
+${GHOST_VERTEX_PARS}
 varying vec3 vN;
 varying vec3 vC;
 varying vec2 vG;
 varying vec3 vW;
 void main() {
-  vec4 wp = vec4(position, 1.0);
+  vec4 wp = hfGhostWorld();
   vec3 n = normal;
   #ifdef USE_INSTANCING
-  wp = instanceMatrix * wp;
   n = mat3(instanceMatrix) * n;
   #endif
-  wp = modelMatrix * wp;
   vW = wp.xyz;
   vN = normalize(n);
   #ifdef USE_INSTANCING_COLOR
@@ -42,11 +67,11 @@ void main() {
   // Keep the piece's own value pattern (roof, body, trim) under the tint so the blueprint reads as the building.
   float luma = dot(color, vec3(0.3, 0.55, 0.15));
   vC *= 0.45 + 0.75 * sqrt(clamp(luma, 0.0, 1.0));
+  // X-ray: the building's own colours, only faded.
+  if (hfGhost.y > 3.5) vC = color;
   vG = hfGhost;
   gl_Position = projectionMatrix * viewMatrix * wp;
-  int fl = int(hfPart.y + 0.5);
-  // Ghosts are blueprints: no rust skin, decals or LEDs.
-  if ((fl & ${PART_FLAG.RUST | PART_FLAG.LED | PART_FLAG.CHEVRON}) != 0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+  if (hfGhostDropped()) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 }`,
     fragmentShader: /* glsl */ `
 uniform float uTime;
@@ -67,7 +92,7 @@ void main() {
     float h = step(0.55, fract((gl_FragCoord.x + gl_FragCoord.y) / 10.0));
     c = mix(c, c * 0.7, h);
     a = mix(a, a + 0.25, h);
-  } else if (style > 1.5) {
+  } else if (style > 1.5 && style < 3.5) {
     // Queued job: pulsing blueprint with world-fixed scan lines; the job being built pulses faster.
     float speed = style > 2.5 ? 9.0 : 3.0;
     float pulse = 0.5 + 0.5 * sin(uTime * speed);
@@ -81,11 +106,78 @@ void main() {
 }
 
 /**
- * Status glyphs (03 §4.10): no input (hollow circle), output full (boxes), no recipe (?), disconnected (broken
- * link), and the Logistics overlay's jam head (⊘).
+ * Ghost depth prepass: the ghost's nearest surface only, no colour. The body then draws just its front layer
+ * (no double-blended inner faces) and the outline hull is rejected everywhere inside the silhouette.
  */
-export const BUBBLE_GLYPH = { NO_INPUT: 0, FULL: 1, NO_RECIPE: 2, DISCONNECTED: 3, JAM: 4 } as const;
+export function createGhostDepthMaterial(): ShaderMaterial {
+  return new ShaderMaterial({
+    name: 'hf-ghost-depth',
+    // Sorted with the late pass by renderOrder (before the outline and the body).
+    transparent: true,
+    depthWrite: true,
+    colorWrite: false,
+    vertexShader: /* glsl */ `
+${GHOST_VERTEX_PARS}
+void main() {
+  gl_Position = projectionMatrix * viewMatrix * hfGhostWorld();
+  if (hfGhostDropped()) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+}`,
+    fragmentShader: /* glsl */ `
+void main() {
+  gl_FragColor = vec4(0.0);
+}`,
+  });
+}
 
+/**
+ * Ghost silhouette outline (03 §4.3): an inverted hull pushed out by uPx target pixels in screen space, depth-tested
+ * against the ghost's prepass so only the rim shows. Valid and queued ghosts: their tint × 0.55 toward plum ink;
+ * invalid: a deep red edge, so a red ghost still reads against red-brown rock and a coral roof at pitch 55°.
+ */
+export function createGhostOutlineMaterial(): ShaderMaterial {
+  return new ShaderMaterial({
+    name: 'hf-ghost-outline',
+    transparent: true,
+    depthWrite: false,
+    side: BackSide,
+    uniforms: { uPx: { value: GHOST_EDGE_PX }, uRes: { value: new Vector2(1, 1) } },
+    vertexShader: /* glsl */ `
+${GHOST_VERTEX_PARS}
+uniform float uPx;
+uniform vec2 uRes;
+varying vec3 vC;
+varying float vStyle;
+void main() {
+  vec4 wp = hfGhostWorld();
+  gl_Position = projectionMatrix * viewMatrix * wp;
+  vec3 n = normal;
+  #ifdef USE_INSTANCING
+  n = mat3(instanceMatrix) * n;
+  #endif
+  vec3 nv = normalize(mat3(viewMatrix) * n);
+  vec2 d = (projectionMatrix * vec4(nv, 0.0)).xy * uRes;
+  float l = length(d);
+  if (l > 1e-5) gl_Position.xy += (d / l) * (uPx * 2.0 / uRes) * gl_Position.w;
+  #ifdef USE_INSTANCING_COLOR
+  vC = instanceColor;
+  #else
+  vC = vec3(1.0);
+  #endif
+  vStyle = hfGhost.y;
+  if (hfGhostDropped()) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+}`,
+    fragmentShader: /* glsl */ `
+varying vec3 vC;
+varying float vStyle;
+void main() {
+  vec3 ink = ${linear(UI.plum)};
+  vec3 c = vStyle > 0.5 && vStyle < 1.5 ? ${linear(INVALID_EDGE_HEX)} : mix(vC * 0.55, ink, 0.35);
+  gl_FragColor = vec4(c, 0.92);
+}`,
+  });
+}
+
+/** Atlas cell size; GLYPHS are in BUBBLE_GLYPH order (status.ts). */
 const GLYPH_PX = 16;
 const GLYPHS: readonly string[][] = [
   [

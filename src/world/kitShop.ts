@@ -8,6 +8,7 @@ import type { GameEvent } from '../shared/events';
 import { scopeAtLeast } from '../shared/scope';
 import type { CargoItem, Scope } from '../shared/types';
 import { kitSpec } from '../pod/stats';
+import { STARTER_KIT_PURCHASE } from '../story';
 import type { PodState } from '../pod/types';
 import { counted, dollars } from '../economy/format';
 import { fail, ok } from '../economy/types';
@@ -147,7 +148,7 @@ export function claimStarterKit(ctx: ShopCtx): Result {
   if (need > free) return fail(`Need ${need} free bay slots (have ${Math.max(0, free)})`);
   for (const id of STARTER_KIT) ctx.pod.cargo.push(newKit(id));
   ctx.flags[STARTER_CLAIMED_FLAG] = true;
-  ctx.emit({ t: 'purchase', kind: 'kit', amount: 0, kit: 'starter' });
+  ctx.emit({ t: 'purchase', kind: 'kit', amount: 0, kit: STARTER_KIT_PURCHASE }); // the story marks it collected
   return ok(`Starter Kit aboard: ${STARTER_KIT.length} Kits`, STARTER_KIT.length);
 }
 

@@ -37,6 +37,11 @@ export const PART_FLAG = {
 } as const;
 /** hfInst.z tint modes. */
 export const INST_TINT = { NONE: 0, BULLDOZE: 1, SELECTED: 2 } as const;
+/**
+ * Added to hfInst.z: the instance (and its outline) is not drawn. A Yard building that hides the cursor, the
+ * selection or a belt being painted is drawn as a see-through copy in the late pass instead (03 §4.9).
+ */
+export const INST_HIDDEN = 8;
 
 export const VERTEX_PARS = /* glsl */ `
 varying vec3 vHfWorld;
@@ -82,6 +87,7 @@ export const VERTEX_BEGIN = /* glsl */ `
   int hfFl = int(hfPart.y + 0.5);
   vHfPart = hfPart;
   vHfInst = hfInst;
+  if (hfInst.z > ${f(INST_HIDDEN - 0.5)}) hfDrop = 1.0;
   if ((hfFl & ${PART_FLAG.RUST}) != 0 && hfInst.y < 0.5) hfDrop = 1.0;
   #ifdef HF_HULL
   if ((hfFl & ${PART_FLAG.NOHULL}) != 0) hfDrop = 1.0;

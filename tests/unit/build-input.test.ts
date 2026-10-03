@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppController } from '../../src/app/types';
 import { createBuildInput } from '../../src/input/build';
 import type { BuildSession } from '../../src/ui/build/session';
+import { FakeEvent, installFakeDom, type FakeDom, type FakeElement } from './ui-dom.helpers';
 
 function fakeSession(patch: Record<string, unknown> = {}) {
   const fns = ['cursor', 'tap', 'longPress', 'strokeStart', 'strokeMove', 'strokeEnd', 'strokeFreeze', 'strokeDiscard', 'pan', 'zoom', 'yawSnap', 'panEnd', 'loupe', 'edgePan', 'undo', 'redo', 'rotate', 'arm', 'confirm', 'toggleOverlay', 'toggleLMode', 'zoomIn', 'zoomOut', 'yawStep', 'nudgeView'];
@@ -116,5 +117,130 @@ describe('build input', () => {
     input.wheel(e, 200, 300);
     expect(s.zoom).toHaveBeenCalledWith(1.1, 200, 300);
     expect(e.preventDefault).toHaveBeenCalled();
+  });
+});
+
+/**
+ * BUILD-3: a finger on the dock band, a button or a chip still counts. The canvas glue (src/input/index.ts) feeds
+ * canvas pointers in canvas px; the build input watches the other touches on the window (capture phase).
+ */
+describe('build input: touches off the canvas (dock band, buttons) count as fingers', () => {
+  let dom: FakeDom;
+  let clock = 0;
+  let canvas: FakeElement;
+  let dock: FakeElement;
+  let ok: FakeElement;
+  beforeEach(() => {
+    dom = installFakeDom();
+    clock = 1000;
+    canvas = dom.document.createElement('canvas');
+    dock = dom.document.createElement('div');
+    ok = dom.document.createElement('button');
+    dock.appendChild(ok);
+    dom.root.appendChild(canvas);
+    dom.root.appendChild(dock);
+  });
+  afterEach(() => dom.restore());
+
+  /** A pointer event on `el` in client px (the canvas sits at client (0, 20) here). */
+  const fire = (el: FakeElement, type: string, id: number, x: number, y: number): FakeEvent => {
+    const ev = new FakeEvent(type, { pointerId: id, pointerType: 'touch', clientX: x, clientY: y, button: 0 });
+    el.dispatchEvent(ev);
+    return ev;
+  };
+  const canvasDown = (input: ReturnType<typeof createBuildInput>, id: number, x: number, y: number) =>
+    input.down({ pointerId: id, pointerType: 'touch', button: 0, clientX: x, clientY: y + 20 } as PointerEvent, x, y);
+  const canvasMove = (input: ReturnType<typeof createBuildInput>, id: number, x: number, y: number) =>
+    input.move({ pointerId: id, pointerType: 'touch', button: 0, clientX: x, clientY: y + 20 } as PointerEvent, x, y);
+  const canvasUp = (input: ReturnType<typeof createBuildInput>, id: number, x: number, y: number) =>
+    input.up({ pointerId: id, pointerType: 'touch', button: 0, clientX: x, clientY: y + 20 } as PointerEvent, x, y);
+
+  it('a pinch whose second finger lands on the dock band zooms and paints nothing', () => {
+    const s = fakeSession({ tool: 'belt' });
+    const input = createBuildInput({ session: s, app: {} as AppController, now: () => clock });
+    canvasDown(input, 4, 230, 380);
+    clock += 10;
+    fire(dock, 'pointerdown', 5, 153, 489 + 20);
+    expect(input.owns(5)).toBe(true);
+    // Both spread.
+    clock += 16;
+    canvasMove(input, 4, 250, 360);
+    fire(dock, 'pointermove', 5, 133, 509 + 20);
+    clock += 16;
+    canvasUp(input, 4, 250, 360);
+    fire(dock, 'pointerup', 5, 133, 509 + 20);
+    expect(s.strokeStart).not.toHaveBeenCalled();
+    expect(s.strokeEnd).not.toHaveBeenCalled();
+    expect(s.tap).not.toHaveBeenCalled();
+    expect(s.zoom).toHaveBeenCalled();
+    // The spread is measured in one frame: canvas px for both fingers (the dock finger is mapped by the canvas offset).
+    const [scale, cx, cy] = (s.zoom as ReturnType<typeof vi.fn>).mock.calls[0] as number[];
+    expect(scale).toBeGreaterThan(1);
+    expect(cx).toBeCloseTo((250 + 153) / 2, 6);
+    expect(cy).toBeCloseTo((360 + 489) / 2, 6);
+    expect(input.touching).toBe(false);
+  });
+
+  it('a second finger on a button joins too, and that button ignores its click (no ✓ commit mid-pinch)', () => {
+    const s = fakeSession({ tool: 'bin' });
+    const input = createBuildInput({ session: s, app: {} as AppController, now: () => clock });
+    const clicked = vi.fn();
+    ok.addEventListener('click', clicked);
+    canvasDown(input, 1, 200, 300);
+    fire(ok, 'pointerdown', 2, 340, 530);
+    fire(ok, 'pointerup', 2, 340, 530);
+    canvasUp(input, 1, 200, 300);
+    const click = fire(ok, 'click', 2, 340, 530);
+    expect(clicked).not.toHaveBeenCalled();
+    expect(click.defaultPrevented).toBe(true);
+    expect(s.tap).not.toHaveBeenCalled();
+    // A later plain tap on the button is a press again.
+    fire(ok, 'pointerdown', 3, 340, 530);
+    fire(ok, 'pointerup', 3, 340, 530);
+    fire(ok, 'click', 3, 340, 530);
+    expect(clicked).toHaveBeenCalledTimes(1);
+  });
+
+  it('a dock finger just before the canvas finger (the pinch window) makes the gesture the camera', () => {
+    const s = fakeSession({ tool: 'belt' });
+    const input = createBuildInput({ session: s, app: {} as AppController, now: () => clock });
+    fire(dock, 'pointerdown', 8, 150, 500);
+    clock += 40;
+    canvasDown(input, 9, 230, 380);
+    expect(input.owns(8)).toBe(true);
+    clock += 16;
+    canvasMove(input, 9, 260, 380);
+    expect(s.strokeStart).not.toHaveBeenCalled();
+    expect(s.pan).toHaveBeenCalled();
+  });
+
+  it('a thumb resting on the tray long before does not stop a one-finger stroke', () => {
+    const s = fakeSession({ tool: 'belt' });
+    const input = createBuildInput({ session: s, app: {} as AppController, now: () => clock });
+    fire(dock, 'pointerdown', 8, 150, 600);
+    clock += 1000;
+    canvasDown(input, 9, 230, 380);
+    expect(input.owns(8)).toBe(false);
+    clock += 16;
+    canvasMove(input, 9, 260, 380);
+    expect(s.strokeStart).toHaveBeenCalledWith(230, 380 - 44);
+    canvasUp(input, 9, 260, 380);
+    expect(s.strokeEnd).toHaveBeenCalled();
+  });
+
+  it('canvas pointers are left to the canvas glue; a lone button press keeps its click; dispose unhooks', () => {
+    const s = fakeSession({ tool: 'belt' });
+    const input = createBuildInput({ session: s, app: {} as AppController, now: () => clock });
+    fire(canvas, 'pointerdown', 1, 100, 100);
+    expect(input.owns(1)).toBe(false);
+    const clicked = vi.fn();
+    ok.addEventListener('click', clicked);
+    fire(ok, 'pointerdown', 2, 340, 530);
+    fire(ok, 'pointerup', 2, 340, 530);
+    fire(ok, 'click', 2, 340, 530);
+    expect(clicked).toHaveBeenCalledTimes(1);
+    expect(dom.window.listenerCount('pointerdown')).toBe(1);
+    input.dispose();
+    expect(dom.window.listenerCount('pointerdown')).toBe(0);
   });
 });
