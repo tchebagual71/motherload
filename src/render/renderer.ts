@@ -16,15 +16,30 @@ import {
   WebGLRenderer,
   type ShaderMaterial,
 } from 'three';
-import { CAMERA, MINE_H, MINE_W, POD_H, RIM_BUILDINGS, SEAL_ROW } from '../shared/canon';
-import { YARD_MAX_ROWS, type Cell, type Plane as BuildPlane } from '../factory/api';
+import { CAMERA, FACTORY_EVERY, FACTORY_PHASE, MINE_H, MINE_W, POD_H, RIM_BUILDINGS, SEAL_ROW, YARD_D_START } from '../shared/canon';
+import type { Cell, FactoryApi, Plane as BuildPlane, ViewRect } from '../factory/api';
 import type { GameEvent } from '../shared/events';
 import { F, type Look, type Lode, type RimBuildingId, type Scope } from '../shared/types';
 import { isLodeVisible, scopeFloorRow } from '../terrain/scope';
 import type { TerrainGrid } from '../terrain/grid';
 import type { WorldApi } from '../world/api';
 import type { BuildCamera, CreateRenderer, QualityTier, RenderFrame, RenderInfo, Renderer, RendererOptions, ViewportLayout } from './api';
-import { CameraRig, DEG, DigDescentTracker, bayerPhase, composeLookAt, pixelScaleK, pixelTargetSize, quantizeDeg, snapPixelPpu, snapToTexels, type CameraPose, type TexelSnap } from './camera';
+import { CameraRig, DEG, DigDescentTracker, bayerPhase, cameraBasis, composeLookAt, pixelScaleK, pixelTargetSize, quantizeDeg, snapPixelPpu, snapToTexels, type CameraPose, type TexelSnap, type Vec3 } from './camera';
+import { ITEM_CAP, FactoryView, type FactoryFrame } from './factory/view';
+import {
+  BuildCameraRig,
+  cellCentreWorld,
+  copyPose,
+  mineCellOf,
+  newPose,
+  planeViewRect,
+  projectToScreen,
+  screenRay,
+  screenToMinePoint,
+  screenToYardPoint,
+  snapBuildPpu,
+  yardCellOf,
+} from './factory/projection';
 import { createFx } from './fx/fx';
 import { addOutlineHulls, applyLookMaterials, disposeMaterialKit, getMaterialKit, setHullsEnabled, setLayerDeep, syncHull, LAYER_LATE, type MaterialKit } from './materials';
 import type { FxSystem, PodModel, PodVisualState, RimBuildingsModel, YardPropsModel } from './models/api';
@@ -52,6 +67,13 @@ const VIGNETTE = [0.15, 0.3] as const;
 const SIGN_HIT_PT = 30;
 /** The painted backdrop stands this far behind the look-at point (sets where the horizon sits). */
 const BACKDROP_DIST = 15;
+/** Cells of margin around the camera rect for factory culling (moving pieces cross at most a tile per tick). */
+const FACTORY_VIEW_MARGIN = 2;
+/** Working Smelters that smoke, per tier (03 §8.10: off above 12 / 16 / 20 machines). */
+const SMOKE_CAP: Readonly<Record<QualityTier, number>> = { low: 12, mid: 16, high: 20 };
+/** Logistics overlay: terrain shown at 30% (03 §4.10), faded in and out over 0.2 s. */
+const LOGISTICS_TERRAIN = 0.3;
+const OVERLAY_FADE_S = 0.2;
 
 const CONE_DIRS = { down: [0, -1], left: [-1, 0], right: [1, 0] } as const;
 const SLAB_PLANES = [0.5, -1] as const;
@@ -87,6 +109,34 @@ class HfRenderer implements Renderer {
   private readonly fx: FxSystem;
   private yard: YardPropsModel | null = null;
   private yardColumn = -1;
+  /** Factory pieces from the world's factory views (MVP+); hidden while the world has no factory. */
+  private readonly factoryView: FactoryView;
+  /** Build cameras over the play rig (canon §3.4; 03 §5). */
+  private readonly buildRig = new BuildCameraRig();
+  /** The pose last placed on the cameras: picking and projections use exactly what is on screen. */
+  private readonly shownPose: CameraPose = newPose();
+  private readonly yardRect: ViewRect = { plane: 'yard', x0: 0, y0: 0, x1: 0, y1: 0 };
+  private readonly mineRect: ViewRect = { plane: 'mine', x0: 0, y0: 0, x1: 0, y1: 0 };
+  private readonly pickPt = { x: 0, y: 0 };
+  /** Reused per frame (no per-frame allocation); factory set before first use. */
+  private readonly factoryFrame: FactoryFrame = {
+    factory: null as unknown as FactoryApi,
+    grid: null as unknown as TerrainGrid,
+    timeMs: 0,
+    dt: 0,
+    alphaF: 0,
+    pose: newPose(),
+    yardRect: null,
+    mineRect: null,
+    build: null,
+    ghostProgress: null,
+    texel: 0,
+    animate: true,
+    itemCap: 0,
+    smokeCap: 0,
+  };
+  private readonly rayO: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly rayD: Vec3 = { x: 0, y: 0, z: 0 };
   /** Outline hulls to keep in step with their meshes (pod/rim; the yard's are rebuilt with it). */
   private readonly hulls: Mesh[] = [];
   private yardHulls: Mesh[] = [];
@@ -167,7 +217,9 @@ class HfRenderer implements Renderer {
     this.rim = createRimBuildings();
     this.fx = createFx();
     this.hulls.push(...addOutlineHulls(this.pod.root, 'pod', this.kit), ...addOutlineHulls(this.rim.root, 'buildings', this.kit));
-    this.scene.add(this.surface.root, this.chunks.root, this.glows.mesh, this.rim.root, this.pod.root, this.fx.root, this.overlays.root);
+    this.factoryView = new FactoryView(this.kit, this.look);
+    this.factoryView.root.visible = false;
+    this.scene.add(this.surface.root, this.chunks.root, this.glows.mesh, this.rim.root, this.pod.root, this.fx.root, this.overlays.root, this.factoryView.root);
     // Built now (default column) so its instanced variants precompile; rebuilt if the world differs.
     this.setYard(DEFAULT_SURVEY_COLUMN);
     setLayerDeep(this.overlays.root, LAYER_LATE);
@@ -215,6 +267,7 @@ class HfRenderer implements Renderer {
     this.updateChunks(world.terrain, px, py);
     this.updateUniforms(frame, pose, px, py);
     this.updateModels(frame, px, py, dt);
+    this.updateFactory(frame, pose, dt);
     this.overlays.updateArming(frame.arming, px, py);
     this.overlays.updateShadow(world.terrain, px, py - POD_H / 2);
     this.draw(pose);
@@ -286,33 +339,56 @@ class HfRenderer implements Renderer {
     return { x, r };
   }
 
-  // ---- Build mode (BuildRendererApi): play-camera fallbacks until the build wave lands ----
+  // ---- Build mode (BuildRendererApi; canon §3.4, 03 §4–5, 04 §6.2) ----------------------------------
 
-  setBuildCamera(_cam: BuildCamera | null): void {}
+  setBuildCamera(cam: BuildCamera | null): void {
+    this.buildRig.set(cam, this.shownPose);
+    if (cam && this.buildRig.settled) {
+      // Pans and zooms apply at once: place the cameras now so picks made before the next frame are exact.
+      const pose = this.buildRig.update(0, this.rig.pose);
+      if (this.look === 'pixel' && !this.perspCam) this.snapBuildPose(pose);
+      this.placeCameras(pose);
+      copyPose(pose, this.shownPose);
+    }
+  }
 
   screenToYardCell(px: number, py: number): Cell | null {
-    this.setRay(px, py);
-    const ray = this.raycaster.ray;
-    if (Math.abs(ray.direction.y) < 1e-6) return null;
-    const t = -ray.origin.y / ray.direction.y;
-    if (t < 0) return null;
-    const x = Math.floor(ray.origin.x + ray.direction.x * t);
-    const row = Math.floor(-(ray.origin.z + ray.direction.z * t));
-    if (x < 0 || x >= MINE_W || row < 1 || row > YARD_MAX_ROWS) return null;
-    return { x, y: row };
+    if (this.perspCam) {
+      this.setRay(px, py);
+      const ray = this.raycaster.ray;
+      if (Math.abs(ray.direction.y) < 1e-6) return null;
+      const t = -ray.origin.y / ray.direction.y;
+      if (t < 0) return null;
+      return yardCellOf({ x: ray.origin.x + ray.direction.x * t, y: -(ray.origin.z + ray.direction.z * t) });
+    }
+    return screenToYardPoint(this.shownPose, this.layout, px, py, this.pickPt) ? yardCellOf(this.pickPt) : null;
   }
 
   screenToMineCell(px: number, py: number): Cell | null {
-    const c = this.screenToCell(px, py);
-    return c ? { x: c.x, y: c.r } : null;
+    if (this.perspCam) {
+      const c = this.screenToCell(px, py);
+      return c ? { x: c.x, y: c.r } : null;
+    }
+    return screenToMinePoint(this.shownPose, this.layout, px, py, this.pickPt) ? mineCellOf(this.pickPt) : null;
   }
 
   cellToScreen(plane: BuildPlane, x: number, y: number): { x: number; y: number } {
-    return plane === 'yard' ? this.worldToScreen(x + 0.5, 0, -y - 0.5) : this.worldToScreen(x + 0.5, -y - 0.5, 0.5);
+    const w = cellCentreWorld(plane, x, y, this.rayO);
+    if (this.perspCam) return this.worldToScreen(w.x, w.y, w.z);
+    return projectToScreen(this.shownPose, this.layout, w.x, w.y, w.z, { x: 0, y: 0 });
   }
 
-  pickEntity(_px: number, _py: number): number | null {
-    return null;
+  pickEntity(px: number, py: number): number | null {
+    if (!this.world?.factory) return null;
+    if (this.perspCam) {
+      this.setRay(px, py);
+      const r = this.raycaster.ray;
+      this.rayO.x = r.origin.x; this.rayO.y = r.origin.y; this.rayO.z = r.origin.z;
+      this.rayD.x = r.direction.x; this.rayD.y = r.direction.y; this.rayD.z = r.direction.z;
+    } else {
+      screenRay(this.shownPose, this.layout, px, py, this.rayO, this.rayD);
+    }
+    return this.factoryView.pick(this.rayO, this.rayD, this.buildRig.camera?.plane ?? null);
   }
 
   screenToRimBuilding(px: number, py: number): string | null {
@@ -344,6 +420,7 @@ class HfRenderer implements Renderer {
     this.chunks.dispose();
     this.surface.dispose();
     this.overlays.dispose();
+    this.factoryView.dispose();
     this.glows.dispose();
     this.toon.dispose();
     this.pixel.dispose();
@@ -357,7 +434,10 @@ class HfRenderer implements Renderer {
 
   // ---- frame steps -------------------------------------------------------------------------------
 
-  /** First frame with a world: yard props for the survey column, mesher options for the scope. */
+  /**
+   * First frame with a world: mesher options for the scope; factory views when the world hosts a factory (MVP+),
+   * else the M0 survey-set props and belt/lift demo for its survey column.
+   */
   private ensureWorld(world: WorldApi): void {
     if (this.world === world && this.grid === world.terrain && this.mesherOpts) return;
     this.world = world;
@@ -372,12 +452,27 @@ class HfRenderer implements Renderer {
     };
     this.chunks.reset();
     this.rig.snap(world.pod.x, world.pod.y);
+    this.factoryView.bind(world.factory);
+    if (world.factory) {
+      // The survey set is real factory entities now (02 §2.2): drop the M0 demo yard.
+      this.dropYard();
+      return;
+    }
     const column = findSurveyColumn(world.terrain);
-    if (column !== this.yardColumn) {
+    if (column !== this.yardColumn || !this.yard) {
       const yard = this.setYard(column);
       applyLookMaterials(yard.root, this.look, this.kit);
       this.applyQualityScope();
     }
+  }
+
+  private dropYard(): void {
+    if (!this.yard) return;
+    this.scene.remove(this.yard.root);
+    this.yard.root.traverse((o) => (o as { geometry?: { dispose(): void } }).geometry?.dispose());
+    this.yard = null;
+    this.yardHulls = [];
+    this.yardColumn = -1;
   }
 
   private setYard(column: number): YardPropsModel {
@@ -407,8 +502,10 @@ class HfRenderer implements Renderer {
   private updateCamera(frame: RenderFrame, px: number, py: number, dt: number): CameraPose {
     const pod = frame.world.pod;
     const digDown = this.digDescent.update(pod.dig, pod.y, pod.digging, frame.alpha);
+    // While a build camera shows (or tweens), the play rig keeps its play framing: the exit returns to it.
+    const building = this.buildRig.active;
     const pose = this.rig.update(
-      { podX: px, podY: py, vx: pod.vx, vy: pod.vy, digDown, layout: this.layout, mode: frame.mode, touching: frame.touching },
+      { podX: px, podY: py, vx: pod.vx, vy: pod.vy, digDown, layout: this.layout, mode: building ? 'play' : frame.mode, touching: frame.touching },
       dt,
     );
     if (this.look === 'pixel' && !this.perspCam) {
@@ -418,8 +515,30 @@ class HfRenderer implements Renderer {
       pose.ppu = snapPixelPpu(pose.ppu, this.layout.dpr, this.k, Math.cos(pose.yaw * DEG));
       composeLookAt(pose, this.rig.focusX, this.rig.focusY, this.layout);
     }
-    this.placeCameras(pose);
-    return pose;
+    let shown = pose;
+    if (building) {
+      shown = this.buildRig.update(dt, pose);
+      if (this.look === 'pixel' && !this.perspCam) this.snapBuildPose(shown);
+    }
+    this.placeCameras(shown);
+    copyPose(shown, this.shownPose);
+    return shown;
+  }
+
+  /**
+   * Pixel Lab build cameras (03 §9.3): settled, the zoom rounds UP to whole RT px per tile face (floors hold);
+   * tweening, angles step 2.5° and the zoom snaps like the play camera.
+   */
+  private snapBuildPose(p: CameraPose): void {
+    const cam = this.buildRig.camera;
+    if (cam && this.buildRig.settled) {
+      p.ppu = snapBuildPpu(p.ppu, cam.plane, this.layout.dpr, this.k);
+      return;
+    }
+    p.yaw = quantizeDeg(p.yaw, PIXEL_ANGLE_STEP);
+    p.pitch = quantizeDeg(p.pitch, PIXEL_ANGLE_STEP);
+    p.ppu = snapPixelPpu(p.ppu, this.layout.dpr, this.k, Math.cos(p.yaw * DEG));
+    cameraBasis(p.yaw, p.pitch, p.dir, p.right, p.up);
   }
 
   private placeCameras(pose: CameraPose): void {
@@ -526,6 +645,7 @@ class HfRenderer implements Renderer {
     }
     u.uHfPodLampCount.value = lamps;
     lamps = this.chunks.collectLights(px, py, lamps, QUALITY[this.quality].lamps, u.uHfLamps.value, u.uHfLampColors.value, this.magmaColor);
+    if (frame.world.factory) lamps = this.factoryView.collectLamps(px, py, lamps, QUALITY[this.quality].lamps, u.uHfLamps.value, u.uHfLampColors.value);
     u.uHfLampCount.value = lamps;
     this.updateDither(pose, px, py);
     this.updateBackdrop(pose);
@@ -596,6 +716,44 @@ class HfRenderer implements Renderer {
     }
   }
 
+  /** Factory views for the camera rect (04 §3.3): structure on topology changes, motion per frame. */
+  private updateFactory(frame: RenderFrame, pose: CameraPose, dt: number): void {
+    const world = frame.world;
+    const f = world.factory;
+    this.surface.setYardRows(f ? f.yardRows : YARD_D_START);
+    if (!f) {
+      this.kit.uniforms.uHfTerrainDim.value = 1;
+      return;
+    }
+    const layout = this.layout;
+    const yardOn = planeViewRect(pose, layout, 'yard', FACTORY_VIEW_MARGIN, this.yardRect);
+    const mineOn = planeViewRect(pose, layout, 'mine', FACTORY_VIEW_MARGIN, this.mineRect);
+    // α_f (04 §3.3): steps since the last factory tick plus the step interpolation, over the 3-step tick.
+    const since = (((world.stepNo - FACTORY_PHASE - 1) % FACTORY_EVERY) + FACTORY_EVERY) % FACTORY_EVERY;
+    const alphaF = Math.min(0.999, (since + frame.alpha) / FACTORY_EVERY);
+    const ff = this.factoryFrame;
+    ff.factory = f;
+    ff.grid = world.terrain;
+    ff.timeMs = frame.timeMs;
+    ff.dt = dt;
+    ff.alphaF = alphaF;
+    ff.pose = pose;
+    ff.yardRect = yardOn ? this.yardRect : null;
+    ff.mineRect = mineOn ? this.mineRect : null;
+    ff.build = frame.mode === 'build' || this.buildRig.active ? (frame.build ?? null) : null;
+    ff.ghostProgress = world.ghostProgress();
+    ff.texel = this.look === 'pixel' && !this.perspCam ? this.texel : 0;
+    ff.animate = !(frame.reducedMotion || frame.battery === true);
+    ff.itemCap = ITEM_CAP[this.quality];
+    ff.smokeCap = frame.battery === true ? SMOKE_CAP[this.quality] / 2 : SMOKE_CAP[this.quality];
+    this.factoryView.update(ff);
+    // Logistics overlay (03 §4.10): ease the terrain to 30% and back over 0.2 s.
+    const dim = this.kit.uniforms.uHfTerrainDim;
+    const target = ff.build?.overlay === 'logistics' ? LOGISTICS_TERRAIN : 1;
+    const step = dt / OVERLAY_FADE_S;
+    dim.value = dim.value < target ? Math.min(target, dim.value + step) : Math.max(target, dim.value - step);
+  }
+
   private draw(pose: CameraPose): void {
     const gl = this.gl;
     gl.info.reset();
@@ -622,6 +780,7 @@ class HfRenderer implements Renderer {
     this.glows.setLook(look);
     this.surface.setMaterials(this.kit.terrain(look), this.kit.sky(look));
     for (const root of this.modelRoots()) applyLookMaterials(root, look, this.kit);
+    this.factoryView.setLook(look);
     this.applyQualityScope();
   }
 
@@ -647,6 +806,8 @@ class HfRenderer implements Renderer {
     }
     setHullsEnabled(this.pod.root, 'pod', true, this.look);
     for (const root of [this.rim.root, this.yard?.root]) if (root) setHullsEnabled(root, 'buildings', scope !== 'pod', this.look);
+    // Factory outlines: buildings and items on mid/high; low outlines only the selected piece (04 §5.5).
+    this.factoryView.setHulls(scope !== 'pod', true);
   }
 
   private modelRoots(): Object3D[] {

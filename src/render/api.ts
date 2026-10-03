@@ -110,6 +110,8 @@ export interface BuildFrame {
   bulldoze: boolean;
   /** Selected entity id (inspect), or null. */
   selectedId: number | null;
+  /** Map overlay (03 §4.10; the ◫ button). MVP: 'logistics' dims the terrain to 30% and marks jam heads ⊘. */
+  overlay?: 'logistics' | null;
 }
 
 /** Build camera (canon §3.4: surface build 45° + n·90° / 55°; underground build 8° / 12°). */
