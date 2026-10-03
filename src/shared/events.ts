@@ -28,7 +28,7 @@ export type GameEvent =
   | { t: 'incentive'; row: number; ft: number; cash: number }
   | { t: 'pad-arrive'; id: RimBuildingId }
   | { t: 'sale'; amount: number; count: number }
-  | { t: 'purchase'; kind: 'fuel' | 'repair' | 'upgrade' | 'consumable'; amount: number; line?: Line; tier?: number; id?: ConsumableId }
+  | { t: 'purchase'; kind: 'fuel' | 'repair' | 'upgrade' | 'consumable' | 'kit' | 'yard'; amount: number; line?: Line; tier?: number; id?: ConsumableId; kit?: string }
   | { t: 'coop-credit'; liters: number }
   | { t: 'toast'; text: string; tone?: 'info' | 'warn' | 'good' }
   | { t: 'radio'; beat: string; sender: 'Dot' | 'Channel Zero' | 'Marlow' | 'the Surveyor' | 'Deepreach log'; cards: string[] }

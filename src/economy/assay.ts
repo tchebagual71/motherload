@@ -97,17 +97,36 @@ export function cargoValue(cargo: readonly CargoItem[]): number {
   return sum;
 }
 
-/** Sell every specimen, gem and relic; Kits stay aboard. Debt is paid from the proceeds first. */
-export function sellAll(ctx: EconomyCtx): Result {
+/** Same cargo kind (mineral tier, relic id or Kit id). */
+function alike(a: CargoItem, b: CargoItem): boolean {
+  if (a.kind === 'mineral') return b.kind === 'mineral' && b.tier === a.tier;
+  if (a.kind === 'relic') return b.kind === 'relic' && b.id === a.id;
+  return b.kind === 'kit' && b.id === a.id;
+}
+
+function isKept(item: CargoItem, keep: readonly CargoItem[] | undefined): boolean {
+  if (!keep) return false;
+  for (const k of keep) if (alike(k, item)) return true;
+  return false;
+}
+
+/**
+ * Sell every specimen, gem and relic; Kits stay aboard, and so does anything like an item in `keep` (rows the
+ * Assay's Stockpile toggle holds back, 03 §6.3). Debt is paid from the proceeds first.
+ */
+export function sellAll(ctx: EconomyCtx, keep?: readonly CargoItem[]): Result {
   const cargo = ctx.pod.cargo;
-  const gross = cargoValue(cargo);
+  let gross = 0;
   let sold = 0;
   let kept = 0;
   for (let i = 0; i < cargo.length; i++) {
-    if (isSellable(cargo[i])) sold++;
-    else cargo[kept++] = cargo[i];
+    const it = cargo[i];
+    if (isSellable(it) && !isKept(it, keep)) {
+      sold++;
+      gross += itemValue(it);
+    } else cargo[kept++] = it;
   }
-  if (sold === 0) return fail(cargo.length === 0 ? 'Nothing to sell' : 'The Assay Office does not buy Kits');
+  if (sold === 0) return fail(cargo.length === 0 ? 'Nothing to sell' : keep && keep.length > 0 ? 'Nothing left to sell' : 'The Assay Office does not buy Kits');
   cargo.length = kept;
 
   const w = ctx.wallet;

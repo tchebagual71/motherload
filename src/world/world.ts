@@ -1,9 +1,9 @@
 // The one authoritative simulation (canon §4.10; 04 §3.1): terrain, pod, wallet, story and (MVP) the
 // factory, stepped at a fixed 60 Hz. UI, render and app reach it only through WorldApi. PURE MODULE.
-import { FACTORY_EVERY, FACTORY_PHASE, MINE_W, POD_H, RIM_BUILDINGS, START_CASH, START_X, TILE_FT, type Line } from '../shared/canon';
+import { FACTORY_EVERY, FACTORY_PHASE, MINE_H, MINE_W, POD_H, RIM_BUILDINGS, START_CASH, START_X, SURVEY_PING_ROW, TILE_FT, type Line } from '../shared/canon';
 import type { GameEvent } from '../shared/events';
 import { Rng, STREAM } from '../shared/rng';
-import { T, type CargoItem, type ConsumableId, type RimBuildingId, type Scope } from '../shared/types';
+import { T, type CargoItem, type ConsumableId, type Lode, type RimBuildingId, type Scope } from '../shared/types';
 import { generateWorld, type GenMeta } from '../terrain/generate';
 import type { TerrainGrid } from '../terrain/grid';
 import { applyScopeOverlay, scopeFloorRow } from '../terrain/scope';
@@ -11,16 +11,20 @@ import { PUMP_PAD_X, createPod, destructionCause, podStats, returnTickLiters, st
 import type { PodIntent, PodState } from '../pod/types';
 import * as econ from '../economy';
 import type { EconomyCtx, PartsLedger } from '../economy';
-import { deserialize as decodeSave, serialize as encodeSave, type SaveState } from '../save/codec';
-import type { CargoGroup, PodStats, Quote, Result, ShopItem, StoryState, UpgradeCard, Wallet, WorldApi } from './api';
+import { SaveError, deserialize as decodeSave, serialize as encodeSave, type SaveState } from '../save/codec';
+import type { CargoGroup, KitShopItem, PodStats, Quote, Result, ShopItem, StoryState, UpgradeCard, Wallet, WorldApi } from './api';
 import { DiscardLog, takeCargo } from './discard';
 import { loadScope } from './loadScope';
 import { PUMP_PAD, PadArming, isNeutral, isOnRim, padIndexAt, padIndexOf } from './pads';
 import { newStory, resetTrip, updateDepth, updateTrip } from './rules';
-import { RECORDER_RELIC, StoryDirector, type StoryContext, type StorySnapshot } from '../story';
+import { RECORDER_RELIC, StoryDirector, rungFlag, type StoryContext, type StorySnapshot } from '../story';
 import { scopeAtLeast } from '../shared/scope';
-import { Factory, type FactoryPorts } from '../factory';
-import type { KitShopItem } from './api';
+import { Factory, FactoryLoadError, RUNGS, YARD_EXPANSIONS, type Cell, type FactoryPorts, type Res } from '../factory';
+import { LODE_TABLE } from '../terrain/lodes';
+import { CargoKitSink, CargoKitSource } from './kits';
+import { GHOST_REACH, GhostBuilder, jobDistance } from './ghostJob';
+import { errText } from './factoryText';
+import * as kits from './kitShop';
 
 export interface WorldOptions {
   seed: number;
@@ -32,6 +36,8 @@ export interface WorldOptions {
 const NO_EVENTS: GameEvent[] = Object.freeze([]) as unknown as GameEvent[];
 /** Pod centre height when standing on a surface (the Rim at y = 0, or a cell's floor). */
 const STAND_Y = POD_H / 2;
+/** Scanner tier from which discovery shows a lode's purity (Dowser, canon §2.6; 02 §3.6). */
+const DOWSER_TIER = 3;
 
 /** A brand-new claim: full v1 generation plus the scope's debug overlay (canon §3.2, §5.1). */
 function newGame(opts: WorldOptions): SaveState {
@@ -125,6 +131,14 @@ export class World implements WorldApi {
   private storyMark = 0;
   /** Reused every step (no per-step allocation). */
   private readonly storySnap: StorySnapshot;
+  /** Pod-side ghost completion (02 §2.6); its timer is saved with the pod. */
+  private readonly ghosts: GhostBuilder;
+  /** The bay as the factory's Kit source (reused). */
+  private readonly kitSource: CargoKitSource;
+  /** One-cell tileChanged argument for digs (reused). */
+  private readonly dugCell: Cell[] = [{ x: 0, y: 0 }];
+  /** U1 already unlocked (skips the rung check every step). */
+  private u1Done = false;
 
   /** `restored` is for World.deserialize only; it replaces generation with saved state. */
   constructor(opts: WorldOptions, restored?: SaveState) {
@@ -143,8 +157,16 @@ export class World implements WorldApi {
     this.deathUnreported = s.pod.destroyed;
     this.podCtx = { floorRow: scopeFloorRow(this.scope), deepHeat: this.deepHeat, rng: this.rng, stepNo: this.steps, scope: this.scope };
     this.shop = { pod: this.pod, wallet: this.wallet, scope: this.scope, parts: econ.EMPTY_PARTS, emit: this.emit };
+    this.ghosts = new GhostBuilder(s.ghost);
+    this.kitSource = new CargoKitSource(this.pod);
     this.factory = scopeAtLeast(this.scope, 'mvp') ? this.hostFactory(s.factory) : null;
-    if (this.factory) this.shop.parts = this.factory.partsLedger();
+    if (this.factory) {
+      this.shop.parts = this.factory.partsLedger();
+      // A fresh session is never away, whatever the last save caught (MVP: the factory sleeps while hidden).
+      this.factory.setAway(false);
+      if (restored && !s.factory) this.migrateToFactory();
+      this.u1Done = this.factory.isUnlocked('U1');
+    }
     this.director = new StoryDirector(this.storyContext());
     this.storySnap = { stepNo: 0, row: 0, depthFt: 0, grounded: true, onRim: true, alive: true, magmaPending: 0, trips: 0, cash: 0, tiers: this.pod.tiers };
     // The game-start card fires for a new claim only, never for a restored one (canon §2.12 #1 exception).
@@ -156,7 +178,13 @@ export class World implements WorldApi {
   static deserialize(bytes: Uint8Array, buildScope?: Scope): World {
     const s = decodeSave(bytes);
     if (buildScope) s.scope = loadScope(s.scope, buildScope);
-    return new World({ seed: s.seed, scope: s.scope, deepHeat: s.deepHeat }, s);
+    try {
+      return new World({ seed: s.seed, scope: s.scope, deepHeat: s.deepHeat }, s);
+    } catch (e) {
+      // A FACT section behind a valid CRC that the factory refuses is a corrupt save like any other (04 §4.13).
+      if (e instanceof FactoryLoadError) throw new SaveError('section', e.message);
+      throw e;
+    }
   }
 
   serialize(): Uint8Array {
@@ -178,7 +206,33 @@ export class World implements WorldApi {
       rng: this.rng.s,
       pads: this.pads.snapshot(),
       factory: this.factory?.serialize(),
+      ghost: this.ghosts.timer(),
     };
+  }
+
+  /**
+   * An older save without a FACT section (an M0 claim, or a save from an M0-scope build) under an MVP build:
+   * the fresh factory (survey set placed) learns what the claim already knows: discovered lodes (U2, the
+   * Starter Kit), the r32 pass (U1). Pod, wallet and story stay as saved; the rungs land in the story flags
+   * quietly, since the claim crossed those triggers long ago.
+   */
+  private migrateToFactory(): void {
+    const f = this.factory;
+    if (!f) return;
+    const mark = this.events.length;
+    for (const lode of this.terrain.lodes) {
+      if (!lode.discovered) continue;
+      f.discoverLode(lode.id, this.purityKnown(lode));
+      if (lode.id === this.meta.scriptedLodeId) kits.offerStarterKit(this.story.flags);
+    }
+    if (this.story.deepestRow >= SURVEY_PING_ROW) f.unlockRung('U1');
+    for (const r of RUNGS) if (f.isUnlocked(r.id) && r.scope === 'mvp') this.story.flags[rungFlag(r.id)] = true;
+    this.events.length = mark;
+  }
+
+  /** Purity shows at discovery for fixed-purity lodes or with a Dowser or better (02 §3.6). */
+  private purityKnown(lode: Lode): boolean {
+    return (LODE_TABLE[lode.id]?.purity ?? null) !== null || this.pod.tiers.scanner >= DOWSER_TIER;
   }
 
   /** Factory ports over the World's grid, wallet and event queue (04 §3.1). */
@@ -216,8 +270,12 @@ export class World implements WorldApi {
       const mark = this.events.length;
       this.podCtx.stepNo = this.steps;
       stepPod(pod, this.terrain, intent, this.podCtx, this.events);
+      if (this.factory) this.factoryHooks(this.factory, mark);
       if (pod.destroyed) this.story.destructions++;
-      else this.applyRules(intent, mark);
+      else {
+        this.applyRules(intent, mark);
+        if (this.factory) this.buildNearbyGhost(this.factory);
+      }
     } else {
       // Paused (velocity kept, canon §4.5) or wrecked: no interpolation drift while frames keep rendering.
       pod.prevX = pod.x;
@@ -256,6 +314,11 @@ export class World implements WorldApi {
     this.latchAfterHoming(mark);
     const row = Math.floor(-pod.y);
     updateDepth(this.story, this.wallet, row, this.emit);
+    // U1: the pod passes r32 (02 §9). The director fires Dot's survey ping (S1, 'lode-pinged') once on the same row.
+    if (!this.u1Done && row >= SURVEY_PING_ROW && this.factory) {
+      this.factory.unlockRung('U1');
+      this.u1Done = true;
+    }
     if (updateTrip(this.story, row, isOnRim(pod), this.emit)) this.onTripEnd();
     const pad = this.pads.step(pod, isNeutral(intent));
     if (pad >= 0) this.arriveAtPad(pad);
@@ -282,6 +345,47 @@ export class World implements WorldApi {
   /** 20 Hz factory tick on stepNo % FACTORY_EVERY === FACTORY_PHASE (canon §3.5). MVP: `factory.tick()`. */
   private tickFactory(): void {
     this.factory?.tick();
+  }
+
+  /**
+   * The pod step's world events the factory hosts (04 §3.1): lode discovery (U2; the scripted lode also offers
+   * the Starter Kit) and terrain changes from digs and blasts (tileChanged re-checks ghosts).
+   */
+  private factoryHooks(f: Factory, mark: number): void {
+    const ev = this.events;
+    const n = ev.length; // hooks may emit (unlock, starter-kit); those are not re-read
+    for (let i = mark; i < n; i++) {
+      const e = ev[i];
+      switch (e.t) {
+        case 'lode-discovered': {
+          const lode = this.terrain.lodes[e.lodeId];
+          if (!lode) break;
+          f.discoverLode(e.lodeId, this.purityKnown(lode));
+          if (e.lodeId === this.meta.scriptedLodeId && kits.offerStarterKit(this.story.flags)) this.emit({ t: 'starter-kit' });
+          break;
+        }
+        case 'dug': {
+          const c = this.dugCell[0];
+          c.x = e.x;
+          c.y = e.r;
+          f.tileChanged(this.dugCell);
+          break;
+        }
+        case 'explosion':
+          f.tileChanged(blastCells(e.x, e.r, e.radius));
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  /** 02 §2.6: complete the oldest ghost within 2 tiles whose Kit the bay holds, after 1.0 s of staying near. */
+  private buildNearbyGhost(f: Factory): void {
+    const r = this.ghosts.step(f, this.pod, this.kitSource, this.emit);
+    if (!r.done || r.job.kind !== 'lift') return;
+    const lift = f.entity(r.id);
+    if (lift) this.noteLiftBuilt(lift.h - 1);
   }
 
   /** Rim arrival after a trip (01 §2.2): MVP re-arms Depot sessions; v1 rolls Shears (canon §4.7). */
@@ -332,8 +436,8 @@ export class World implements WorldApi {
   cargoValue(): number {
     return econ.cargoValue(this.pod.cargo);
   }
-  sellAll(): Result {
-    return this.tradeRefusal() ?? this.withRecorderLogs(() => econ.sellAll(this.shop));
+  sellAll(keep?: readonly CargoItem[]): Result {
+    return this.tradeRefusal() ?? this.withRecorderLogs(() => econ.sellAll(this.shop, keep));
   }
   repairQuote(): Quote {
     return econ.repairQuote(this.shop);
@@ -464,39 +568,95 @@ export class World implements WorldApi {
 
   // ------------------------------------------------------------------ debug
 
+  // ---- Factory-facing services (MVP; canon §2.4, §4.8–§4.9; 02 §2.7, §3.7) ----
+
+  private shopCtx(): kits.ShopCtx | null {
+    const f = this.factory;
+    return f ? { pod: this.pod, wallet: this.wallet, scope: this.scope, factory: f, flags: this.story.flags, emit: this.emit } : null;
+  }
+
+  kitShop(): KitShopItem[] {
+    const ctx = this.shopCtx();
+    return ctx ? kits.kitShop(ctx) : [];
+  }
+  buyKit(kitId: string, n: number, to: 'cargo' | 'stockpile'): Result {
+    const ctx = this.shopCtx();
+    if (!ctx) return econ.fail('No Kits in this build');
+    return this.tradeRefusal() ?? kits.buyKit(ctx, kitId, n, to);
+  }
+  loadKit(kitId: string, n: number): Result {
+    const ctx = this.shopCtx();
+    if (!ctx) return econ.fail('No Stockpile in this build');
+    return this.tradeRefusal() ?? kits.loadKit(ctx, kitId, n);
+  }
+  starterKitReady(): boolean {
+    return this.factory !== null && kits.starterKitReady(this.story.flags);
+  }
+  claimStarterKit(): Result {
+    const ctx = this.shopCtx();
+    if (!ctx) return econ.fail('No Starter Kit in this build');
+    return this.tradeRefusal() ?? kits.claimStarterKit(ctx);
+  }
+  stockpileCargo(item: CargoItem, n: number | 'all'): Result {
+    const ctx = this.shopCtx();
+    if (!ctx) return econ.fail('No Stockpile in this build');
+    return this.tradeRefusal() ?? kits.stockpileCargo(ctx, item, n);
+  }
+  expandYard(): Result {
+    const f = this.factory;
+    if (!f) return econ.fail('No Yard in this build');
+    const refusal = this.tradeRefusal();
+    if (refusal) return refusal;
+    const next = YARD_EXPANSIONS.find((x) => x.rows > f.yardRows);
+    if (!next) return econ.fail('The Yard is as big as it gets');
+    if (next.scope === 'v1' && !scopeAtLeast(this.scope, 'v1')) return econ.fail('More Yard comes in the next update');
+    const cash = this.wallet.cash;
+    const r = f.expandYard();
+    if (!r.ok) return econ.fail(errText(r));
+    this.emit({ t: 'purchase', kind: 'yard', amount: cash - this.wallet.cash });
+    return { ok: true, message: `Yard expanded to 48 × ${r.rows}`, amount: r.rows };
+  }
+  ghostProgress(): { id: number; progress: number } | null {
+    return this.factory ? this.ghosts.progress() : null;
+  }
+
+  /** The bay takes refunds only when the pod is alive and within 2 tiles of the piece (02 §2.7). */
+  private sinkNear(x: number, y: number, w: number, h: number): CargoKitSink | undefined {
+    const pod = this.pod;
+    if (pod.destroyed) return undefined;
+    const near = jobDistance({ x, y, w, h }, Math.floor(pod.x), Math.floor(-pod.y)) <= GHOST_REACH;
+    return near ? new CargoKitSink(pod) : undefined;
+  }
+
+  deconstructUnderground(id: number): Res<{ refund: number }> {
+    const f = this.factory;
+    if (!f) return { ok: false, code: 'E_INVALID' };
+    const e = f.entity(id);
+    if (!e) return { ok: false, code: 'E_INVALID' };
+    if (e.plane === 'yard') return f.deconstruct(id);
+    const sink = this.sinkNear(e.x, e.y, e.w, e.h);
+    return f.deconstruct(id, sink ? { toCargo: sink } : undefined);
+  }
+
+  removeUndergroundBelts(cells: readonly Cell[]): Res<{ refund: number }> {
+    const f = this.factory;
+    if (!f) return { ok: false, code: 'E_INVALID' };
+    let sink: CargoKitSink | undefined;
+    for (const c of cells) {
+      sink = this.sinkNear(c.x, c.y, 1, 1);
+      if (sink) break;
+    }
+    return f.removeBelts('mine', cells, sink ? { toCargo: sink } : undefined);
+  }
+
+  setAway(on: boolean): void {
+    this.factory?.setAway(on);
+  }
+
   /**
    * Put the pod, grounded and still, in a freshly carved 1×1 air cell on `row` near x 7 (never the open survey
    * shaft, INT-12), on a floor: the cell below becomes dirt if it is air.
    */
-  // ---- Factory-facing services (MVP build wave fills these in) ----
-
-  kitShop(): KitShopItem[] {
-    return [];
-  }
-  buyKit(_kitId: string, _n: number, _to: 'cargo' | 'stockpile'): Result {
-    return { ok: false, reason: 'Kits arrive soon' };
-  }
-  loadKit(_kitId: string, _n: number): Result {
-    return { ok: false, reason: 'Kits arrive soon' };
-  }
-  starterKitReady(): boolean {
-    return false;
-  }
-  claimStarterKit(): Result {
-    return { ok: false, reason: 'No Starter Kit waiting' };
-  }
-  stockpileCargo(_item: CargoItem, _n: number | 'all'): Result {
-    return { ok: false, reason: 'The Stockpile opens soon' };
-  }
-  expandYard(): Result {
-    if (!this.factory) return { ok: false, reason: 'No Yard in this build' };
-    const r = this.factory.expandYard();
-    return r.ok ? { ok: true, message: `Yard expanded to ${r.rows} rows` } : { ok: false, reason: r.code };
-  }
-  ghostProgress(): { id: number; progress: number } | null {
-    return null;
-  }
-
   debugTeleport(row: number): void {
     const grid = this.terrain;
     const floorRow = scopeFloorRow(this.scope);
@@ -515,4 +675,13 @@ export class World implements WorldApi {
   debugSetTier(line: Line, tier: number): void {
     if (econ.tierExists(line, tier)) econ.installTier(this.shop, line, tier);
   }
+}
+
+/** Cells of a blast square (canon §3.3), clipped to the mine. Blasts are rare: a fresh list each. */
+function blastCells(x: number, r: number, radius: number): Cell[] {
+  const out: Cell[] = [];
+  for (let y = Math.max(0, r - radius); y <= Math.min(MINE_H - 1, r + radius); y++) {
+    for (let c = Math.max(0, x - radius); c <= Math.min(MINE_W - 1, x + radius); c++) out.push({ x: c, y });
+  }
+  return out;
 }
