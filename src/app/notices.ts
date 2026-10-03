@@ -1,5 +1,8 @@
 // Save, boot and update notices (03 §6.2: a toast is ≤ 40 characters, so each one names its action within the
 // cap instead of being clipped; 04 §4.10 "Save damaged — restored the previous copy (n min older)").
+import type { DigRefusal } from '../shared/events';
+import type { Scope } from '../shared/types';
+
 export const NOTICE = {
   storageFull: 'Storage full: export in Menu → Saves',
   saveFailed: 'Could not save: export your save',
@@ -12,8 +15,34 @@ export const NOTICE = {
   noOlderCopy: 'No older copy: export or start over',
   /** Safe Mode with no older copy: "Try again" boots the failing copy once more. */
   retryingCopy: 'No older copy: trying this save again',
-  updateReady: 'Update ready: it installs next launch',
+  updateReady: 'Update ready: tap Update on the Rim',
+  /** INT-3: specimens dug into a full bay are destroyed (canon §3.7). */
+  bayFull: 'Bay full: open Cargo to make room',
+  /** A sign tap needs Pip grounded on the Rim (01 §3.10). */
+  landFirst: 'Land on the Rim first',
 } as const;
+
+/**
+ * Pod refusal toasts (03 §6.2; 01 §3.4; INT-9). The sim emits one 'dig-refused' per push, so each push says it
+ * once. Hardrock and lode rock answer with their clink / thunk and sparks only.
+ */
+export function refusalNotice(reason: DigRefusal, scope: Scope): string | null {
+  switch (reason) {
+    case 'paved':
+      return 'Paved — dig beside the pad';
+    case 'anchored':
+      return 'Supports a belt — remove it first';
+    case 'floor':
+      return scope === 'm0' ? 'Test floor: the M0 dig ends here' : 'Co-op drilling rights end here';
+    case 'seam':
+      return 'Unknown seam: too hard to drill';
+    case 'heartstone':
+    case 'seal':
+      return 'Nothing drills through that';
+    default:
+      return null;
+  }
+}
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;

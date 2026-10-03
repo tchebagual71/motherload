@@ -16,8 +16,8 @@ export interface PodMotion {
 const SHEET_REASONS: readonly SheetReason[] = ['sheet', 'menu', 'settings'];
 /** While any of these holds the pod, a new `interrupt` adds nothing: their own exit applies the gate. */
 const MODAL_REASONS: readonly PauseReason[] = ['title', 'safemode', 'death', 'sheet', 'menu', 'settings'];
-/** Overlay precedence, highest first (only one overlay shows at a time). */
-const OVERLAY_ORDER: readonly (PauseReason & Exclude<Overlay, null>)[] = ['safemode', 'title', 'upright', 'death', 'interrupt'];
+/** Overlay precedence, highest first (only one overlay shows at a time). 'ctxlost' is "Restoring graphics…" (04 §5.6). */
+const OVERLAY_ORDER: readonly (PauseReason & Exclude<Overlay, null>)[] = ['safemode', 'title', 'upright', 'ctxlost', 'death', 'interrupt'];
 
 /** Canon §4.5 resume gate: airborne or |v| > 3 tiles/s → 1.5 s countdown. */
 export function needsResumeCountdown(p: PodMotion): boolean {

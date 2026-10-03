@@ -44,7 +44,12 @@ describe('the World hosts the story', () => {
   it('falling down Dot’s shaft pings the lode at r32, pays 500 ft and finds the lode at the bottom', () => {
     const w = world();
     w.drainEvents();
-    w.debugTeleport(30);
+    // Drop into the open survey shaft at row 30 (debugTeleport deliberately avoids the shaft column).
+    const pod = w.pod as { x: number; y: number; vx: number; vy: number; prevX: number; prevY: number; grounded: boolean };
+    pod.x = pod.prevX = w.meta.surveyColumn + 0.5;
+    pod.y = pod.prevY = -30.5;
+    pod.vx = pod.vy = 0;
+    pod.grounded = false;
     const ev = run(w, 600);
     expect(beatIds(ev)).toEqual(['S1', 'S2', 'S5']);
     expect(ev).toContainEqual({ t: 'lode-pinged', lodeId: w.meta.scriptedLodeId });

@@ -1,11 +1,13 @@
 // Pod-mode input (03 §3; 04 §6.1; canon §3.12): Pointer Events on the canvas (floating stick, world
 // taps), delegated pointer handling on the UI root for quick slots, THRUST and [data-tap] HUD buttons,
 // the dev keyboard, and browser-gesture suppression. Produces one PodIntent per sim step via sampleIntent().
+// One-handed mode measures the stick from a virtual origin under the pod (canon §3.12); THRUST may toggle (03 §3.3).
 import type { AppController, InputController } from '../app/types';
 import { inScope, SCOPE } from '../config/scope';
 import type { PodIntent } from '../pod/types';
 import { TOUCH } from '../shared/canon';
 import { closeCurrentSheet } from '../ui/actions';
+import { runContextAction } from '../ui/context';
 import { debugEnabled } from '../ui/env';
 import { CanvasArbiter, type PointerSample } from './arbiter';
 import { SlotPress, type SlotKind } from './arming';
@@ -15,7 +17,7 @@ import { KeyboardState, type KeyCommand, type KeyIntent } from './keyboard';
 import { stickSector } from './sectors';
 import { slotDecision } from './slots';
 import { ClickSwallow, TapTracker } from './taps';
-import { stickSpawnZone, type ControlSize, type InputLayout } from './zones';
+import { oneHandedZone, stickSpawnZone, virtualOrigin, type ControlSize, type InputLayout, type Rect } from './zones';
 
 export interface CreateInputOptions {
   canvas: HTMLCanvasElement;
@@ -26,12 +28,19 @@ export interface CreateInputOptions {
   getLayout: () => InputLayout;
   /** `pointercancel` on the stick or THRUST: the app raises `interrupt` (canon §4.5). */
   onInterrupt?: (reason: 'pointercancel') => void;
+  /** One-handed mode: a touch on this point is a world tap (dig neighbour, sign), never a stick. */
+  isTapTarget?: (px: number, py: number) => boolean;
+  /** The pod's position in canvas CSS px (the one-handed virtual origin's x), or null before the first frame. */
+  podScreen?: () => { x: number; y: number } | null;
 }
 
 /** The base slides when the thumb passes 1.25 R (03 §3.1 [UX]). */
 const STICK_FOLLOW = 1.25;
 /** Synthetic pointer ids for keyboard slot presses (real Pointer Events ids are never negative). */
 const KEY_POINTER_BASE = -10;
+/** One-handed: the stick is measured from the fixed virtual origin, so its base never slides after the thumb. */
+const NO_FOLLOW = 1e6;
+const NO_ZONE: Rect = { x0: 1, y0: 1, x1: 0, y1: 0 };
 
 function isTextField(t: EventTarget | null): boolean {
   return t instanceof HTMLTextAreaElement || t instanceof HTMLInputElement || t instanceof HTMLSelectElement;
@@ -51,11 +60,14 @@ export function createInput(opts: CreateInputOptions): InputController {
   let canvasLeft = 0;
   let canvasTop = 0;
   let thrustPointer = -1;
+  /** THRUST "Toggle" (03 §3.3): latched on until tapped again, a Down input or any dig. */
+  let thrustLatched = false;
   let pendingFire = -1;
   let armRaf = 0;
   const taps = new TapTracker();
   const tapEls = new Map<number, HTMLElement>();
   const swallow = new ClickSwallow<HTMLElement>();
+  controls.podScreen = opts.podScreen ?? null;
 
   const sample = (e: PointerEvent): PointerSample => {
     scratch.id = e.pointerId;
@@ -157,6 +169,17 @@ export function createInput(opts: CreateInputOptions): InputController {
     controls.thrustHeld.value = false;
   };
 
+  const setLatch = (on: boolean): void => {
+    thrustLatched = on;
+    if (controls.thrustLatched.peek() !== on) controls.thrustLatched.value = on;
+  };
+
+  /** A Down push (stick or keys) or a dig releases the THRUST toggle (03 §3.3). */
+  const downInput = (): boolean => {
+    if (arbiter.stick.active) return controls.stick.sector === 'down';
+    return keyIntent.sy < 0 && Math.abs(keyIntent.sy) >= Math.abs(keyIntent.sx);
+  };
+
   // ---------------------------------------------------------------- canvas pointers
   const onCanvasDown = (e: PointerEvent): void => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -166,16 +189,25 @@ export function createInput(opts: CreateInputOptions): InputController {
     canvasTop = rect.top;
     const s = settings();
     if (!arbiter.stick.active) {
-      arbiter.stick.configure({ radius: TOUCH.stickRadius[s.controlSize], deadZone: TOUCH.stickDeadZone, followFactor: STICK_FOLLOW });
+      const followFactor = s.oneHanded ? NO_FOLLOW : STICK_FOLLOW;
+      arbiter.stick.configure({ radius: TOUCH.stickRadius[s.controlSize], deadZone: TOUCH.stickDeadZone, followFactor });
     }
-    const zone = stickSpawnZone(opts.getLayout(), s.controlSize, s.leftHanded);
-    const role = arbiter.down(sample(e), zone);
+    const p = sample(e);
+    const role = s.oneHanded ? oneHandedDown(p, s.controlSize, s.leftHanded) : arbiter.down(p, stickSpawnZone(opts.getLayout(), s.controlSize, s.leftHanded));
     try {
       canvas.setPointerCapture(e.pointerId);
     } catch {
       // Capture can fail for synthetic or already-released pointers; tracking still works on the canvas.
     }
     if (role === 'stick') publishStick();
+  };
+
+  /** One-handed (03 §3.6): y ≥ 0.45 H drives a stick from the virtual origin; tap targets stay taps. */
+  const oneHandedDown = (p: PointerSample, size: ControlSize, leftHanded: boolean): ReturnType<CanvasArbiter['down']> => {
+    const layout = opts.getLayout();
+    if (opts.isTapTarget?.(p.x, p.y)) return arbiter.down(p, NO_ZONE);
+    const pod = opts.podScreen?.() ?? null;
+    return arbiter.down(p, oneHandedZone(layout, size, leftHanded), virtualOrigin(layout, size, pod ? pod.x : null));
   };
 
   const onCanvasMove = (e: PointerEvent): void => {
@@ -248,6 +280,7 @@ export function createInput(opts: CreateInputOptions): InputController {
       if (thrustPointer !== -1) return;
       thrustPointer = e.pointerId;
       controls.thrustHeld.value = true;
+      if (settings().thrustMode === 'toggle') setLatch(!thrustLatched);
       captured = true;
     } else {
       captured = beginSlot(Number(el.dataset.slot), sample(e));
@@ -315,6 +348,10 @@ export function createInput(opts: CreateInputOptions): InputController {
         if (st.sheet.peek() === 'cargo') closeCurrentSheet(app);
         else app.openSheet('cargo');
         return true;
+      case 'context': {
+        const now = performance.now();
+        return runContextAction(app, { now, idleMs: now - controls.lastInputAt });
+      }
       case 'look':
         if (SCOPE !== 'm0' && !st.styleTest.peek()) return false;
         app.setLook(st.look.peek() === 'toon' ? 'pixel' : 'toon');
@@ -343,6 +380,7 @@ export function createInput(opts: CreateInputOptions): InputController {
     press.cancel();
     clearPressVisuals();
     releaseThrust();
+    setLatch(false);
     keys.clear();
     pendingFire = -1;
     taps.clear();
@@ -386,20 +424,24 @@ export function createInput(opts: CreateInputOptions): InputController {
         intent.sx = keyIntent.sx;
         intent.sy = keyIntent.sy;
       }
-      intent.thrust = thrustPointer !== -1 || keyIntent.thrust;
+      if (thrustLatched && (downInput() || app.world.pod.dig !== null)) setLatch(false);
+      const button = settings().thrustMode === 'toggle' ? thrustLatched : thrustPointer !== -1;
+      intent.thrust = button || keyIntent.thrust;
       intent.fireSlot = pendingFire;
       pendingFire = -1;
+      if (intent.thrust || intent.sx !== 0 || intent.sy !== 0) controls.lastInputAt = performance.now();
       return intent;
     },
     get touching(): boolean {
       return arbiter.pointerCount > 0 || thrustPointer !== -1 || press.captured;
     },
     get active(): boolean {
-      return arbiter.stick.magnitude > 0 || keys.active || thrustPointer !== -1;
+      return arbiter.stick.magnitude > 0 || keys.active || thrustPointer !== -1 || thrustLatched;
     },
     releaseAll,
     dispose(): void {
       releaseAll();
+      if (controls.podScreen === opts.podScreen) controls.podScreen = null;
       for (const [target, type, fn, capture] of listen) target.removeEventListener(type, fn, capture);
       disposeGuards();
     },

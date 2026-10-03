@@ -8,8 +8,9 @@ import { useLayoutEffect, useRef } from 'preact/hooks';
 import type { AppController } from '../app/types';
 import { inScope } from '../config/scope';
 import { closeCurrentSheet } from './actions';
+import { BAY_FULL_CONTEXT_MS } from './context';
 import { formatCash } from './format';
-import { hudAlert, hudModel, type HudModel } from './hudModel';
+import { hudAlert, hudModel, returnTickOn, type HudModel } from './hudModel';
 import { Icon } from './icons';
 import { hudColumns, hudDigitPt } from './layout';
 import type { Viewport } from './viewport';
@@ -24,11 +25,20 @@ export function Hud({ app, vp }: { app: AppController; vp: Signal<Viewport> }): 
   app.state.hudTick.value; // subscribe: ≤ 10 Hz refresh
   const v = vp.value;
   const world = app.world;
+  const settings = app.state.settings.value;
   const stats = world.stats();
-  const m = hudModel(world.pod, stats, world.wallet);
+  // Return Tick is MVP (canon §5.5).
+  const tickOn = inScope('mvp') && returnTickOn(settings.returnTick, {
+    tankTier: world.pod.tiers.tank,
+    trips: world.story.trips,
+    assisted: settings.landingAssist || settings.steadyDrill,
+  });
+  const m = hudModel(world.pod, stats, world.wallet, { liters: tickOn ? world.returnFuel() : 0, shown: tickOn });
   const rowW = v.w - v.il - v.ir;
   const [fuelW, hullW, cargoW, infoW, menuW] = hudColumns(rowW);
-  const style = { '--hf-digit': `${hudDigitPt(rowW)}px` };
+  const style = { '--hf-digit': `${hudDigitPt(rowW, settings.textScale)}px` };
+  const bayFullAt = app.state.bayFullAt.value;
+  const bayFull = performance.now() - bayFullAt <= BAY_FULL_CONTEXT_MS;
 
   const onMenu = (): void => {
     if (app.state.sheet.peek() === 'menu') closeCurrentSheet(app);
@@ -47,7 +57,7 @@ export function Hud({ app, vp }: { app: AppController; vp: Signal<Viewport> }): 
       <div class="hf-hud" style={style} role="group" aria-label="Pod status">
         <FuelPill m={m} w={fuelW} />
         <HullPill m={m} w={hullW} hull={world.pod.hull} />
-        <CargoPill m={m} w={cargoW} slots={stats.baySlots} onClick={onCargo} />
+        <CargoPill m={m} w={cargoW} slots={stats.baySlots} bayFull={bayFull} bayFullAt={bayFullAt} onClick={onCargo} />
         <InfoPill m={m} w={infoW} onClick={onInfo} />
         <button type="button" class="hf-pill hf-pill-menu" style={width(menuW)} aria-label="Menu" data-tap="" onClick={onMenu}>
           <span class="hf-pill-face">
@@ -76,14 +86,19 @@ function HudAlerts({ m }: { m: HudModel }): JSX.Element {
 
 function FuelPill({ m, w }: { m: HudModel; w: number }): JSX.Element {
   const low = m.fuelWarn >= 0;
+  const label = `Fuel ${m.fuelText}${m.fuelShort ? ', short of the climb home' : ''}`;
   return (
-    <div class={`hf-pill hf-pill-fuel${low ? ` hf-warn hf-warn-${m.fuelWarn}` : ''}`} style={width(w)} aria-label={`Fuel ${m.fuelText}`}>
+    <div class={`hf-pill hf-pill-fuel${low ? ` hf-warn hf-warn-${m.fuelWarn}` : ''}`} style={width(w)} aria-label={label}>
       <span class="hf-pill-face">
         <span class="hf-pill-top">
           <Icon name="fuel" size={13} class="hf-pill-icon" />
           <span class="hf-digits">{m.fuelText}</span>
         </span>
-        <Bar frac={m.fuelFrac} color={low ? DANGER : FUEL_COLOUR} />
+        <span class="hf-bar-wrap">
+          <Bar frac={m.fuelFrac} color={low || m.fuelShort ? DANGER : FUEL_COLOUR} />
+          {/* Return Tick (01 §3.5): the climb home's fuel at this load; the bar is red below 1.25× it. */}
+          {m.returnTick !== null && <i class="hf-return-tick" style={{ left: `${(m.returnTick * 100).toFixed(1)}%` }} />}
+        </span>
       </span>
     </div>
   );
@@ -115,25 +130,46 @@ function HullPill({ m, w, hull }: { m: HudModel; w: number; hull: number }): JSX
   );
 }
 
-function CargoPill({ m, w, slots, onClick }: { m: HudModel; w: number; slots: number; onClick: () => void }): JSX.Element {
-  const label = `Cargo ${m.cargoText} of ${slots}${m.tooHeavy ? ', too heavy' : ''}`;
+interface CargoPillProps {
+  m: HudModel;
+  w: number;
+  slots: number;
+  /** Within 5 s of a "Bay full" (03 §6.1, §6.8: P0 on the pill; INT-3). */
+  bayFull: boolean;
+  bayFullAt: number;
+  onClick: () => void;
+}
+
+function CargoPill({ m, w, slots, bayFull, bayFullAt, onClick }: CargoPillProps): JSX.Element {
+  const face = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    // 3-pt shake on each "Bay full" (03 §6.9); skipped under reduced motion via the root class.
+    if (!bayFull || !face.current || face.current.closest('.hf-reduced')) return;
+    face.current.animate(
+      [{ transform: 'translateX(0)' }, { transform: 'translateX(-3px)' }, { transform: 'translateX(3px)' }, { transform: 'translateX(0)' }],
+      { duration: 160, iterations: 2 },
+    );
+  }, [bayFullAt]);
+  const alert = m.tooHeavy || bayFull;
+  const callout = m.tooHeavy ? 'TOO HEAVY' : bayFull ? 'BAY FULL' : null;
+  const label = `Cargo ${m.cargoText} of ${slots}${m.tooHeavy ? ', too heavy' : bayFull ? ', bay full' : ''}`;
   return (
     <button
       type="button"
-      class={`hf-pill hf-pill-cargo${m.tooHeavy ? ' hf-heavy' : ''}`}
+      class={`hf-pill hf-pill-cargo${alert ? ' hf-heavy' : ''}`}
       style={width(w)}
       aria-label={label}
       data-tap=""
       onClick={onClick}
     >
-      <span class="hf-pill-face">
+      <span class="hf-pill-face" ref={face}>
         <span class="hf-pill-top">
-          <Icon name={m.tooHeavy ? 'warn' : 'cargo'} size={13} class="hf-pill-icon" />
+          <Icon name={alert ? 'warn' : 'cargo'} size={13} class="hf-pill-icon" />
           <span class="hf-digits">{m.cargoText}</span>
         </span>
         <Bar frac={m.cargoFrac} color={MASS_COLOUR[m.massTone]} />
       </span>
-      {m.tooHeavy && <span class="hf-callout">TOO HEAVY</span>}
+      {callout && <span class="hf-callout">{callout}</span>}
     </button>
   );
 }

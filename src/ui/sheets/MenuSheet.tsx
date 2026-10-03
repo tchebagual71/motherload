@@ -1,8 +1,9 @@
-// Pause / menu sheet (03 §6.3): Resume · Cargo (MVP) · Settings · Saves · How to play · Debug (dev).
+// Pause / menu sheet (03 §6.3): Resume · Cargo (MVP) · Settings · Saves · How to play · Debug (dev), and the
+// "Update ready" row while a new version waits (04 §9.2; APP-14).
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
 import type { AppController, SheetId } from '../../app/types';
-import { scopeAtLeast } from '../../shared/scope';
+import { inScope, SCOPE } from '../../config/scope';
 import { BottomSheet } from '../BottomSheet';
 import { debugEnabled } from '../env';
 import { Icon, type IconName } from '../icons';
@@ -10,7 +11,8 @@ import { Button } from '../widgets';
 
 export function MenuSheet({ app, close, leaving }: { app: AppController; close: () => void; leaving?: boolean }): JSX.Element {
   const [help, setHelp] = useState(false);
-  const mvp = scopeAtLeast(app.world.scope, 'mvp');
+  const mvp = inScope('mvp');
+  const update = app.state.updateReady.value;
   const go = (id: SheetId) => () => app.openSheet(id);
   return (
     <BottomSheet
@@ -27,6 +29,7 @@ export function MenuSheet({ app, close, leaving }: { app: AppController; close: 
         <HowToPlay onBack={() => setHelp(false)} />
       ) : (
         <nav class="hf-menu">
+          {update && <MenuItem icon="play" label="Update ready: install now" onClick={() => void app.applyUpdate()} />}
           {mvp && <MenuItem icon="cargo" label="Cargo" onClick={go('cargo')} />}
           {mvp && <MenuItem icon="assay" label="Dot's office" onClick={go('office')} />}
           <MenuItem icon="gear" label="Settings" onClick={go('settings')} />
@@ -34,7 +37,7 @@ export function MenuSheet({ app, close, leaving }: { app: AppController; close: 
           <MenuItem icon="help" label="How to play" onClick={() => setHelp(true)} />
           {debugEnabled() && <MenuItem icon="bug" label="Debug" onClick={go('debug')} />}
           <p class="hf-version">
-            HoleFactory {__HF_VERSION__} · {app.world.scope.toUpperCase()}
+            HoleFactory {__HF_VERSION__} · {SCOPE.toUpperCase()}
           </p>
         </nav>
       )}

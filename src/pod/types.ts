@@ -14,6 +14,8 @@ export interface PodIntent {
   thrust: boolean;
   /** Quick slot fired this step (edge-triggered by input on release after arming), -1 = none. */
   fireSlot: number;
+  /** Dig engage steps for this push (Steady Drill assist 12, 01 §6.4); omitted = the canon 7. */
+  digEngage?: number;
 }
 export const NO_INTENT: PodIntent = { sx: 0, sy: 0, thrust: false, fireSlot: -1 };
 

@@ -118,7 +118,16 @@ function loopHarness() {
     arming: signal(null),
     perf: signal(null),
   };
-  const app = { world, state, podRunning: () => running, setContextLost: vi.fn(), tick: vi.fn(), handleEvents: vi.fn() } as unknown as GameApp;
+  const app = {
+    world,
+    state,
+    view: null,
+    podRunning: () => running,
+    shapeIntent: (i: unknown) => i,
+    setContextLost: vi.fn(),
+    tick: vi.fn(),
+    handleEvents: vi.fn(),
+  } as unknown as GameApp;
   const audio = { handleEvents: vi.fn(), update: vi.fn() };
   const renderer = { contextLost: false, render: vi.fn(), info: { drawCalls: 0, triangles: 0 } };
   const input = { sampleIntent: () => NO_INTENT, touching: false } as unknown as InputController;

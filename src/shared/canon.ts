@@ -250,6 +250,28 @@ export const COOP_CREDIT_COOLDOWN_STEPS = 10 * 60 * STEP_HZ;
 export const FUEL_WARNINGS = [0.2, 0.1, 0.05] as const;
 export const HULL_WARNING = 0.25;
 
+/**
+ * Deepest fuel warning reached at tank fraction `frac`: 0 / 1 / 2 = at or below 20 / 10 / 5 % (canon §4.2),
+ * −1 = none. The one rule for the sim's beep and the HUD's pulse and vignette (INT-13).
+ */
+export function fuelWarnLevel(frac: number): -1 | 0 | 1 | 2 {
+  if (frac <= FUEL_WARNINGS[2]) return 2;
+  if (frac <= FUEL_WARNINGS[1]) return 1;
+  if (frac <= FUEL_WARNINGS[0]) return 0;
+  return -1;
+}
+
+// ---------- Assists and the Return Tick (01 §3.5, §6.4; canon §4.4) ----------
+/** Steady Drill: dig engage 7 → 12 steps. */
+export const STEADY_DRILL_ENGAGE_STEPS = 12;
+/** Landing Assist: stick neutral and falling faster than this → auto-thrust holds it (normal burn). */
+export const LANDING_ASSIST_V = 5.5;
+/** The fuel bar turns red below this multiple of the Return Tick's L_ret. */
+export const RETURN_TICK_RED = 1.25;
+/** Return Tick "Training": on until the first t3 Tank or this many trips. */
+export const RETURN_TICK_TRAINING_TRIPS = 10;
+export const RETURN_TICK_TRAINING_TANK = 3;
+
 // ---------- §3.4 Camera ----------
 export const CAMERA = {
   surfacePlay: { yaw: 45, pitch: 35, ppu: 36, zoomMin: 24, zoomMax: 60 },

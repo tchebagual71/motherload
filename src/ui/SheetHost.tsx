@@ -14,6 +14,7 @@ import { SavesSheet } from './sheets/SavesSheet';
 import { SettingsSheet } from './sheets/SettingsSheet';
 import { ShedSheet } from './sheets/ShedSheet';
 import { OfficeSheet } from './story/OfficeSheet';
+import { StyleTestSheet } from './sheets/StyleTestSheet';
 
 export interface SheetProps {
   app: AppController;
@@ -34,6 +35,7 @@ const STATIC_SHEETS: Partial<Record<Exclude<SheetId, null>, ComponentType<SheetP
   saves: SavesSheet,
   cargo: CargoSheet,
   office: OfficeSheet,
+  styletest: StyleTestSheet,
 };
 
 let debugSheet: ComponentType<SheetProps> | null = null;

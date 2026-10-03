@@ -3,13 +3,13 @@
 // loop back until the player picks a way out (that screen is DOM-only).
 import { effect } from '@preact/signals';
 import { AudioEngine, MAX_VOICES, MAX_VOICES_LOW } from '../audio/engine';
-import { SCOPE } from '../config/scope';
+import { inScope, SCOPE } from '../config/scope';
 import { readJetsamSummary } from '../debug/jetsam';
 import { PerfMonitor } from '../debug/perf';
 import { encodePerfReport, estimateGpuMB, heapMB, PerfRecorder } from '../debug/perfReport';
 import { createInput } from '../input';
 import { lsKey } from '../platform/channel';
-import { detectDevice, prefersReducedMotion, type DeviceInfo } from '../platform/device';
+import { detectDevice, osTextScale, prefersReducedMotion, type DeviceInfo } from '../platform/device';
 import { onLifecycle } from '../platform/lifecycle';
 import { isLandscapePhone } from '../platform/orientation';
 import { registerServiceWorker, type ServiceWorkerHandle } from '../platform/pwa';
@@ -30,17 +30,19 @@ import {
   loadInitialWorld,
   nullSink,
   openStore,
+  previousCopyAge,
   randomSeed,
   safeModeHooks,
   seedOverride,
   worlds,
   type LoadedCopy,
 } from './bootWorld';
-import { GameApp, isRimBuilding, type AppHooks } from './controller';
+import { GameApp, type AppHooks } from './controller';
 import { orientationFlipped } from './layout';
 import { GameLoop } from './loop';
 import { NOTICE } from './notices';
 import { createSettingsStore, defaultSettings, initialLook, type SettingsStore } from './settings';
+import { createStyleViews } from './styleViews';
 import { resolveTier } from './tier';
 import type { Settings } from './types';
 import { createViewportTracker, parseDprOverride, type ViewportTracker } from './viewport';
@@ -94,7 +96,8 @@ function readConfig(): BootConfig {
     device,
     osReducedMotion,
     settingsStore,
-    settings: settingsStore.loadSettings(defaultSettings(screen.width, screen.height, osReducedMotion)),
+    // Text scale is an MVP row (canon §5.5): an M0 build keeps 100%.
+    settings: settingsStore.loadSettings(defaultSettings(screen.width, screen.height, osReducedMotion, inScope('mvp') ? osTextScale() : 1)),
     look: initialLook(params.get('look'), settingsStore.loadLook()),
     resolveQuality: (q) => resolveTier(q, urlTier, device),
     navStart: performance.now(),
@@ -260,11 +263,12 @@ function startEngine(d: EngineDeps): { loop: GameLoop; renderer: Renderer } | nu
     app,
     getLayout: () => viewport.layout,
     onInterrupt: () => app.interrupt(),
-    onWorldTap: (px, py) => {
-      // Sign tap (03 §6.4): opens that building's sheet while Pip is up on the Rim.
-      const id = renderer.screenToRimBuilding(px, py);
-      const idle = app.state.sheet.peek() === null && app.state.overlay.peek() === null;
-      if (isRimBuilding(id) && app.world.pod.y > -1 && idle) app.openSheet(id);
+    // Sign taps auto-drive to the pad (01 §3.10); one-handed taps on a neighbour dig once (03 §3.6).
+    onWorldTap: (px, py) => app.worldTap(px, py),
+    isTapTarget: (px, py) => app.tapTargetAt(px, py),
+    podScreen: () => {
+      const p = app.world.pod;
+      return renderer.worldToScreen(p.x, p.y, 0);
     },
   });
   app.attachInput(input);
@@ -355,7 +359,14 @@ export async function boot(): Promise<void> {
     yieldSlice: () => new Promise((r) => setTimeout(r, 0)),
     safeMode,
     hooks,
+    importOffer: cfg.device.standalone && initial.noSave,
+    styleView: createStyleViews(),
   });
+  if (store && initial.safeModeCopy) {
+    void previousCopyAge(store, initial.safeModeCopy).then((ms) => {
+      app.state.safeMode.value = { ...app.state.safeMode.peek(), previousOlderByMs: ms };
+    });
+  }
 
   // ---- layout, audio, saves, lifecycle
   const viewport = createViewportTracker({

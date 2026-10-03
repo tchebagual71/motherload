@@ -42,6 +42,8 @@ export interface PodStats {
   digSteps: number;
   radiator: number;
   baySlots: number;
+  /** Bay slots in use (canon §3.7: 1 per item, Depot Kit 2). */
+  slotsUsed: number;
   cargoMass: number;
   scannerLodeRadius: number;
 }
@@ -132,6 +134,20 @@ export interface WorldApi {
   buyConsumable(id: ConsumableId, n: number): Result;
   /** Change which consumables sit in the 4 quick slots. */
   setQuickSlot(slot: number, id: ConsumableId): void;
+
+  // ---- Cargo panel, Return Tick, sign tap (MVP; canon §3.7, §4.4; 01 §3.5, §3.10) ----
+  /** Throw `n` items like `item` (same mineral tier, relic or Kit id; 'all' = the whole group) out of the bay. */
+  discardCargo(item: CargoItem, n: number | 'all'): Result;
+  /** Put the most recent discard back (the panel's Undo). */
+  undoDiscard(): Result;
+  /** Discards that Undo can still bring back. */
+  readonly discardsPending: number;
+  /** The cargo panel closed: discards are final. */
+  commitDiscards(): void;
+  /** Return Tick L_ret (01 §3.5): litres to climb to the Rim at full thrust and the current load (Infinity when too heavy). */
+  returnFuel(): number;
+  /** Grounded on the Rim's top face (canon §2.4): trades and sign-tap auto-drive need it. */
+  onRim(): boolean;
 
   // ---- Failure ----
   /** Salvage after destruction: lose cargo, pay the fee (shortfall → debt), refuel/repair, respawn on the Pump House pad (disarmed). */

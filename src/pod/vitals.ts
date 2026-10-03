@@ -1,5 +1,5 @@
 // Fuel, hull, damage, warnings and destruction (canon §3.3, §4.2; 01 §3.5, §3.6, §3.11). PURE MODULE.
-import { FUEL_WARNINGS, HULL_WARNING } from '../shared/canon';
+import { HULL_WARNING, fuelWarnLevel } from '../shared/canon';
 import type { DamageCause, GameEvent } from '../shared/events';
 import { maxFuelOf, maxHullOf } from './stats';
 import type { PodState } from './types';
@@ -15,12 +15,6 @@ export function applyDamage(pod: PodState, amount: number, cause: DamageCause, o
   const h = pod.hull - amount;
   pod.hull = h > 0 ? h : 0;
   out.push({ t: 'damage', amount, cause });
-}
-
-/** Deepest fuel warning level (0 = 20%, 1 = 10%, 2 = 5%) the fraction has reached, or −1. */
-function fuelWarnLevel(frac: number): number {
-  for (let lvl = FUEL_WARNINGS.length - 1; lvl >= 0; lvl--) if (frac <= FUEL_WARNINGS[lvl]) return lvl;
-  return -1;
 }
 
 /**

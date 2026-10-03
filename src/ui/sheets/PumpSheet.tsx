@@ -3,7 +3,7 @@
 import type { JSX } from 'preact';
 import type { AppController } from '../../app/types';
 import { COOP_CREDIT_CASH_BELOW, COOP_CREDIT_FUEL_BELOW, COOP_CREDIT_LITERS } from '../../shared/canon';
-import { scopeAtLeast } from '../../shared/scope';
+import { inScope } from '../../config/scope';
 import type { Quote } from '../../world/api';
 import { act } from '../actions';
 import { BottomSheet } from '../BottomSheet';
@@ -71,7 +71,7 @@ export function PumpSheet({ app, close, leaving }: { app: AppController; close: 
         })}
       </div>
       <p class="hf-note">Fuel is {formatCash(1)} a litre. Fill buys as much as your cash allows.</p>
-      {scopeAtLeast(w.scope, 'mvp') && <CoopNote app={app} />}
+      {inScope('mvp') && <CoopNote app={app} />}
     </BottomSheet>
   );
 }

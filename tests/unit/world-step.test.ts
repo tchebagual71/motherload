@@ -252,9 +252,9 @@ describe('Rim pads (canon §2.4)', () => {
   });
 });
 
-describe('Co-op Credit (canon §2.1, §3.8)', () => {
+describe('Co-op Credit (canon §2.1, §3.8; MVP, canon §5.5)', () => {
   it('free 5 L on arrival when broke and dry, once per 10 min', () => {
-    const w = newWorld();
+    const w = newWorld('mvp');
     w.wallet.cash = 3;
     w.pod.fuel = 1.5;
     const ev = driveToPad(w, 4.6);
@@ -278,9 +278,18 @@ describe('Co-op Credit (canon §2.1, §3.8)', () => {
   });
 
   it('not when the player can pay', () => {
-    const w = newWorld();
+    const w = newWorld('mvp');
     w.pod.fuel = 1.5;
     expect(ofType(driveToPad(w, 4.6), 'coop-credit')).toEqual([]);
+  });
+
+  it('not in the M0 build (INT-10)', () => {
+    const w = newWorld('m0');
+    w.wallet.cash = 3;
+    w.pod.fuel = 1.5;
+    const ev = driveToPad(w, 4.6);
+    expect(ofType(ev, 'pad-arrive')).toHaveLength(1);
+    expect(ofType(ev, 'coop-credit')).toEqual([]);
   });
 });
 
@@ -373,12 +382,19 @@ describe('Homing Beacon (01 §3.9)', () => {
 });
 
 describe('debug commands', () => {
-  it('debugTeleport carves a 1×1 cell: the survey column inside the shaft, else x 7', () => {
+  it('debugTeleport carves a 1×1 cell near x 7, never in the open survey shaft, and lands grounded (INT-12)', () => {
     const w = newWorld();
     w.debugTeleport(10);
-    expect(Math.floor(w.pod.x)).toBe(w.meta.surveyColumn);
+    expect(Math.floor(w.pod.x)).not.toBe(w.meta.surveyColumn);
     expect(w.pod.row).toBe(10);
     expect(w.pod.y).toBe(-(10 + 1) + POD_H / 2);
+    expect(w.pod.grounded).toBe(true);
+    expect(w.terrain.get(Math.floor(w.pod.x), 11)).not.toBe(T.AIR);
+    const hull = w.pod.hull;
+    const ev = run(w, NO_INTENT, 120);
+    expect(ofType(ev, 'damage')).toEqual([]);
+    expect(w.pod.row).toBe(10);
+    expect(w.pod.hull).toBe(hull);
 
     w.debugTeleport(90);
     const x = Math.floor(w.pod.x);

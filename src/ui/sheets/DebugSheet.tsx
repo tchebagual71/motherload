@@ -1,8 +1,10 @@
 // Debug menu (03 §6.3; 04 §13): only reachable when debugEnabled() (dev builds or ?debug=1).
 import type { JSX } from 'preact';
-import type { AppController, Overlay } from '../../app/types';
+import { useState } from 'preact/hooks';
+import type { AppController, OverlayPreview } from '../../app/types';
 import { LINES, lineTierName, M0_FLOOR_ROW } from '../../shared/canon';
 import { BottomSheet } from '../BottomSheet';
+import { copyTextLater } from '../clipboard';
 import { Button, SectionTitle, Switch } from '../widgets';
 
 const TELEPORT_ROWS = [50, 100, M0_FLOOR_ROW - 1] as const;
@@ -11,7 +13,7 @@ const CASH_GIFTS = [
   { amount: 10_000, label: '+$10k' },
   { amount: 100_000, label: '+$100k' },
 ] as const;
-const TEST_OVERLAYS: readonly { id: Overlay; label: string }[] = [
+const TEST_OVERLAYS: readonly { id: OverlayPreview; label: string }[] = [
   { id: 'interrupt', label: 'Resume card' },
   { id: 'upright', label: 'Upright card' },
   { id: 'title', label: 'Title' },
@@ -37,6 +39,7 @@ export function DebugSheet({ app, close, leaving }: { app: AppController; close:
   app.state.hudTick.value;
   const w = app.world;
   const s = app.state.settings.value;
+  const [perf, setPerf] = useState<string | null>(null);
   return (
     <BottomSheet title="Debug" icon="bug" onClose={close} leaving={leaving}>
       <SectionTitle>Teleport</SectionTitle>
@@ -68,16 +71,30 @@ export function DebugSheet({ app, close, leaving }: { app: AppController; close:
       </div>
       <Switch label="Perspective camera" hint="M0 A/B flag; reloads the page" value={perspectiveOn()} onChange={togglePerspective} />
       <Switch label="Performance HUD" value={s.showPerf} onChange={(v) => app.updateSettings({ showPerf: v })} />
+      <SectionTitle>Perf</SectionTitle>
+      <div class="hf-buy-row">
+        <Button
+          icon="copy"
+          onClick={() => {
+            const report = app.perfReport();
+            void report.then(setPerf);
+            void copyTextLater(report);
+          }}
+        >
+          Copy Perf Report
+        </Button>
+        <Button onClick={() => app.openSheet('styletest')}>Look test</Button>
+      </div>
+      {perf !== null && (
+        <pre class="hf-code" data-scroll="">
+          {perf}
+        </pre>
+      )}
       <SectionTitle>Screens</SectionTitle>
       <div class="hf-buy-row">
         {TEST_OVERLAYS.map((o) => (
-          <Button
-            key={o.label}
-            onClick={() => {
-              close();
-              app.state.overlay.value = o.id;
-            }}
-          >
+          // Through the time model, so each preview keeps its way out (INT-18).
+          <Button key={o.label} onClick={() => app.previewOverlay(o.id)}>
             {o.label}
           </Button>
         ))}

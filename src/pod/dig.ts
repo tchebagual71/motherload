@@ -51,8 +51,8 @@ function resetEngage(pod: PodState): void {
 export const centreRow = (pod: Readonly<PodState>): number => Math.floor(-pod.y);
 
 /**
- * Engage counter for the current push; starts a dig when it reaches DIG_ENGAGE_STEPS, or emits a
- * refusal once per push. Returns true when the grounded pod pushes Down over open air, so physics
+ * Engage counter for the current push; starts a dig when it reaches the engage gate (DIG_ENGAGE_STEPS, or
+ * intent.digEngage under Steady Drill), or emits a refusal once per push. Returns true when the grounded pod pushes Down over open air, so physics
  * can ease it into the hole (column snap, 03 §3.2).
  */
 export function updateDigEngage(
@@ -63,6 +63,7 @@ export function updateDigEngage(
   scope: Scope,
   out: GameEvent[],
 ): boolean {
+  const gate = intent.digEngage ?? DIG_ENGAGE_STEPS;
   const dir = pod.grounded ? digDirOf(pod.sector) : null;
   if (!dir || intent.sx * intent.sx + intent.sy * intent.sy < DIG_STICK_MIN * DIG_STICK_MIN) {
     resetEngage(pod);
@@ -91,10 +92,10 @@ export function updateDigEngage(
     pod.engageDir = dir;
     pod.engageSteps = 0;
   }
-  if (pod.engageSteps <= DIG_ENGAGE_STEPS) pod.engageSteps++; // saturates one past the gate
-  if (pod.engageSteps < DIG_ENGAGE_STEPS) return false;
+  if (pod.engageSteps <= gate) pod.engageSteps++; // saturates one past the gate
+  if (pod.engageSteps < gate) return false;
   if (target === 'drill') startDig(pod, grid, tx, tr, dir, out);
-  else if (pod.engageSteps === DIG_ENGAGE_STEPS) out.push({ t: 'dig-refused', x: tx, r: tr, reason: target });
+  else if (pod.engageSteps === gate) out.push({ t: 'dig-refused', x: tx, r: tr, reason: target });
   return false;
 }
 
@@ -116,7 +117,7 @@ const clamp01 = (t: number): number => (t < 0 ? 0 : t > 1 ? 1 : t);
  * cell. A down-dig first eases the pod onto the column centre (≤ 0.5 tile), then drops after the
  * break-through; side digs move only after it, so the pod never overlaps uncleared rock.
  */
-export function advanceDig(pod: PodState, grid: TerrainGrid, floor: number, heat: number, out: GameEvent[]): void {
+export function advanceDig(pod: PodState, grid: TerrainGrid, floor: number, heat: number, out: GameEvent[], gate = DIG_ENGAGE_STEPS): void {
   const d = pod.dig;
   if (!d) return;
   d.progress++;
@@ -140,17 +141,17 @@ export function advanceDig(pod: PodState, grid: TerrainGrid, floor: number, heat
     pod.x = x0 + (tx - x0) * s;
     pod.y = d.fromY + (ty - d.fromY) * s;
   }
-  if (d.progress >= d.total) finishDig(pod, grid, d, tx, ty, floor);
+  if (d.progress >= d.total) finishDig(pod, grid, d, tx, ty, floor, gate);
 }
 
-function finishDig(pod: PodState, grid: TerrainGrid, d: DigState, tx: number, ty: number, floor: number): void {
+function finishDig(pod: PodState, grid: TerrainGrid, d: DigState, tx: number, ty: number, floor: number, gate: number): void {
   pod.x = tx;
   pod.y = ty;
   pod.dig = null;
   pod.grounded = isSupported(pod, grid, floor, false);
   // Chained digs skip the engage wait: holding the same push digs the next cell on the next step.
   pod.engageDir = d.dir;
-  pod.engageSteps = DIG_ENGAGE_STEPS - 1;
+  pod.engageSteps = gate - 1;
 }
 
 /** Abort a dig (explosion, teleport); the pod resumes normal physics where it is. */

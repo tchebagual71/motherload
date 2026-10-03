@@ -2,7 +2,7 @@
 // exercised without the real simulation. Not used by the game. Economy numbers follow canon §2.6–2.7, §3.8
 // closely enough to look right; physics is a toy.
 import { signal } from '@preact/signals';
-import type { AppController, AppState, DeathInfo, GoalChip, Overlay, RadioMessage, Settings, SheetId, Toast, TripSummary } from '../app/types';
+import type { AppController, AppState, DeathInfo, GoalChip, Overlay, RadioMessage, SafeModeInfo, Settings, SheetId, Toast, TripSummary } from '../app/types';
 import type { PodIntent, PodState } from '../pod/types';
 import {
   BAY,
@@ -151,6 +151,7 @@ export class FakeWorld implements WorldApi {
   };
   stepNo = 0;
   private events: GameEvent[] = [];
+  private discarded: CargoItem[][] = [];
 
   constructor(readonly scope: Scope) {}
 
@@ -225,6 +226,7 @@ export class FakeWorld implements WorldApi {
       digSteps: DRILL[t.drill - 1].steps,
       radiator: RADIATOR[t.radiator - 1]?.r ?? 1,
       baySlots: BAY[t.bay - 1]?.slots ?? 7,
+      slotsUsed: this.pod.cargo.length,
       cargoMass,
       scannerLodeRadius: SCANNER[t.scanner - 1]?.lodeRadius ?? 1,
     };
@@ -407,6 +409,41 @@ export class FakeWorld implements WorldApi {
     this.pod.quickSlots[slot] = id;
   }
 
+  discardCargo(item: CargoItem, n: number | 'all'): Result {
+    const key = itemKey(item);
+    const keep: CargoItem[] = [];
+    const out: CargoItem[] = [];
+    const limit = n === 'all' ? Infinity : n;
+    for (let i = this.pod.cargo.length - 1; i >= 0; i--) {
+      const c = this.pod.cargo[i];
+      if (out.length < limit && itemKey(c) === key) out.push(c);
+      else keep.unshift(c);
+    }
+    if (out.length === 0) return fail('Nothing like that aboard');
+    this.pod.cargo = keep;
+    this.discarded.push(out);
+    return ok(undefined, out.length);
+  }
+  undoDiscard(): Result {
+    const batch = this.discarded.pop();
+    if (!batch) return fail('Nothing to undo');
+    this.pod.cargo.push(...batch.reverse());
+    return ok(undefined, batch.length);
+  }
+  get discardsPending(): number {
+    return this.discarded.length;
+  }
+  commitDiscards(): void {
+    this.discarded = [];
+  }
+  /** Toy Return Tick: 0.13 L per row (01 §3.3 t1 at half load). */
+  returnFuel(): number {
+    return Math.max(0, this.pod.row) * 0.13;
+  }
+  onRim(): boolean {
+    return this.pod.grounded && this.pod.y > 0;
+  }
+
   respawn(): { fee: number; debt: number; lost: CargoItem[] } {
     const lost = this.pod.cargo;
     const fee = 25;
@@ -453,6 +490,8 @@ export interface FakeAppOptions {
   styleTest?: boolean;
   canInstall?: boolean;
   standalone?: boolean;
+  importOffer?: boolean;
+  safeModePreviousMs?: number | null;
 }
 
 export interface FakeApp extends AppController {
@@ -501,6 +540,9 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     goal: signal<GoalChip | null>(null),
     tripSummary: signal<TripSummary | null>(null),
     updateReady: signal(false),
+    bayFullAt: signal(Number.NEGATIVE_INFINITY),
+    importOffer: signal(opts.importOffer ?? false),
+    safeMode: signal<SafeModeInfo>({ previousOlderByMs: opts.safeModePreviousMs ?? null, error: null }),
   };
   let toastId = 0;
   let hudAcc = 0;
@@ -522,6 +564,11 @@ export function createFakeApp(opts: FakeAppOptions): FakeApp {
     },
     dismissRadio(id) {
       state.radio.value = state.radio.value.filter((m) => m.id !== id);
+    },
+    styleBookmark() {},
+    previewOverlay(o) {
+      state.sheet.value = null;
+      state.overlay.value = o;
     },
     openSheet(id) {
       state.sheet.value = id;
