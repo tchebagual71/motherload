@@ -21,9 +21,12 @@ export function defaultTier(d: TierProbe): QualityTier {
   return 'mid';
 }
 
-/** Effective tier: URL override (tests) > explicit setting > device default. */
-export function resolveTier(setting: Settings['quality'], urlTier: string | null, d: TierProbe): QualityTier {
+/**
+ * Effective tier: URL override (tests) > explicit setting > the automatic tier (`auto`: the governor's benchmarked
+ * and crash-dropped tier, src/app/qualityGovernor.ts) > device default.
+ */
+export function resolveTier(setting: Settings['quality'], urlTier: string | null, d: TierProbe, auto?: QualityTier): QualityTier {
   if (isQualityTier(urlTier)) return urlTier;
   if (setting !== 'auto' && isQualityTier(setting)) return setting;
-  return defaultTier(d);
+  return auto ?? defaultTier(d);
 }

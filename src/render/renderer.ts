@@ -16,9 +16,9 @@ import {
   WebGLRenderer,
   type ShaderMaterial,
 } from 'three';
-import { CAMERA, MINE_H, MINE_W, POD_H, SEAL_ROW } from '../shared/canon';
+import { CAMERA, MINE_H, MINE_W, POD_H, RIM_BUILDINGS, SEAL_ROW } from '../shared/canon';
 import type { GameEvent } from '../shared/events';
-import { F, type Look, type Lode, type Scope } from '../shared/types';
+import { F, type Look, type Lode, type RimBuildingId, type Scope } from '../shared/types';
 import { isLodeVisible, scopeFloorRow } from '../terrain/scope';
 import type { TerrainGrid } from '../terrain/grid';
 import type { WorldApi } from '../world/api';
@@ -103,6 +103,12 @@ class HfRenderer implements Renderer {
   /** Texel-snapped look-at of the Pixel Lab camera, and its texel size (world units per RT pixel). */
   private readonly pixelLook = { x: 0, y: 0, z: 0 };
   private texel = 1;
+  /** Dynamic-resolution Toon DPR from the frame (null = the tier cap). */
+  private dynamicDpr: number | null = null;
+  /** Particle budget last handed to FX (tier × battery/reduced-motion share). */
+  private fxBudget = -1;
+  /** First row the scope floor hides (MINE_H = none): chunks below it + 1 are never made resident. */
+  private viewFloor = MINE_H;
   private readonly infoData: RenderInfo;
   private lost = false;
   private lastTimeMs = Number.NaN;
@@ -193,8 +199,9 @@ class HfRenderer implements Renderer {
     if (this.lost) return;
     const dt = Number.isNaN(this.lastTimeMs) ? 0 : Math.max(0, Math.min(MAX_FRAME_DT, (frame.timeMs - this.lastTimeMs) / 1000));
     this.lastTimeMs = frame.timeMs;
-    this.syncLayout(frame.layout);
+    this.syncLayout(frame.layout, frame.renderDpr);
     this.ensureWorld(frame.world);
+    this.syncFxBudget(frame);
     const world = frame.world;
     const pod = world.pod;
     const a = frame.alpha;
@@ -215,7 +222,7 @@ class HfRenderer implements Renderer {
   resize(layout: ViewportLayout): void {
     this.layout = { ...layout };
     const { width, height, dpr } = layout;
-    const toonD = toonDpr(dpr, this.quality, this.precompileBoth);
+    const toonD = toonDpr(dpr, this.quality, this.precompileBoth, this.dynamicDpr);
     const canvasDpr = this.directToon && this.look === 'toon' ? toonD : dpr;
     this.gl.setPixelRatio(canvasDpr);
     this.gl.setSize(width, height, false);
@@ -232,12 +239,15 @@ class HfRenderer implements Renderer {
     u.uHfOutlinePx.value = 1.5 * toonD;
     u.uHfResolution.value.set(toonW, toonH);
     if (this.perspCam) this.perspCam.aspect = width / height;
+    this.infoData.renderDpr = this.look === 'toon' ? toonD : dpr;
   }
 
-  /** Follow the frame's layout: insets/HUD changes re-anchor the camera; size changes resize. */
-  private syncLayout(layout: ViewportLayout): void {
+  /** Follow the frame's layout: insets/HUD changes re-anchor the camera; size or render-DPR changes resize. */
+  private syncLayout(layout: ViewportLayout, renderDpr: number | undefined): void {
     const cur = this.layout;
-    if (layout.width !== cur.width || layout.height !== cur.height || layout.dpr !== cur.dpr) {
+    const dynamic = renderDpr ?? null;
+    if (layout.width !== cur.width || layout.height !== cur.height || layout.dpr !== cur.dpr || dynamic !== this.dynamicDpr) {
+      this.dynamicDpr = dynamic;
       this.resize(layout);
       return;
     }
@@ -323,8 +333,10 @@ class HfRenderer implements Renderer {
     this.world = world;
     this.grid = world.terrain;
     const scope = world.scope;
+    const floorRow = overlayFloorRow(scope);
+    this.viewFloor = floorRow < MINE_H ? floorRow + 1 : MINE_H;
     this.mesherOpts = {
-      floorRow: overlayFloorRow(scope),
+      floorRow,
       lodeVisible: (lode: Lode): boolean => isLodeVisible(lode, scope),
       hulls: meshOreHulls(this.look, this.quality, this.precompileBoth),
     };
@@ -453,8 +465,9 @@ class HfRenderer implements Renderer {
     const v = this.view;
     v.x0 = Math.max(0, Math.floor(xMin));
     v.x1 = Math.min(MINE_W, Math.ceil(xMax));
-    v.r0 = Math.max(0, Math.floor(-yMax));
-    v.r1 = Math.min(MINE_H, Math.max(v.r0, Math.ceil(-yMin)));
+    // Below the scope floor everything is sealed band (INT-11): one row past it is all that ever needs meshing.
+    v.r0 = Math.min(this.viewFloor, Math.max(0, Math.floor(-yMax)));
+    v.r1 = Math.min(this.viewFloor + 1, MINE_H, Math.max(v.r0, Math.ceil(-yMin)));
     return v;
   }
 
@@ -474,8 +487,10 @@ class HfRenderer implements Renderer {
     const dir = pod.dig ? CONE_DIRS[pod.dig.dir] : CONE_DIRS.down;
     u.uHfCone.value.set(dir[0], dir[1], 1, 0);
     let lamps = 0;
-    if (pod.thrust > 0.05) {
-      u.uHfLamps.value[0].set(px, py - 0.55, 0, LAMP_RADII.thrust * (0.6 + 0.4 * pod.thrust));
+    // A held pod keeps its thrust in the save, but its flame and lamp are out (INT-2).
+    const thrust = frame.podRunning === false ? 0 : pod.thrust;
+    if (thrust > 0.05) {
+      u.uHfLamps.value[0].set(px, py - 0.55, 0, LAMP_RADII.thrust * (0.6 + 0.4 * thrust));
       u.uHfLampColors.value[0].copy(this.thrustColor).multiplyScalar(0.8);
       lamps = 1;
     }
@@ -525,21 +540,24 @@ class HfRenderer implements Renderer {
 
   private updateModels(frame: RenderFrame, px: number, py: number, dt: number): void {
     const pod = frame.world.pod;
+    const live = frame.podRunning !== false;
     const v = this.visual;
     v.x = px;
     v.y = py;
     v.facing = pod.facing;
-    v.thrust = pod.thrust;
-    v.digging = pod.digging;
-    v.digDir = pod.dig ? pod.dig.dir : null;
+    v.thrust = live ? pod.thrust : 0;
+    v.digging = live && pod.digging;
+    v.digDir = live && pod.dig ? pod.dig.dir : null;
     v.grounded = pod.grounded;
     v.vx = pod.vx;
     v.vy = pod.vy;
     v.tiers = pod.tiers;
     v.timeMs = frame.timeMs;
     v.fastFall = nextFastFall(v.fastFall, pod.vy);
+    v.reducedMotion = frame.reducedMotion;
+    v.still = frame.battery === true;
     this.pod.update(v);
-    this.rim.update(frame.timeMs);
+    this.rim.update(frame.timeMs, armedPads(frame.world), !v.still);
     this.yard?.update(frame.timeMs);
     this.fx.update(dt * 1000, v);
     if (this.look === 'toon') {
@@ -577,8 +595,18 @@ class HfRenderer implements Renderer {
     this.applyQualityScope();
   }
 
+  /** Battery mode and reduced motion halve the particles (04 §5.8; 03 §7). */
+  private syncFxBudget(frame: RenderFrame): void {
+    const share = frame.battery === true || frame.reducedMotion ? 0.5 : 1;
+    const budget = Math.round(QUALITY[this.quality].particles * share);
+    if (budget === this.fxBudget) return;
+    this.fxBudget = budget;
+    this.fx.setBudget(budget);
+  }
+
   private applyQualityScope(): void {
     const scope: OutlineScope = outlineScope(this.quality, this.precompileBoth);
+    this.fxBudget = -1;
     this.fx.setBudget(QUALITY[this.quality].particles);
     this.kit.uniforms.uHfOreHulls.value = oreHullsEnabled(scope) ? 1 : 0;
     const hulls = meshOreHulls(this.look, this.quality, this.precompileBoth);
@@ -647,6 +675,13 @@ class HfRenderer implements Renderer {
   private addFallbackLights(): void {
     this.scene.add(...createFallbackLights());
   }
+}
+
+/** Armed-pad bitmask for the Rim lights (bit i = RIM_BUILDINGS[i]; 03 §6.4). */
+export function armedPads(world: Pick<WorldApi, 'isPadArmed'>): number {
+  let mask = 0;
+  for (let i = 0; i < RIM_BUILDINGS.length; i++) if (world.isPadArmed(RIM_BUILDINGS[i].id as RimBuildingId)) mask |= 1 << i;
+  return mask;
 }
 
 /**

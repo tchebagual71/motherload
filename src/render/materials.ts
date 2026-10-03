@@ -99,6 +99,8 @@ export function disposeMaterialKit(): void {
 
 interface TaggedData {
   mat?: unknown;
+  /** Too small for an outline (lamp studs): addOutlineHulls skips it. */
+  hfNoHull?: boolean;
   hfBaseHex?: number;
   hfHull?: boolean;
   hfHullOn?: boolean;
@@ -153,7 +155,8 @@ export type HullGroup = 'pod' | 'buildings';
 export function addOutlineHulls(root: Object3D, group: HullGroup, kit: MaterialKit = getMaterialKit()): Mesh[] {
   const targets: Mesh[] = [];
   root.traverse((o) => {
-    if (o instanceof Mesh && !(o instanceof InstancedMesh) && HULLED_ROLES.has(String((o.userData as TaggedData).mat))) targets.push(o);
+    const data = o.userData as TaggedData;
+    if (o instanceof Mesh && !(o instanceof InstancedMesh) && HULLED_ROLES.has(String(data.mat)) && !data.hfNoHull) targets.push(o);
   });
   const hulls: Mesh[] = [];
   for (const mesh of targets) {

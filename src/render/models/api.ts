@@ -21,17 +21,28 @@ export interface PodVisualState {
   timeMs: number;
   /** Amber tint at |vy| > 5.88 (canon §3.6). */
   fastFall: boolean;
+  /** Reduced motion (03 §7): no squash, stretch, bob or drill shake. */
+  reducedMotion?: boolean;
+  /** Battery mode (04 §5.8): no idle animation. */
+  still?: boolean;
 }
 export interface PodModel {
   root: Object3D;
   update(s: PodVisualState): void;
 }
 
+/** Every Rim pad armed (bit i = RIM_BUILDINGS[i]). */
+export const ALL_PADS_ARMED = 0b1111;
+
 export interface RimBuildingsModel {
   root: Object3D;
   /** World-space anchor above each building's sign (for DOM labels / tap targets). */
   signAnchors: Record<string, Vector3>;
-  update(timeMs: number): void;
+  /**
+   * `armed`: bit i set = RIM_BUILDINGS[i]'s pad is armed, so its lights pulse in the building colour; clear = dim
+   * (03 §6.4). `animate` false (battery mode) holds signs and lights still.
+   */
+  update(timeMs: number, armed?: number, animate?: boolean): void;
 }
 
 export interface YardPropsModel {

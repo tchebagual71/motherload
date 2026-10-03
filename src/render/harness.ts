@@ -128,6 +128,9 @@ class FakeWorld implements WorldApi {
     return null;
   }
   sheetClosed(): void {}
+  isPadArmed(): boolean {
+    return true;
+  }
   fuelQuote(): Quote {
     return ZERO_QUOTE;
   }

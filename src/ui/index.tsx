@@ -21,6 +21,8 @@ import { UprightCard } from './overlays/UprightCard';
 import { SheetHost } from './SheetHost';
 import './styles.css';
 import { createViewport, type Viewport } from './viewport';
+import { MapHost } from './map/MapSheet';
+import { Ruler } from './map/Ruler';
 
 /** The UI faces declared in styles.css (03 §10.5). Both looks' faces start loading at boot (≈ 45 KB,
  *  precached) instead of on first use, so an A/B flip does not flash the fallback (04 §7.1 preloads). */
@@ -43,6 +45,7 @@ function Root({ app, vp }: { app: AppController; vp: Signal<Viewport> }): JSX.El
       {inGame && (
         <>
           <FuelVignette app={app} />
+          <Ruler app={app} vp={vp} />
           <ControlZone app={app} vp={vp} />
           {overlay === 'countdown' && <Countdown app={app} />}
           <Hud app={app} vp={vp} />
@@ -52,6 +55,7 @@ function Root({ app, vp }: { app: AppController; vp: Signal<Viewport> }): JSX.El
         </>
       )}
       <SheetHost app={app} />
+      <MapHost app={app} />
       {overlay === 'interrupt' && <InterruptCard app={app} vp={vp} />}
       {overlay === 'death' && <DeathCard app={app} />}
       {overlay === 'title' && <TitleScreen app={app} />}

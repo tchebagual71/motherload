@@ -52,6 +52,9 @@ class FxPool implements FxSystem {
   private drillTick = 0;
   private thrustAcc = 0;
   private streakAcc = 0;
+  /** Pod position at the last update() (the departure point of a teleport handled before the next one). */
+  private lastPodX = Number.NaN;
+  private lastPodY = Number.NaN;
 
   constructor() {
     this.root.name = 'fx';
@@ -105,8 +108,12 @@ class FxPool implements FxSystem {
         this.explosion(podX, podY, Math.max(0, Math.floor(-podY)), 1);
         break;
       case 'teleport':
-        this.sparkle(podX, podY);
-        if (Math.abs(e.x - podX) + Math.abs(e.y - podY) > 0.5) this.sparkle(e.x, e.y);
+        // The sim moved the pod without interpolation, so podX/podY is already the destination; the departure
+        // sparkle goes where the pod was last drawn (03 §6.9: every event pairs a visual).
+        if (Number.isFinite(this.lastPodX) && Math.abs(this.lastPodX - e.x) + Math.abs(this.lastPodY - e.y) > 0.5) {
+          this.sparkle(this.lastPodX, this.lastPodY);
+        }
+        this.sparkle(e.x, e.y);
         break;
       case 'respawned':
         this.sparkle(podX, podY);
@@ -118,6 +125,8 @@ class FxPool implements FxSystem {
 
   update(dtMs: number, pod: PodVisualState): void {
     const dt = Math.max(0, Math.min(MAX_DT, dtMs / 1000));
+    this.lastPodX = pod.x;
+    this.lastPodY = pod.y;
     this.emitContinuous(dt, pod);
     this.pool.step(dt);
     this.writeInstances();

@@ -188,7 +188,10 @@ describe('render mesher', () => {
     const staked = mesh(g, 1, 2).triangles;
     const unknown = mesh(g, 1, 2, { ...OPTS, lodeVisible: () => false }).triangles;
     expect(staked).toBeGreaterThan(hidden);
-    expect(unknown).toBe(hidden);
+    // Unknown seams: grey veins only, no nuggets and no stake.
+    expect(unknown).toBeLessThan(hidden);
+    lode.discovered = false;
+    expect(mesh(g, 1, 2, { ...OPTS, lodeVisible: () => false }).triangles).toBe(unknown);
   });
 
   it('dithers band edges but keeps band interiors stable', () => {

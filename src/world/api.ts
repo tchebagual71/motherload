@@ -114,6 +114,8 @@ export interface WorldApi {
   padUnderPod(): RimBuildingId | null;
   /** Re-arm rule hook: UI calls this when a sheet closes so the pad stays disarmed until the pod leaves it. */
   sheetClosed(id: RimBuildingId): void;
+  /** Armed pad: stick-neutral 0.3 s on it opens its sheet; its lights pulse (03 §6.4). Disarmed = dim. */
+  isPadArmed(id: RimBuildingId): boolean;
 
   // ---- Pump House ----
   fuelQuote(liters: number | 'fill'): Quote;

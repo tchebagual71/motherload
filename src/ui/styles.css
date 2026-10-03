@@ -1497,3 +1497,184 @@ button.hf-pill {
 .hf-reduced .hf-leaving .hf-scrim {
   animation: hf-fade-out 150ms ease-in both !important;
 }
+
+/* ------------------------------------------------------------------ depth ruler (canon §3.12; 03 §4.11) */
+.hf-ruler {
+  position: absolute;
+  z-index: 30;
+  padding: 0;
+  border: 0;
+  background: none;
+  pointer-events: auto;
+  touch-action: none;
+}
+.hf-ruler-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border: var(--bw) solid var(--hf-ink);
+  border-radius: 8px;
+  background: var(--hf-ink);
+  overflow: visible;
+  opacity: 0.88;
+}
+.hf-ruler-left .hf-ruler-rail {
+  margin-left: 0;
+}
+.hf-ruler-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+.hf-ruler-band:first-child {
+  border-radius: 6px 6px 0 0;
+}
+.hf-ruler-tick {
+  position: absolute;
+  left: 0;
+  width: 8px;
+  height: 2px;
+  margin-top: -1px;
+  background: var(--hf-cream);
+  opacity: 0.8;
+}
+.hf-ruler-right .hf-ruler-tick {
+  left: auto;
+  right: 0;
+}
+.hf-ruler-deepest {
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  height: 2px;
+  margin-top: -1px;
+  background: var(--hf-cream);
+}
+.hf-ruler-mark {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  height: 4px;
+  margin-top: -2px;
+  border-radius: 2px;
+}
+.hf-ruler-lode,
+.hf-ruler-ping {
+  position: absolute;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  background: #ff7a3d;
+  border: 1.5px solid var(--hf-ink);
+  transform: rotate(45deg);
+}
+.hf-ruler-ping {
+  background: none;
+  border: 2px solid #ffe9a8;
+  border-radius: 50%;
+  transform: none;
+  animation: hf-ruler-ping 1.4s ease-out infinite;
+}
+.hf-ruler-pod {
+  position: absolute;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border-radius: 50%;
+  background: #f4f1ea;
+  border: 2px solid var(--hf-ink);
+  box-shadow: inset 0 0 0 3px #46e0d2;
+}
+.hf-pixel .hf-ruler-rail,
+.hf-pixel .hf-ruler-band:first-child,
+.hf-pixel .hf-ruler-pod {
+  border-radius: 0;
+}
+@keyframes hf-ruler-ping {
+  from {
+    transform: scale(0.6);
+    opacity: 1;
+  }
+  to {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ map sheet (03 §6.6) */
+.hf-map-sheet {
+  height: min(92%, calc(100% - var(--clear-top) - 8px));
+}
+.hf-map-sheet .hf-sheet-body {
+  display: flex;
+  padding: 0 12px 8px;
+  overflow: hidden;
+  touch-action: none;
+}
+.hf-map-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  border: var(--bw) solid var(--hf-ink);
+  border-radius: var(--r-card);
+  overflow: hidden;
+  background: #1f1724;
+}
+.hf-map-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+.hf-map-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hf-map-foot > .hf-btn {
+  flex: none;
+  min-height: 48px;
+}
+.hf-map-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  color: var(--hf-ink-soft);
+}
+.hf-map-card {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hf-map-card-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.25;
+}
+.hf-map-card-text b {
+  font: 900 17px/1.2 var(--hf-font-display);
+}
+.hf-map-swatch {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  font: 900 14px/1 var(--hf-font);
+  background: #ff7a3d;
+  border: var(--bw) solid var(--hf-ink);
+  border-radius: 6px;
+  transform: rotate(45deg) scale(0.8);
+}
+.hf-map-swatch-pod {
+  border-radius: 50%;
+  transform: none;
+  background: #f4f1ea;
+  box-shadow: inset 0 0 0 5px #46e0d2;
+}

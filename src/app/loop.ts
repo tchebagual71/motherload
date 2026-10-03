@@ -10,6 +10,7 @@ import type { ConsumableId } from '../shared/types';
 import type { SaveScheduler } from '../save/scheduler';
 import type { WorldApi } from '../world/api';
 import type { GameApp } from './controller';
+import type { FrameSample, LoopQuality } from './qualityGovernor';
 import type { InputController, Overlay } from './types';
 
 export const STEP_MS = 1000 / STEP_HZ;
@@ -62,8 +63,10 @@ export interface LoopDeps {
   saves: SaveScheduler | null;
   perf: PerfMonitor;
   layout(): ViewportLayout;
-  /** OS reduced-motion preference (OR-ed with the setting). */
-  osReducedMotion: boolean;
+  /** OS reduced-motion preference (OR-ed with the setting); a getter follows live OS changes. */
+  osReducedMotion: boolean | (() => boolean);
+  /** Automatic quality: battery-mode frame admission, dynamic resolution, benchmark and overload sampling. */
+  quality?: LoopQuality;
   onFirstTick?(): void;
   onFirstFrame?(): void;
   onError?(e: unknown): void;
@@ -84,6 +87,14 @@ export class GameLoop {
   private readonly frameData: RenderFrame;
   private readonly armingData = { radius: 0, progress: 0 };
   private readonly podAudio: PodAudioState = { thrust: 0, digging: false, drillTier: 1 };
+  private readonly sample: FrameSample = {
+    now: 0, intervalMs: 0, workMs: 0, submitMs: 0, phase: 'title', look: 'toon', tier: 'mid', deviceDpr: 1,
+    manualTier: false, contextLost: false, rimArrival: false,
+  };
+  private lastBodyAt = -1;
+  private submitMs = 0;
+  private rimArrival = false;
+  private batteryShown = false;
 
   constructor(private readonly deps: LoopDeps) {
     this.frameData = {
@@ -119,6 +130,7 @@ export class GameLoop {
   /** After the page was hidden: the next frame starts a fresh interval (no 250-ms catch-up burst). */
   resetClock(): void {
     this.last = -1;
+    this.lastBodyAt = -1;
     this.deps.perf.skipGap();
   }
 
@@ -152,13 +164,18 @@ export class GameLoop {
 
   private readonly frame = (t: number): void => {
     this.raf = requestAnimationFrame(this.frame);
+    const q = this.deps.quality;
+    if (q && !q.admit(t)) return;
     const t0 = performance.now();
+    this.submitMs = 0;
     try {
       this.runFrame(t);
     } catch (e) {
       this.deps.onError?.(e);
     }
-    this.deps.perf.recordWork(performance.now() - t0);
+    const work = performance.now() - t0;
+    this.deps.perf.recordWork(work);
+    if (q) this.reportQuality(q, t, work);
   };
 
   private runFrame(t: number): void {
@@ -180,6 +197,7 @@ export class GameLoop {
 
     const events = world.drainEvents();
     app.handleEvents(events);
+    for (let i = 0; i < events.length; i++) if (events[i].t === 'trip-end') this.rimArrival = true;
     if (audio) {
       const pod = world.pod;
       // A held pod keeps its thrust and dig state (and saves it), but is silent: the thrust bed fades out and the
@@ -196,7 +214,9 @@ export class GameLoop {
 
     if (this.shouldRender(t, events.length > 0)) {
       this.lastRenderAt = t;
+      const s0 = performance.now();
       renderer.render(this.buildFrame(app.world, t, events));
+      this.submitMs = performance.now() - s0;
       if (!this.firstFrameDone) {
         this.firstFrameDone = true;
         this.deps.onFirstFrame?.();
@@ -236,7 +256,11 @@ export class GameLoop {
     f.layout = this.deps.layout();
     f.touching = this.deps.input.touching;
     f.brightMines = settings.brightMines;
-    f.reducedMotion = settings.reducedMotion || this.deps.osReducedMotion;
+    const os = this.deps.osReducedMotion;
+    f.reducedMotion = settings.reducedMotion || (typeof os === 'function' ? os() : os);
+    f.podRunning = this.deps.app.podRunning();
+    f.battery = this.deps.quality?.battery ?? false;
+    f.renderDpr = this.deps.quality?.renderDpr;
     const arming = st.arming.peek();
     if (arming) {
       this.armingData.radius = armingRadius(world.pod.quickSlots[arming.slot]);
@@ -246,6 +270,32 @@ export class GameLoop {
       f.arming = null;
     }
     return f;
+  }
+
+  /** Hand the governor this frame's timings (04 §5.8 dynamic resolution, benchmark; §10.5 overload). */
+  private reportQuality(q: LoopQuality, t: number, work: number): void {
+    const { app, renderer, perf } = this.deps;
+    const s = this.sample;
+    const st = app.state;
+    s.now = t;
+    s.intervalMs = this.lastBodyAt < 0 ? 0 : t - this.lastBodyAt;
+    this.lastBodyAt = t;
+    s.workMs = work;
+    s.submitMs = this.submitMs;
+    const overlay = st.overlay.peek();
+    s.phase = overlay === 'title' ? 'title' : app.podRunning() ? 'play' : 'held';
+    s.look = st.look.peek();
+    s.tier = renderer.info.quality;
+    s.deviceDpr = this.deps.layout().dpr;
+    s.manualTier = st.settings.peek().quality !== 'auto';
+    s.contextLost = renderer.contextLost;
+    s.rimArrival = this.rimArrival;
+    this.rimArrival = false;
+    q.report(s);
+    if (q.battery !== this.batteryShown) {
+      this.batteryShown = q.battery;
+      perf.setDisplayHz(q.battery ? 30 : 60);
+    }
   }
 
   private publishPerf(t: number): void {

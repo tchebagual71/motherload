@@ -1,10 +1,10 @@
 // The four Rim services (canon §2.4; 03 §8.6): Pump House, Assay Office, Garage, Supply Shed. Each is
 // a 4×3 building on Yard rows 1–3 (z ∈ [−4, −1]) at its Rim x range, ≤ 3 units tall (canon §3.1),
 // with one big icon sign. Per building ≤ 4 meshes: static solid, static metal, lights, one animated part.
-import { Group, Shape, Vector3, type BufferGeometry, type Mesh } from 'three';
+import { BufferAttribute, BufferGeometry, Color, Group, Shape, Vector3, type Mesh } from 'three';
 import { RIM_BUILDINGS, type RimBuildingId } from '../../shared/canon';
 import { ORES, POD, ROLE, UI } from '../palette';
-import type { MatRole, RimBuildingsModel } from './api';
+import { ALL_PADS_ARMED, type MatRole, type RimBuildingsModel } from './api';
 import {
   GeometryBuilder,
   at,
@@ -287,6 +287,142 @@ interface LiveBuilding {
   spec: BuildingSpec;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Pad lights (03 §6.4: armed = lights pulse in the building colour; disarmed = dim)
+// ---------------------------------------------------------------------------------------------
+
+/** Building colour of each pad's lights (03 §8.6 signs: amber pump, gold scale, teal door, lilac crates). */
+export const PAD_COLOURS: Record<RimBuildingId, number> = { pump: ROLE.furnace, assay: GOLD, garage: ROLE.assembly, shed: ROLE.storage };
+const PAD_STUDS = 4;
+/** Stud row between the building fronts (z = −1) and the pod lane, so a parked pod hides few of them. */
+const PAD_STUD_Z = -0.84;
+const PAD_POOL = { z: -0.25, rx: 2.15, rz: 0.72, y: 0.006, segments: 16 } as const;
+/** Disarmed caps keep this share of their colour; armed pools breathe between PULSE_LOW and 1. */
+const PAD_DIM = 0.2;
+const PULSE_LOW = 0.35;
+const PULSE_HZ = 0.8;
+const POOL_GAIN = 0.55;
+const POOL_STILL = 0.75;
+
+/** Brightness of an armed pad's light pool at time t (s); a steady level when animation is off. */
+export function padPulse(t: number, animate: boolean): number {
+  if (!animate) return POOL_STILL;
+  return PULSE_LOW + (1 - PULSE_LOW) * (0.5 + 0.5 * Math.sin(t * Math.PI * 2 * PULSE_HZ));
+}
+
+/**
+ * The four pads' lamp caps (one emissive mesh, recoloured when the armed set changes) and soft light pools on
+ * the paving (one additive mesh, recoloured every frame while a pad is armed). Housings are static metal.
+ */
+class PadLights {
+  readonly root = new Group();
+  private readonly caps: Mesh;
+  private readonly pools: Mesh;
+  private readonly capRanges: number[] = [];
+  private readonly capBase: Float32Array;
+  private readonly poolWeight: Float32Array;
+  private readonly colours = RIM_BUILDINGS.map((b) => new Color(PAD_COLOURS[b.id]));
+  private shownMask = -1;
+
+  constructor() {
+    this.root.name = 'rim-pad-lights';
+    const housings = new GeometryBuilder();
+    const caps = new GeometryBuilder();
+    for (const b of RIM_BUILDINGS) {
+      const start = caps.vertexCount;
+      for (let i = 0; i < PAD_STUDS; i++) {
+        const x = b.x0 + 0.5 + i;
+        housings.add(cylinder(0.13, 0.05, 8, 0.015), DARK, at(x, 0.025, PAD_STUD_Z));
+        caps.add(cylinder(0.08, 0.05, 8, 0.02), PAD_COLOURS[b.id], at(x, 0.045, PAD_STUD_Z));
+      }
+      this.capRanges.push(start, caps.vertexCount - start);
+    }
+    const housing = roleMesh(housings.build(), 'metal', 'rim-pad-housings');
+    this.caps = roleMesh(caps.build(), 'emissive', 'rim-pad-caps');
+    this.capBase = Float32Array.from((this.caps.geometry.getAttribute('color') as BufferAttribute).array as Float32Array);
+    const pool = poolGeometry();
+    this.poolWeight = pool.weight;
+    this.pools = roleMesh(pool.geometry, 'flame', 'rim-pad-pools');
+    for (const m of [housing, this.caps, this.pools]) {
+      m.matrixAutoUpdate = false;
+      m.userData.hfNoHull = true;
+      m.raycast = (): void => undefined;
+    }
+    this.root.add(housing, this.caps, this.pools);
+  }
+
+  update(t: number, armed: number, animate: boolean): void {
+    if (armed !== this.shownMask) this.paintCaps(armed);
+    this.paintPools(armed, padPulse(t, animate));
+  }
+
+  private paintCaps(armed: number): void {
+    this.shownMask = armed;
+    const attr = this.caps.geometry.getAttribute('color') as BufferAttribute;
+    const out = attr.array as Float32Array;
+    for (let b = 0; b < RIM_BUILDINGS.length; b++) {
+      const k = (armed >> b) & 1 ? 1 : PAD_DIM;
+      const from = this.capRanges[b * 2] * 3;
+      const to = from + this.capRanges[b * 2 + 1] * 3;
+      for (let i = from; i < to; i++) out[i] = this.capBase[i] * k;
+    }
+    attr.needsUpdate = true;
+  }
+
+  private paintPools(armed: number, pulse: number): void {
+    this.pools.visible = armed !== 0;
+    if (!this.pools.visible) return;
+    const attr = this.pools.geometry.getAttribute('color') as BufferAttribute;
+    const out = attr.array as Float32Array;
+    const perPad = this.poolWeight.length / RIM_BUILDINGS.length;
+    for (let b = 0; b < RIM_BUILDINGS.length; b++) {
+      const c = this.colours[b];
+      const k = (armed >> b) & 1 ? pulse * POOL_GAIN : 0;
+      for (let v = b * perPad; v < (b + 1) * perPad; v++) {
+        const w = this.poolWeight[v] * k;
+        out[v * 3] = c.r * w;
+        out[v * 3 + 1] = c.g * w;
+        out[v * 3 + 2] = c.b * w;
+      }
+    }
+    attr.needsUpdate = true;
+  }
+}
+
+/** One flat elliptical fan per pad on the paving: weight 1 at the centre, 0 at the rim (additive falloff). */
+function poolGeometry(): { geometry: BufferGeometry; weight: Float32Array } {
+  const n = PAD_POOL.segments;
+  const verts = RIM_BUILDINGS.length * n * 3;
+  const pos = new Float32Array(verts * 3);
+  const weight = new Float32Array(verts);
+  let v = 0;
+  const put = (x: number, z: number, w: number): void => {
+    pos[v * 3] = x;
+    pos[v * 3 + 1] = PAD_POOL.y;
+    pos[v * 3 + 2] = z;
+    weight[v++] = w;
+  };
+  for (const b of RIM_BUILDINGS) {
+    const cx = b.x0 + FOOT_W / 2;
+    for (let i = 0; i < n; i++) {
+      const a0 = (i / n) * Math.PI * 2;
+      const a1 = ((i + 1) / n) * Math.PI * 2;
+      // Counter-clockwise seen from above (+y).
+      put(cx, PAD_POOL.z, 1);
+      put(cx + Math.cos(a1) * PAD_POOL.rx, PAD_POOL.z - Math.sin(a1) * PAD_POOL.rz, 0);
+      put(cx + Math.cos(a0) * PAD_POOL.rx, PAD_POOL.z - Math.sin(a0) * PAD_POOL.rz, 0);
+    }
+  }
+  const g = new BufferGeometry();
+  g.setAttribute('position', new BufferAttribute(pos, 3));
+  const normal = new Float32Array(verts * 3);
+  for (let i = 0; i < verts; i++) normal[i * 3 + 1] = 1;
+  g.setAttribute('normal', new BufferAttribute(normal, 3));
+  g.setAttribute('color', new BufferAttribute(new Float32Array(verts * 3), 3));
+  g.computeBoundingSphere();
+  return { geometry: g, weight };
+}
+
 function mesh(geometry: BufferGeometry, role: MatRole, name: string, id: RimBuildingId): Mesh {
   const m = roleMesh(geometry, role, name);
   m.userData.rimId = id;
@@ -299,6 +435,8 @@ export function createRimBuildings(): RimBuildingsModel {
   root.name = 'rim-buildings';
   const signAnchors: Record<string, Vector3> = {};
   const live: LiveBuilding[] = [];
+  const pads = new PadLights();
+  root.add(pads.root);
   for (const b of RIM_BUILDINGS) {
     const parts: Parts = { solid: new GeometryBuilder(), metal: new GeometryBuilder(), glow: new GeometryBuilder() };
     const spec = BUILDERS[b.id](parts);
@@ -322,9 +460,10 @@ export function createRimBuildings(): RimBuildingsModel {
   return {
     root,
     signAnchors,
-    update(timeMs: number): void {
+    update(timeMs: number, armed = ALL_PADS_ARMED, animate = true): void {
       const t = timeMs / 1000;
-      for (const b of live) b.spec.animate(b.anim, b.glow, t);
+      if (animate) for (const b of live) b.spec.animate(b.anim, b.glow, t);
+      pads.update(t, armed, animate);
     },
   };
 }
