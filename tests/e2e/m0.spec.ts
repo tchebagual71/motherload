@@ -148,11 +148,14 @@ test('context loss pauses the pod and restores the same state', async ({ page, b
   await bootGame(page);
   await pressPlay(page);
   await digDown(page, 1);
-  const hash = await holdAndHash(page);
+  await holdAndHash(page);
   await page.evaluate(() => window.__hf!.app.resume());
   await expect.poll(() => page.evaluate(() => window.__hf!.overlay())).toBeNull();
+  // The factory keeps ticking while the pod is paused (canon §4.5), so compare the pod, not the whole world.
+  const podSnap = () => page.evaluate(() => JSON.stringify(window.__hf!.pod()));
 
   expect(await page.evaluate(() => window.__hf!.loseContext())).toBe(true);
+  const before = await podSnap();
   await expect.poll(() => page.evaluate(() => window.__hf!.contextLost())).toBe(true);
   await page.evaluate(() => window.__hf!.setIntent({ sx: 1 }));
   await page.waitForTimeout(500);
@@ -163,7 +166,7 @@ test('context loss pauses the pod and restores the same state', async ({ page, b
   await expect.poll(() => page.evaluate(() => window.__hf!.contextLost()), { timeout: 10_000 }).toBe(false);
   // Restored: "Tap to resume" (canon §4.5), and nothing moved meanwhile.
   await expect.poll(() => page.evaluate(() => window.__hf!.overlay())).toBe('interrupt');
-  expect(await page.evaluate(() => window.__hf!.stateHash())).toBe(hash);
+  expect(await podSnap()).toBe(before);
   await page.locator('.hf-resume-card').click({ force: true });
   await expect.poll(() => page.evaluate(() => window.__hf!.overlay())).toBeNull();
   await expect.poll(() => canvasColourCount(page), { timeout: 15_000 }).toBeGreaterThan(MIN_COLOURS);
