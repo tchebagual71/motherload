@@ -10,7 +10,8 @@ import type { Settings } from './types';
 export const SETTINGS_KEY = 'settings';
 export const LOOK_KEY = 'look';
 
-export function defaultSettings(screenWidth: number, screenHeight: number, osReducedMotion = false): Settings {
+/** `osTextScale`: the OS text size (03 §1.5 "Default: OS"; platform/device.ts osTextScale). */
+export function defaultSettings(screenWidth: number, screenHeight: number, osReducedMotion = false, osTextScale: Settings['textScale'] = 1): Settings {
   return {
     controlSize: defaultControlSize(screenWidth, screenHeight),
     leftHanded: false,
@@ -21,7 +22,7 @@ export function defaultSettings(screenWidth: number, screenHeight: number, osRed
     respectSilent: true,
     quality: 'auto',
     showPerf: false,
-    textScale: 1,
+    textScale: osTextScale,
     oneHanded: false,
     thrustMode: 'hold',
     returnTick: 'training',

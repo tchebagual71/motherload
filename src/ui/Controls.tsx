@@ -8,7 +8,7 @@ import { useRef } from 'preact/hooks';
 import type { AppController } from '../app/types';
 import { controls } from '../input/controlsState';
 import { slotDecision, isGroundedOnly } from '../input/slots';
-import { contextRect, controlRects, ONE_HANDED_ORIGIN_Y, restHintCentre, type Rect } from '../input/zones';
+import { contextRect, controlRects, restHintCentre, virtualOrigin, type Rect } from '../input/zones';
 import { CONSUMABLES, TOUCH, type ConsumableId } from '../shared/canon';
 import { ContextButton } from './ContextButton';
 import { Icon } from './icons';
@@ -47,10 +47,11 @@ function StickVisual({ app, vp }: { app: AppController; vp: Signal<Viewport> }):
   const s = app.state.settings.value;
   const v = vp.value;
   const r = TOUCH.stickRadius[s.controlSize];
-  // One-handed: the 40% ring marks the virtual origin (03 §3.6), always; else the rest hint for 3 trips (03 §3.1).
+  // One-handed: the 40% ring marks the virtual origin under the pod (03 §3.6; refreshed at the HUD tick), always;
+  // else the rest hint for 3 trips (03 §3.1).
   const showHint = s.oneHanded || app.world.story.trips < 3;
   const rest = s.oneHanded
-    ? { x: v.w / 2, y: ONE_HANDED_ORIGIN_Y * v.h }
+    ? virtualOrigin({ width: v.w, height: v.h }, s.controlSize, controls.podScreen?.()?.x ?? null)
     : restHintCentre({ width: v.w, height: v.h, controlZone: TOUCH.controlZone[s.controlSize] + v.ib, clearTop: v.it + TOUCH.hudRow }, s.controlSize, s.leftHanded);
 
   useSignalEffect(() => {

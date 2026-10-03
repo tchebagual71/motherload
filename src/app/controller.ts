@@ -14,6 +14,7 @@ import type { DecodedCode } from '../save/exportCode';
 import type { WriteOutcome } from '../save/store';
 import { scopeFloorRow } from '../terrain/scope';
 import type { Result, WorldApi } from '../world/api';
+import { isNeutral } from '../world/pads';
 import { AutoDrive } from './autoDrive';
 import type { SettingsStore } from './settings';
 import { NOTICE, refusalNotice } from './notices';
@@ -43,8 +44,6 @@ export const HUD_TICK_MS = 100;
 export const UPRIGHT_PREVIEW_MS = 3_000;
 /** A one-handed dig tap pushes for at most this many steps: the engage gate plus the drive to the wall (03 §3.6). */
 export const DIG_TAP_MAX_STEPS = 45;
-/** Stick output is exactly 0 inside the dead zone; this only absorbs float noise. */
-const NEUTRAL_EPS = 0.05;
 const DIG_PUSH: Record<DigDir, { sx: number; sy: number }> = { down: { sx: 0, sy: -1 }, left: { sx: -1, sy: 0 }, right: { sx: 1, sy: 0 } };
 /** 04 §4.13: an import runs this many headless steps on a scratch World before anything is written. */
 export const IMPORT_DRY_RUN_STEPS = 1_200;
@@ -54,11 +53,6 @@ const RIM_IDS: ReadonlySet<string> = new Set(RIM_BUILDINGS.map((b) => b.id));
 
 export function isRimBuilding(id: string | null): id is RimBuildingId {
   return id !== null && RIM_IDS.has(id);
-}
-
-/** No stick, key or THRUST input this step (a fire-slot release does not count). */
-export function stickIdle(i: Readonly<PodIntent>): boolean {
-  return !i.thrust && Math.abs(i.sx) < NEUTRAL_EPS && Math.abs(i.sy) < NEUTRAL_EPS;
 }
 
 function sheetReason(id: SheetId): SheetReason | null {
@@ -529,7 +523,8 @@ export class GameApp implements AppController {
    * the assists (01 §6.4). Any stick, key or THRUST input cancels the automation. Returns a reused object.
    */
   shapeIntent(raw: PodIntent): PodIntent {
-    if ((this.drive.active || this.digTap) && !stickIdle(raw)) this.cancelAutomation();
+    // The pad rule's own neutral test (a fire-slot release does not count as input).
+    if ((this.drive.active || this.digTap) && !isNeutral(raw)) this.cancelAutomation();
     let base = raw;
     if (this.drive.active) base = this.stepDrive(raw) ?? raw;
     else if (this.digTap) base = this.stepDigTap(raw) ?? raw;

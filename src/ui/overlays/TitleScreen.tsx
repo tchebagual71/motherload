@@ -21,7 +21,9 @@ function hasProgress(app: AppController): boolean {
 export function TitleScreen({ app }: { app: AppController }): JSX.Element {
   const install = app.state.canInstall.value && !app.state.standalone.value;
   // Kept for the title's lifetime once offered, so a successful import can say so (the offer itself ends there).
-  const [offerPaste] = useState(() => app.state.importOffer.peek() && app.state.standalone.peek());
+  const [offerPaste, setOfferPaste] = useState(() => app.state.importOffer.peek() && app.state.standalone.peek());
+  // An import replaces app.world, which is not a signal: re-render so "Play" becomes "Continue".
+  const [, setImports] = useState(0);
   const progress = hasProgress(app);
   const [steps, setSteps] = useState(false);
   const [copied, setCopied] = useState<boolean | null>(null);
@@ -63,7 +65,7 @@ export function TitleScreen({ app }: { app: AppController }): JSX.Element {
           </h1>
           <p class="hf-tagline">Dig deep. Haul it up. Build the factory.</p>
         </div>
-        {offerPaste && <PasteSave app={app} />}
+        {offerPaste && <PasteSave app={app} onImported={() => setImports((n) => n + 1)} onSkip={() => setOfferPaste(false)} />}
         {install && (
           <div class="hf-install">
             <div class="hf-install-head">
@@ -149,11 +151,18 @@ function InstallSteps({ copied }: { copied: boolean | null }): JSX.Element {
 
 type PasteState = { step: 'offer' } | { step: 'busy' } | { step: 'box'; error: string | null } | { step: 'done' };
 
+interface PasteSaveProps {
+  app: AppController;
+  onImported: () => void;
+  onSkip: () => void;
+}
+
 /**
  * Import from Safari (canon §3.15; 03 §6.3): one tap reads the clipboard (user-activated readText), then the
- * import dry run. A blocked or empty clipboard opens a paste box (and a file picker for .hfsave files).
+ * import dry run. A blocked or empty clipboard opens a paste box (and a file picker for .hfsave files); Skip
+ * hides the card for a fresh start.
  */
-function PasteSave({ app }: { app: AppController }): JSX.Element | null {
+function PasteSave({ app, onImported, onSkip }: PasteSaveProps): JSX.Element | null {
   const [st, setSt] = useState<PasteState>({ step: 'offer' });
   const [draft, setDraft] = useState('');
   const card = useRef<HTMLDivElement>(null);
@@ -173,6 +182,7 @@ function PasteSave({ app }: { app: AppController }): JSX.Element | null {
     if (r.ok) {
       app.toast(r.message ?? 'Save imported', 'good');
       setSt({ step: 'done' });
+      onImported();
     } else setSt({ step: 'box', error: r.reason });
   };
   // readText must start inside the tap (user activation); nothing is awaited before it.
@@ -221,6 +231,11 @@ function PasteSave({ app }: { app: AppController }): JSX.Element | null {
       ) : (
         <Button kind="primary" big icon="copy" disabled={st.step === 'busy'} onClick={onPaste}>
           {st.step === 'busy' ? 'Checking save…' : 'Paste save'}
+        </Button>
+      )}
+      {st.step !== 'busy' && (
+        <Button kind="ghost" onClick={onSkip}>
+          Skip
         </Button>
       )}
     </div>

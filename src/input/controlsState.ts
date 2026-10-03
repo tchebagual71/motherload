@@ -29,6 +29,8 @@ export interface ControlsState {
   readonly pressedSlot: Signal<number>;
   /** Refused press feedback (shake): bumps `serial` each time so repeats retrigger. */
   readonly denied: Signal<{ slot: number; serial: number }>;
+  /** The pod in canvas CSS px (set by input), so the one-handed ring sits on the virtual origin (03 §3.6). */
+  podScreen: (() => { x: number; y: number } | null) | null;
 }
 
 export function createControlsState(): ControlsState {
@@ -40,6 +42,7 @@ export function createControlsState(): ControlsState {
     lastInputAt: Number.NEGATIVE_INFINITY,
     pressedSlot: signal(-1),
     denied: signal({ slot: -1, serial: 0 }),
+    podScreen: null,
   };
 }
 

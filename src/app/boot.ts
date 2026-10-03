@@ -3,13 +3,13 @@
 // loop back until the player picks a way out (that screen is DOM-only).
 import { effect } from '@preact/signals';
 import { AudioEngine, MAX_VOICES, MAX_VOICES_LOW } from '../audio/engine';
-import { SCOPE } from '../config/scope';
+import { inScope, SCOPE } from '../config/scope';
 import { readJetsamSummary } from '../debug/jetsam';
 import { PerfMonitor } from '../debug/perf';
 import { encodePerfReport, estimateGpuMB, heapMB, PerfRecorder } from '../debug/perfReport';
 import { createInput } from '../input';
 import { lsKey } from '../platform/channel';
-import { detectDevice, prefersReducedMotion, type DeviceInfo } from '../platform/device';
+import { detectDevice, osTextScale, prefersReducedMotion, type DeviceInfo } from '../platform/device';
 import { onLifecycle } from '../platform/lifecycle';
 import { isLandscapePhone } from '../platform/orientation';
 import { registerServiceWorker, type ServiceWorkerHandle } from '../platform/pwa';
@@ -96,7 +96,8 @@ function readConfig(): BootConfig {
     device,
     osReducedMotion,
     settingsStore,
-    settings: settingsStore.loadSettings(defaultSettings(screen.width, screen.height, osReducedMotion)),
+    // Text scale is an MVP row (canon §5.5): an M0 build keeps 100%.
+    settings: settingsStore.loadSettings(defaultSettings(screen.width, screen.height, osReducedMotion, inScope('mvp') ? osTextScale() : 1)),
     look: initialLook(params.get('look'), settingsStore.loadLook()),
     resolveQuality: (q) => resolveTier(q, urlTier, device),
     navStart: performance.now(),

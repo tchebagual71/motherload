@@ -64,3 +64,34 @@ export function prefersReducedMotion(): boolean {
     return false;
   }
 }
+
+/** iOS Dynamic Type body size at the default setting is 17 px; one step up (19 px) maps to 115% (03 §1.5). */
+const IOS_BODY_115 = 19;
+/** Android and desktop: a root font size ≥ 16 × 1.15 px maps to 115%. */
+const ROOT_115 = 16 * 1.15;
+
+/**
+ * The OS text size as a text scale (03 §1.5 "Default: OS"): the iOS body size (`font: -apple-system-body`, null
+ * where unsupported), else the root font size. 130% is v1, so this caps at 115%.
+ */
+export function textScaleFromOs(appleBodyPx: number | null, rootPx: number): 1 | 1.15 {
+  if (appleBodyPx !== null && Number.isFinite(appleBodyPx)) return appleBodyPx >= IOS_BODY_115 ? 1.15 : 1;
+  return Number.isFinite(rootPx) && rootPx >= ROOT_115 - 0.01 ? 1.15 : 1;
+}
+
+/** DOM probe for textScaleFromOs; 1 without a document. */
+export function osTextScale(): 1 | 1.15 {
+  try {
+    if (typeof document === 'undefined' || !document.body) return 1;
+    const root = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    if (typeof CSS === 'undefined' || !CSS.supports('font', '-apple-system-body')) return textScaleFromOs(null, root);
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:absolute;visibility:hidden;font:-apple-system-body';
+    document.body.appendChild(probe);
+    const body = parseFloat(getComputedStyle(probe).fontSize);
+    probe.remove();
+    return textScaleFromOs(body, root);
+  } catch {
+    return 1;
+  }
+}

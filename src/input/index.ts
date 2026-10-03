@@ -67,6 +67,7 @@ export function createInput(opts: CreateInputOptions): InputController {
   const taps = new TapTracker();
   const tapEls = new Map<number, HTMLElement>();
   const swallow = new ClickSwallow<HTMLElement>();
+  controls.podScreen = opts.podScreen ?? null;
 
   const sample = (e: PointerEvent): PointerSample => {
     scratch.id = e.pointerId;
@@ -440,6 +441,7 @@ export function createInput(opts: CreateInputOptions): InputController {
     releaseAll,
     dispose(): void {
       releaseAll();
+      if (controls.podScreen === opts.podScreen) controls.podScreen = null;
       for (const [target, type, fn, capture] of listen) target.removeEventListener(type, fn, capture);
       disposeGuards();
     },

@@ -139,22 +139,20 @@ export const ONE_HANDED_ORIGIN_Y = 0.7;
 export const ONE_HANDED_ZONE_Y = 0.45;
 
 /**
- * One-handed stick zone (03 §3.6): y ≥ 0.45 H across the screen, keeping the 24-pt back-swipe exclusion on the
- * non-dominant edge (03 §1.1).
+ * One-handed stick zone (03 §3.6): y ≥ 0.45 H across the screen, never within 24 pt of the left edge (back-swipe),
+ * nor of the right edge when left-handed (03 §1.1).
  */
 export function oneHandedZone(layout: InputLayout, size: ControlSize, leftHanded: boolean): Rect {
   const edge = 24;
   const y1 = layout.height - bottomInsetOf(layout, size);
-  return leftHanded
-    ? { x0: 0, y0: ONE_HANDED_ZONE_Y * layout.height, x1: layout.width - edge, y1 }
-    : { x0: edge, y0: ONE_HANDED_ZONE_Y * layout.height, x1: layout.width, y1 };
+  return { x0: edge, y0: ONE_HANDED_ZONE_Y * layout.height, x1: leftHanded ? layout.width - edge : layout.width, y1 };
 }
 
 /**
  * One-handed virtual origin (canon §3.12): the pod's screen x at 0.70 H, kept a stick radius inside the screen so
  * its 40% ring stays visible. With no pod position yet, the screen centre.
  */
-export function virtualOrigin(layout: InputLayout, size: ControlSize, podX: number | null): { x: number; y: number } {
+export function virtualOrigin(layout: Pick<InputLayout, 'width' | 'height'>, size: ControlSize, podX: number | null): { x: number; y: number } {
   const r = TOUCH.stickRadius[size];
   const x = podX === null || !Number.isFinite(podX) ? layout.width / 2 : podX;
   return { x: Math.min(Math.max(x, r), layout.width - r), y: ONE_HANDED_ORIGIN_Y * layout.height };
